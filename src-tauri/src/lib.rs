@@ -1,7 +1,7 @@
 mod application;
 mod commands;
 pub mod domain;
-mod infrastructure;
+pub mod infrastructure;
 mod runtime;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
