@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use oauth2::basic::BasicClient;
@@ -7,14 +8,16 @@ use oauth2::{
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use super::oauth_callback;
+use super::oauth_callback::{self, CallbackOutcome};
 
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_IN_FLIGHT_CALLBACKS: usize = 16;
 
 pub struct DesktopOAuthSession {
     listener: TcpListener,
@@ -112,70 +115,89 @@ impl DesktopOAuthSession {
     }
 
     async fn receive(self) -> Result<OAuthGrant, DesktopOAuthError> {
+        let expected_state = Arc::new(self.expected_state);
+        let pkce_verifier = Arc::new(self.pkce_verifier);
+        let redirect_uri: Arc<str> = self.redirect_uri.into();
+        let mut connections = JoinSet::new();
+
         loop {
-            let (mut stream, _) = self
-                .listener
-                .accept()
-                .await
-                .map_err(|_| DesktopOAuthError::ListenerUnavailable)?;
-            let result =
-                match timeout(self.connection_timeout, self.parse_request(&mut stream)).await {
-                    Ok(result) => result,
-                    Err(_) => Err(DesktopOAuthError::InvalidRequest),
-                };
-            let response = match &result {
-                Ok(_) => oauth_callback::success_response(),
-                Err(_) => oauth_callback::error_response(),
+            let completed = if connections.len() == MAX_IN_FLIGHT_CALLBACKS {
+                connections.join_next().await
+            } else {
+                tokio::select! {
+                    biased;
+                    completed = connections.join_next(), if !connections.is_empty() => completed,
+                    accepted = self.listener.accept() => {
+                        let (stream, _) = accepted
+                            .map_err(|_| DesktopOAuthError::ListenerUnavailable)?;
+                        connections.spawn(handle_connection(
+                            stream,
+                            self.connection_timeout,
+                            Arc::clone(&expected_state),
+                            Arc::clone(&pkce_verifier),
+                            Arc::clone(&redirect_uri),
+                        ));
+                        continue;
+                    }
+                }
             };
 
+            let result = match completed {
+                Some(Ok(result)) => result,
+                Some(Err(_)) | None => return Err(DesktopOAuthError::ListenerUnavailable),
+            };
             match result {
-                Err(DesktopOAuthError::InvalidRequest | DesktopOAuthError::StateMismatch) => {
-                    drop(
-                        timeout(
-                            self.connection_timeout,
-                            stream.write_all(response.as_bytes()),
-                        )
-                        .await,
-                    );
-                }
-                result => {
-                    timeout(
-                        self.connection_timeout,
-                        stream.write_all(response.as_bytes()),
-                    )
-                    .await
-                    .map_err(|_| DesktopOAuthError::ListenerUnavailable)?
-                    .map_err(|_| DesktopOAuthError::ListenerUnavailable)?;
-                    return result;
-                }
+                Err(DesktopOAuthError::InvalidRequest | DesktopOAuthError::StateMismatch) => {}
+                result => return result,
             }
         }
     }
+}
 
-    async fn parse_request(&self, stream: &mut TcpStream) -> Result<OAuthGrant, DesktopOAuthError> {
-        let request = oauth_callback::read_request(stream).await?;
+async fn handle_connection(
+    mut stream: TcpStream,
+    connection_timeout: Duration,
+    expected_state: Arc<CsrfToken>,
+    pkce_verifier: Arc<PkceCodeVerifier>,
+    redirect_uri: Arc<str>,
+) -> Result<OAuthGrant, DesktopOAuthError> {
+    let result = match timeout(connection_timeout, async {
+        let request = oauth_callback::read_request(&mut stream).await?;
         let parameters = oauth_callback::parse(&request)?;
         let received_state = CsrfToken::new(parameters.state);
-        if received_state != self.expected_state {
+        if &received_state != expected_state.as_ref() {
             return Err(DesktopOAuthError::StateMismatch);
         }
-        let authorization_code = match (
-            parameters.code.filter(|code| !code.is_empty()),
-            parameters.provider_error,
-        ) {
-            (Some(code), None) => code,
-            (None, Some(_)) => return Err(DesktopOAuthError::AccessDenied),
-            (None, None) | (Some(_), Some(_)) => {
-                return Err(DesktopOAuthError::InvalidRequest);
-            }
-        };
 
-        Ok(OAuthGrant {
-            authorization_code,
-            pkce_verifier: self.pkce_verifier.secret().to_owned(),
-            redirect_uri: self.redirect_uri.clone(),
-        })
-    }
+        match parameters.outcome {
+            CallbackOutcome::AuthorizationCode(authorization_code) => Ok(OAuthGrant {
+                authorization_code,
+                pkce_verifier: pkce_verifier.secret().to_owned(),
+                redirect_uri: redirect_uri.to_string(),
+            }),
+            CallbackOutcome::ProviderError(error) if error == "access_denied" => {
+                Err(DesktopOAuthError::AccessDenied)
+            }
+            CallbackOutcome::ProviderError(_) => Err(DesktopOAuthError::ProviderFailure),
+        }
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(DesktopOAuthError::InvalidRequest),
+    };
+    let response = match &result {
+        Ok(_) => oauth_callback::success_response(),
+        Err(_) => oauth_callback::error_response(),
+    };
+    drop(
+        timeout(
+            connection_timeout,
+            stream.write_all(response.as_bytes()),
+        )
+        .await,
+    );
+    result
 }
 
 pub struct OAuthGrant {
@@ -212,6 +234,7 @@ pub enum DesktopOAuthError {
     InvalidRequest,
     StateMismatch,
     AccessDenied,
+    ProviderFailure,
 }
 
 impl fmt::Display for DesktopOAuthError {
@@ -223,6 +246,7 @@ impl fmt::Display for DesktopOAuthError {
             Self::InvalidRequest => formatter.write_str("OAuth callback request is invalid"),
             Self::StateMismatch => formatter.write_str("OAuth callback state did not match"),
             Self::AccessDenied => formatter.write_str("Google authorization was denied"),
+            Self::ProviderFailure => formatter.write_str("Google authorization failed"),
         }
     }
 }

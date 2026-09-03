@@ -150,8 +150,43 @@ async fn callback_returns_access_denied_for_matching_provider_error() {
 }
 
 #[tokio::test]
+async fn callback_returns_provider_failure_for_other_google_errors() {
+    // Given
+    let session = DesktopOAuthSession::start(CLIENT_ID)
+        .await
+        .expect("OAuth session starts");
+    let parameters = query(session.authorization_url());
+    let state = parameters
+        .get("state")
+        .expect("authorization URL contains state");
+    let redirect_uri = session.redirect_uri().to_owned();
+    let callback_query = format!("error=temporarily_unavailable&state={state}");
+
+    // When
+    let (result, response) = tokio::join!(
+        session.receive_callback(),
+        send_callback(&redirect_uri, &callback_query)
+    );
+
+    // Then
+    assert!(matches!(
+        &result,
+        Err(DesktopOAuthError::ProviderFailure)
+    ));
+    assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+    assert!(!format!("{result:?}").contains("temporarily_unavailable"));
+}
+
+#[tokio::test]
 async fn callback_ignores_incomplete_or_conflicting_response_before_valid_redirect() {
-    for invalid_suffix in ["", "code=forged&error=access_denied&"] {
+    for invalid_suffix in [
+        "",
+        "code=forged&error=access_denied&",
+        "code=&",
+        "error=&",
+        "code=&error=access_denied&",
+        "code=forged&error=&",
+    ] {
         // Given
         let session = DesktopOAuthSession::start(CLIENT_ID)
             .await
@@ -181,6 +216,37 @@ async fn callback_ignores_incomplete_or_conflicting_response_before_valid_redire
         assert!(invalid_response.starts_with("HTTP/1.1 400 Bad Request"));
         assert!(valid_response.starts_with("HTTP/1.1 200 OK"));
     }
+}
+
+#[tokio::test]
+async fn callback_ignores_empty_state_before_valid_redirect() {
+    // Given
+    let session = DesktopOAuthSession::start(CLIENT_ID)
+        .await
+        .expect("OAuth session starts");
+    let parameters = query(session.authorization_url());
+    let state = parameters
+        .get("state")
+        .expect("authorization URL contains state");
+    let redirect_uri = session.redirect_uri().to_owned();
+    let valid_query = format!("code=valid-code&state={state}");
+
+    // When
+    let callbacks = async {
+        let invalid_response = send_callback(&redirect_uri, "code=forged&state=").await;
+        let valid_response = send_callback(&redirect_uri, &valid_query).await;
+        (invalid_response, valid_response)
+    };
+    let (grant, (invalid_response, valid_response)) =
+        tokio::join!(session.receive_callback(), callbacks);
+
+    // Then
+    assert_eq!(
+        grant.expect("valid callback succeeds").authorization_code(),
+        "valid-code"
+    );
+    assert!(invalid_response.starts_with("HTTP/1.1 400 Bad Request"));
+    assert!(valid_response.starts_with("HTTP/1.1 200 OK"));
 }
 
 #[tokio::test]
@@ -252,7 +318,7 @@ async fn callback_drops_stalled_connection_before_valid_redirect() {
     let session = DesktopOAuthSession::start_for_test_with_timeouts(
         CLIENT_ID,
         Duration::from_secs(1),
-        Duration::from_millis(10),
+        Duration::from_millis(100),
     )
     .await
     .expect("OAuth session starts");
@@ -263,22 +329,27 @@ async fn callback_drops_stalled_connection_before_valid_redirect() {
     let redirect_uri = session.redirect_uri().to_owned();
     let valid_query = format!("code=valid-code&state={state}");
 
-    // When
-    let callbacks = async {
-        let redirect = reqwest::Url::parse(&redirect_uri).expect("redirect URI is valid");
-        let address = format!(
-            "{}:{}",
-            redirect.host_str().expect("redirect URI has a host"),
-            redirect.port().expect("redirect URI has a port")
+    let redirect = reqwest::Url::parse(&redirect_uri).expect("redirect URI is valid");
+    let address = format!(
+        "{}:{}",
+        redirect.host_str().expect("redirect URI has a host"),
+        redirect.port().expect("redirect URI has a port")
+    );
+    let mut stalled = Vec::new();
+    for _ in 0..32 {
+        stalled.push(
+            TcpStream::connect(&address)
+                .await
+                .expect("stalled callback connects"),
         );
-        let stalled = TcpStream::connect(address)
-            .await
-            .expect("stalled callback connects");
-        let valid_response = send_callback(&redirect_uri, &valid_query).await;
-        drop(stalled);
-        valid_response
-    };
-    let (grant, valid_response) = tokio::join!(session.receive_callback(), callbacks);
+    }
+
+    // When
+    let (grant, valid_response) = tokio::join!(
+        session.receive_callback(),
+        send_callback(&redirect_uri, &valid_query)
+    );
+    drop(stalled);
 
     // Then
     assert_eq!(
@@ -286,6 +357,49 @@ async fn callback_drops_stalled_connection_before_valid_redirect() {
         "valid-code"
     );
     assert!(valid_response.starts_with("HTTP/1.1 200 OK"));
+}
+
+#[tokio::test]
+async fn callback_preserves_grant_when_browser_resets_before_response() {
+    // Given
+    let session = DesktopOAuthSession::start(CLIENT_ID)
+        .await
+        .expect("OAuth session starts");
+    let parameters = query(session.authorization_url());
+    let state = parameters
+        .get("state")
+        .expect("authorization URL contains state");
+    let redirect_uri = session.redirect_uri().to_owned();
+    let authorization_code = "secret-authorization-code";
+    let callback_query = format!("code={authorization_code}&state={state}");
+
+    // When
+    let reset_browser = async {
+        let redirect = reqwest::Url::parse(&redirect_uri).expect("redirect URI is valid");
+        let address = format!(
+            "{}:{}",
+            redirect.host_str().expect("redirect URI has a host"),
+            redirect.port().expect("redirect URI has a port")
+        );
+        let mut stream = TcpStream::connect(address)
+            .await
+            .expect("callback client connects");
+        stream
+            .write_all(
+                format!("GET /?{callback_query} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .expect("callback request writes");
+        stream
+            .set_zero_linger()
+            .expect("callback client enables abortive close");
+    };
+    let (grant, ()) = tokio::join!(session.receive_callback(), reset_browser);
+    let grant = grant.expect("matching callback succeeds despite browser reset");
+
+    // Then
+    assert_eq!(grant.authorization_code(), authorization_code);
 }
 
 #[tokio::test]

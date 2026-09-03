@@ -8,8 +8,12 @@ const MAX_CALLBACK_BYTES: usize = 8 * 1024;
 
 pub(super) struct Parameters {
     pub(super) state: String,
-    pub(super) code: Option<String>,
-    pub(super) provider_error: Option<String>,
+    pub(super) outcome: CallbackOutcome,
+}
+
+pub(super) enum CallbackOutcome {
+    AuthorizationCode(String),
+    ProviderError(String),
 }
 
 pub(super) async fn read_request(stream: &mut TcpStream) -> Result<String, DesktopOAuthError> {
@@ -70,11 +74,18 @@ pub(super) fn parse(request: &str) -> Result<Parameters, DesktopOAuthError> {
         }
     }
 
-    Ok(Parameters {
-        state: state.ok_or(DesktopOAuthError::InvalidRequest)?,
-        code,
-        provider_error,
-    })
+    let state = state
+        .filter(|value| !value.is_empty())
+        .ok_or(DesktopOAuthError::InvalidRequest)?;
+    let outcome = match (code, provider_error) {
+        (Some(code), None) if !code.is_empty() => CallbackOutcome::AuthorizationCode(code),
+        (None, Some(error)) if !error.is_empty() => CallbackOutcome::ProviderError(error),
+        (None, None) | (Some(_), None) | (None, Some(_)) | (Some(_), Some(_)) => {
+            return Err(DesktopOAuthError::InvalidRequest);
+        }
+    };
+
+    Ok(Parameters { state, outcome })
 }
 
 pub(super) fn success_response() -> String {
