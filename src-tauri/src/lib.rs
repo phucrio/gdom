@@ -1,6 +1,6 @@
 mod application;
 mod commands;
-mod domain;
+pub mod domain;
 mod infrastructure;
 mod runtime;
 

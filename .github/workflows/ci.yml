@@ -21,6 +21,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
       - run: pnpm build
       - run: cargo fmt --check
         working-directory: src-tauri
