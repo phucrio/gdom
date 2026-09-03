@@ -18,6 +18,10 @@ fn query(url: &str) -> HashMap<String, String> {
 }
 
 async fn send_callback(redirect_uri: &str, query: &str) -> String {
+    send_callback_target(redirect_uri, &format!("/?{query}")).await
+}
+
+async fn send_callback_target(redirect_uri: &str, target: &str) -> String {
     let redirect = reqwest::Url::parse(redirect_uri).expect("redirect URI is valid");
     let address = format!(
         "{}:{}",
@@ -28,7 +32,7 @@ async fn send_callback(redirect_uri: &str, query: &str) -> String {
         .await
         .expect("callback client connects");
     stream
-        .write_all(format!("GET /?{query} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes())
+        .write_all(format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes())
         .await
         .expect("callback request writes");
 
@@ -311,6 +315,38 @@ async fn callback_ignores_forged_connection_before_valid_redirect() {
 }
 
 #[tokio::test]
+async fn callback_rejects_non_origin_form_target() {
+    // Given
+    let session = DesktopOAuthSession::start(CLIENT_ID)
+        .await
+        .expect("OAuth session starts");
+    let parameters = query(session.authorization_url());
+    let state = parameters
+        .get("state")
+        .expect("authorization URL contains state");
+    let redirect_uri = session.redirect_uri().to_owned();
+    let invalid_target = format!("@evil/?code=forged&state={state}");
+    let valid_query = format!("code=valid-code&state={state}");
+
+    // When
+    let callbacks = async {
+        let invalid_response = send_callback_target(&redirect_uri, &invalid_target).await;
+        let valid_response = send_callback(&redirect_uri, &valid_query).await;
+        (invalid_response, valid_response)
+    };
+    let (grant, (invalid_response, valid_response)) =
+        tokio::join!(session.receive_callback(), callbacks);
+
+    // Then
+    assert_eq!(
+        grant.expect("valid callback succeeds").authorization_code(),
+        "valid-code"
+    );
+    assert!(invalid_response.starts_with("HTTP/1.1 400 Bad Request"));
+    assert!(valid_response.starts_with("HTTP/1.1 200 OK"));
+}
+
+#[tokio::test]
 async fn callback_drops_stalled_connection_before_valid_redirect() {
     // Given
     let session = DesktopOAuthSession::start_for_test_with_timeouts(
@@ -484,22 +520,10 @@ async fn callback_preserves_grant_when_response_write_crosses_session_deadline()
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(9)).await;
         send_request.send(()).expect("callback request releases");
-        let mut response_started = false;
-        for _ in 0..1_000 {
-            match response_write_started.try_recv() {
-                Ok(()) => {
-                    response_started = true;
-                    break;
-                }
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                    tokio::task::yield_now().await;
-                }
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                    panic!("response write notification disconnected")
-                }
-            }
-        }
-        assert!(response_started, "response write starts");
+        tokio::time::timeout(Duration::from_secs(1), response_write_started.recv())
+            .await
+            .expect("response write notification arrives before deadline")
+            .expect("response write notification channel stays open");
         tokio::time::advance(Duration::from_secs(2)).await;
     };
     let (grant, response, ()) = tokio::join!(session.receive_callback(), browser, clock);

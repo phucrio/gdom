@@ -52,6 +52,9 @@ pub(super) fn parse(request: &str) -> Result<Parameters, DesktopOAuthError> {
     if request_line.next() != Some("HTTP/1.1") || request_line.next().is_some() {
         return Err(DesktopOAuthError::InvalidRequest);
     }
+    if !target.starts_with('/') {
+        return Err(DesktopOAuthError::InvalidRequest);
+    }
 
     let url = Url::parse(&format!("http://127.0.0.1{target}"))
         .map_err(|_| DesktopOAuthError::InvalidRequest)?;
