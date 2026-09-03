@@ -2,7 +2,7 @@
 name = "gdom"
 version = "0.1.0"
 description = "Google Drive Owner Migrator"
-authors = ["GDOM contributors"]
+authors = ["phucrio"]
 license = "GPL-3.0-or-later"
 edition = "2024"
 
