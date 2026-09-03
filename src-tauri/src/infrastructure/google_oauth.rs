@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,16 +6,13 @@ use oauth2::basic::BasicClient;
 use oauth2::{
     AuthUrl, ClientId, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
 };
-use tokio::io::AsyncWriteExt;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 #[cfg(test)]
 use tokio::sync::mpsc;
-use tokio::task::{AbortHandle, JoinSet};
-#[cfg(test)]
-use tokio::time::sleep;
 use tokio::time::timeout;
 
-use super::oauth_callback::{self, CallbackOutcome};
+use super::oauth_connection::{CallbackContext, TerminalCallback};
+use super::oauth_listener;
 
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
@@ -168,205 +164,8 @@ impl DesktopOAuthSession {
             #[cfg(test)]
             response_write_started: self.response_write_started,
         });
-        let mut connections = JoinSet::new();
-        let mut active: VecDeque<(u64, AbortHandle)> = VecDeque::new();
-        let mut next_connection_id = 0_u64;
-
-        loop {
-            let completed = tokio::select! {
-                biased;
-                completed = connections.join_next(), if !connections.is_empty() => completed,
-                accepted = self.listener.accept() => {
-                    let (stream, _) = accepted
-                        .map_err(|_| DesktopOAuthError::ListenerUnavailable)?;
-                    if active.len() == MAX_IN_FLIGHT_CALLBACKS {
-                        let (oldest_id, oldest) = active
-                            .pop_front()
-                            .ok_or(DesktopOAuthError::ListenerUnavailable)?;
-                        oldest.abort();
-                        loop {
-                            match connections.join_next().await {
-                                Some(Ok((connection_id, outcome))) => {
-                                    remove_active(&mut active, connection_id);
-                                    if connection_id == oldest_id {
-                                        if let ConnectionOutcome::Terminal(callback) = outcome {
-                                            return Ok(callback);
-                                        }
-                                        break;
-                                    }
-                                    if let ConnectionOutcome::Terminal(callback) = outcome {
-                                        return Ok(callback);
-                                    }
-                                }
-                                Some(Err(_)) => break,
-                                None => return Err(DesktopOAuthError::ListenerUnavailable),
-                            }
-                        }
-                    }
-                    let connection_id = next_connection_id;
-                    next_connection_id = next_connection_id.wrapping_add(1);
-                    let handler_context = Arc::clone(&context);
-                    let abort_handle = connections.spawn(async move {
-                        (connection_id, handle_connection(stream, handler_context).await)
-                    });
-                    active.push_back((connection_id, abort_handle));
-                    continue;
-                }
-            };
-
-            match completed {
-                Some(Ok((connection_id, outcome))) => {
-                    remove_active(&mut active, connection_id);
-                    match outcome {
-                        ConnectionOutcome::Ignored => {}
-                        ConnectionOutcome::Terminal(callback) => return Ok(callback),
-                    }
-                }
-                Some(Err(_)) | None => return Err(DesktopOAuthError::ListenerUnavailable),
-            }
-        }
+        oauth_listener::receive(self.listener, context).await
     }
-}
-
-fn remove_active(active: &mut VecDeque<(u64, AbortHandle)>, connection_id: u64) {
-    if let Some(index) = active
-        .iter()
-        .position(|(active_id, _)| *active_id == connection_id)
-    {
-        active.remove(index);
-    }
-}
-
-struct CallbackContext {
-    connection_timeout: Duration,
-    expected_state: CsrfToken,
-    pkce_verifier: PkceCodeVerifier,
-    redirect_uri: String,
-    #[cfg(test)]
-    fail_response_write: bool,
-    #[cfg(test)]
-    handler_started: Option<mpsc::UnboundedSender<()>>,
-    #[cfg(test)]
-    response_write_delay: Duration,
-    #[cfg(test)]
-    response_write_started: Option<mpsc::UnboundedSender<()>>,
-}
-
-enum ConnectionOutcome {
-    Ignored,
-    Terminal(TerminalCallback),
-}
-
-struct TerminalCallback {
-    stream: TcpStream,
-    response: String,
-    context: Arc<CallbackContext>,
-    outcome: Result<OAuthGrant, DesktopOAuthError>,
-}
-
-impl TerminalCallback {
-    async fn respond(self) -> Result<OAuthGrant, DesktopOAuthError> {
-        let Self {
-            mut stream,
-            response,
-            context,
-            outcome,
-        } = self;
-        preserve_outcome_after_write(outcome, write_response(&mut stream, &response, &context))
-            .await
-    }
-}
-
-async fn handle_connection(
-    mut stream: TcpStream,
-    context: Arc<CallbackContext>,
-) -> ConnectionOutcome {
-    #[cfg(test)]
-    if let Some(handler_started) = &context.handler_started {
-        let _ = handler_started.send(());
-    }
-
-    let result = match timeout(context.connection_timeout, async {
-        let request = oauth_callback::read_request(&mut stream).await?;
-        let parameters = oauth_callback::parse(&request)?;
-        let received_state = CsrfToken::new(parameters.state);
-        if received_state != context.expected_state {
-            return Err(DesktopOAuthError::StateMismatch);
-        }
-
-        match parameters.outcome {
-            CallbackOutcome::AuthorizationCode(authorization_code) => Ok(OAuthGrant {
-                authorization_code,
-                pkce_verifier: context.pkce_verifier.secret().to_owned(),
-                redirect_uri: context.redirect_uri.clone(),
-            }),
-            CallbackOutcome::ProviderError(error) if error == "access_denied" => {
-                Err(DesktopOAuthError::AccessDenied)
-            }
-            CallbackOutcome::ProviderError(_) => Err(DesktopOAuthError::ProviderFailure),
-        }
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => Err(DesktopOAuthError::InvalidRequest),
-    };
-    let response = match &result {
-        Ok(_) => oauth_callback::success_response(),
-        Err(_) => oauth_callback::error_response(),
-    };
-    if matches!(
-        &result,
-        Err(DesktopOAuthError::InvalidRequest | DesktopOAuthError::StateMismatch)
-    ) {
-        let _ = write_response(&mut stream, &response, &context).await;
-        return ConnectionOutcome::Ignored;
-    }
-    ConnectionOutcome::Terminal(TerminalCallback {
-        stream,
-        response,
-        context,
-        outcome: result,
-    })
-}
-
-async fn write_response(
-    stream: &mut TcpStream,
-    response: &str,
-    context: &CallbackContext,
-) -> Result<(), ()> {
-    #[cfg(test)]
-    if let Some(response_write_started) = &context.response_write_started {
-        let _ = response_write_started.send(());
-    }
-    let fail_response_write = {
-        #[cfg(test)]
-        {
-            context.fail_response_write
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
-    };
-    timeout(context.connection_timeout, async {
-        #[cfg(test)]
-        sleep(context.response_write_delay).await;
-        if fail_response_write {
-            return Err(());
-        }
-        stream.write_all(response.as_bytes()).await.map_err(|_| ())
-    })
-    .await
-    .map_err(|_| ())?
-}
-
-async fn preserve_outcome_after_write<T, E>(
-    outcome: Result<T, E>,
-    response_write: impl std::future::Future,
-) -> Result<T, E> {
-    let _ = response_write.await;
-    outcome
 }
 
 pub struct OAuthGrant {
@@ -376,6 +175,18 @@ pub struct OAuthGrant {
 }
 
 impl OAuthGrant {
+    pub(super) fn new(
+        authorization_code: String,
+        pkce_verifier: String,
+        redirect_uri: String,
+    ) -> Self {
+        Self {
+            authorization_code,
+            pkce_verifier,
+            redirect_uri,
+        }
+    }
+
     pub fn authorization_code(&self) -> &str {
         &self.authorization_code
     }
