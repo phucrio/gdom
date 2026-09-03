@@ -347,7 +347,7 @@ async fn callback_rejects_non_origin_form_target() {
 }
 
 #[tokio::test]
-async fn callback_drops_stalled_connection_before_valid_redirect() {
+async fn callback_replaces_oldest_stalled_handler_for_valid_redirect() {
     // Given
     let session = DesktopOAuthSession::start_for_test_with_timeouts(
         CLIENT_ID,
@@ -391,42 +391,6 @@ async fn callback_drops_stalled_connection_before_valid_redirect() {
         })
         .await
         .expect("all stalled callback handlers start");
-        let overload_rejected = tokio::time::timeout(Duration::from_millis(200), async {
-            let mut stream = TcpStream::connect(&address)
-                .await
-                .expect("excess callback connects");
-            let write_result = stream.write_all(b"GET / HTTP/1.1\r\n").await;
-            let mut response = [0];
-            match stream.read(&mut response).await {
-                Ok(0) => {}
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::BrokenPipe
-                            | std::io::ErrorKind::ConnectionAborted
-                            | std::io::ErrorKind::ConnectionReset
-                    ) => {}
-                read_result => {
-                    panic!("excess callback remained open: {read_result:?}, {write_result:?}")
-                }
-            }
-        })
-        .await;
-        assert!(
-            overload_rejected.is_ok(),
-            "excess callback must be closed without waiting for a handler"
-        );
-        let mut released = stalled.pop().expect("a stalled callback is available");
-        released
-            .write_all(b"GET /?code=forged&state=wrong HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-            .await
-            .expect("stalled callback completes its request");
-        let mut rejected_response = String::new();
-        released
-            .read_to_string(&mut rejected_response)
-            .await
-            .expect("completed stalled callback reads its rejection");
-        assert!(rejected_response.starts_with("HTTP/1.1 400 Bad Request"));
         let valid_response = send_callback(&redirect_uri, &valid_query).await;
         drop(stalled);
         valid_response

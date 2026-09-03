@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(test)]
 use tokio::sync::mpsc;
-use tokio::task::JoinSet;
+use tokio::task::{AbortHandle, JoinSet};
 #[cfg(test)]
 use tokio::time::sleep;
 use tokio::time::timeout;
@@ -21,6 +22,7 @@ const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/au
 const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
+/// A continuously hostile same-host client can still deny OAuth by racing every replacement.
 pub(super) const MAX_IN_FLIGHT_CALLBACKS: usize = 16;
 
 pub struct DesktopOAuthSession {
@@ -167,6 +169,8 @@ impl DesktopOAuthSession {
             response_write_started: self.response_write_started,
         });
         let mut connections = JoinSet::new();
+        let mut active: VecDeque<(u64, AbortHandle)> = VecDeque::new();
+        let mut next_connection_id = 0_u64;
 
         loop {
             let completed = tokio::select! {
@@ -175,22 +179,61 @@ impl DesktopOAuthSession {
                 accepted = self.listener.accept() => {
                     let (stream, _) = accepted
                         .map_err(|_| DesktopOAuthError::ListenerUnavailable)?;
-                    if connections.len() < MAX_IN_FLIGHT_CALLBACKS {
-                        connections.spawn(handle_connection(
-                            stream,
-                            Arc::clone(&context),
-                        ));
+                    if active.len() == MAX_IN_FLIGHT_CALLBACKS {
+                        let (oldest_id, oldest) = active
+                            .pop_front()
+                            .ok_or(DesktopOAuthError::ListenerUnavailable)?;
+                        oldest.abort();
+                        loop {
+                            match connections.join_next().await {
+                                Some(Ok((connection_id, outcome))) => {
+                                    remove_active(&mut active, connection_id);
+                                    if connection_id == oldest_id {
+                                        if let ConnectionOutcome::Terminal(callback) = outcome {
+                                            return Ok(callback);
+                                        }
+                                        break;
+                                    }
+                                    if let ConnectionOutcome::Terminal(callback) = outcome {
+                                        return Ok(callback);
+                                    }
+                                }
+                                Some(Err(_)) => break,
+                                None => return Err(DesktopOAuthError::ListenerUnavailable),
+                            }
+                        }
                     }
+                    let connection_id = next_connection_id;
+                    next_connection_id = next_connection_id.wrapping_add(1);
+                    let handler_context = Arc::clone(&context);
+                    let abort_handle = connections.spawn(async move {
+                        (connection_id, handle_connection(stream, handler_context).await)
+                    });
+                    active.push_back((connection_id, abort_handle));
                     continue;
                 }
             };
 
             match completed {
-                Some(Ok(ConnectionOutcome::Ignored)) => {}
-                Some(Ok(ConnectionOutcome::Terminal(callback))) => return Ok(callback),
+                Some(Ok((connection_id, outcome))) => {
+                    remove_active(&mut active, connection_id);
+                    match outcome {
+                        ConnectionOutcome::Ignored => {}
+                        ConnectionOutcome::Terminal(callback) => return Ok(callback),
+                    }
+                }
                 Some(Err(_)) | None => return Err(DesktopOAuthError::ListenerUnavailable),
             }
         }
+    }
+}
+
+fn remove_active(active: &mut VecDeque<(u64, AbortHandle)>, connection_id: u64) {
+    if let Some(index) = active
+        .iter()
+        .position(|(active_id, _)| *active_id == connection_id)
+    {
+        active.remove(index);
     }
 }
 
