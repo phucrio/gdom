@@ -15,6 +15,7 @@ dist-ssr
 # Local planning and agent review artifacts
 /docs/PLAN.md
 /.omo/
+.omc/
 /.lavish/
 
 # Editor directories and files
