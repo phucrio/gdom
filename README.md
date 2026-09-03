@@ -10,7 +10,7 @@ The application is currently an initialized Tauri 2 + React foundation with a Ru
 - A job has exactly one distinct source and target; the pair becomes immutable when scanning starts.
 - Only one job may issue ownership mutations at a time.
 - Consumer-account transfers require a source `pendingOwner` request and a target acceptance; every request must use the account-specific OAuth token.
-- OAuth tokens remain in the Rust backend; refresh tokens will live in the OS keychain.
+- OAuth tokens remain in the Rust backend; MVP refresh tokens will live in Windows Credential Manager.
 - Live Drive mutation requires explicit user confirmation. Tests will use mock HTTP by default.
 
 ## Architecture decisions
@@ -32,7 +32,7 @@ For frontend-only work:
 pnpm dev
 ```
 
-Windows 11 is the supported runtime. The repository enforces LF for all tracked text files, so do not override `.gitattributes` with machine-specific line-ending conversions.
+Windows 11 is the supported runtime. Linux and macOS secure-store adapters are deferred beyond the MVP. The repository enforces LF for all tracked text files, so do not override `.gitattributes` with machine-specific line-ending conversions.
 
 ## License
 

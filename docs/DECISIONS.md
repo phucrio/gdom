@@ -4,6 +4,8 @@
 
 GDOM starts as a Tauri 2 desktop app with React/TypeScript in the webview and Rust in the trusted backend. It runs on Windows 11 and serves only the owner's personal Gmail accounts. Google Workspace, Shared Drives, service accounts, content copying, telemetry, and automatic rollback are out of scope.
 
+The MVP stores refresh tokens only in Windows Credential Manager. Linux remains a development and test host; Linux and macOS secure-store adapters are deferred until those platforms become supported runtimes.
+
 Tracked text uses LF through `.gitattributes` and `.editorconfig`, independent of each developer's Windows or Linux Git configuration. Windows batch files are the sole CRLF exception. CI runs the validation lane on Windows.
 
 Development and production use separate Google Cloud projects. The personal production app will use an External OAuth consent screen in the In production state. OAuth authorization always uses the system browser and loopback callback, never the Tauri WebView.
