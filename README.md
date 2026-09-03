@@ -11,6 +11,7 @@ The application is currently an initialized Tauri 2 + React foundation with a Ru
 - Only one job may issue ownership mutations at a time.
 - Consumer-account transfers require a source `pendingOwner` request and a target acceptance; every request must use the account-specific OAuth token.
 - OAuth tokens remain in the Rust backend; MVP refresh tokens will live in Windows Credential Manager.
+- OAuth requests full Drive access because GDOM must list and transfer arbitrary existing items; the consent flow must justify this immediately before opening the system browser.
 - Live Drive mutation requires explicit user confirmation. Tests will use mock HTTP by default.
 
 ## Architecture decisions

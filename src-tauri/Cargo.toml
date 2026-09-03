@@ -19,11 +19,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+oauth2 = { version = "5.0.0", default-features = false, features = ["timing-resistant-secret-traits"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled"] }
 tauri = { version = "2", features = [] }
-tokio = { version = "1.53.1", features = ["macros", "rt", "time"] }
+tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "rt", "time"] }
+url = "2.5.8"
 
 [dev-dependencies]
 keyring-core = "1.0.0"
