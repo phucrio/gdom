@@ -85,7 +85,7 @@ impl DesktopOAuthSession {
             .authorize_url(CsrfToken::new_random)
             .add_scope(Scope::new(DRIVE_SCOPE.to_owned()))
             .add_extra_param("access_type", "offline")
-            .add_extra_param("prompt", "select_account")
+            .add_extra_param("prompt", "consent select_account")
             .set_pkce_challenge(pkce_challenge)
             .url();
 

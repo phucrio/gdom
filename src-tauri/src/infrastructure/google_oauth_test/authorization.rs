@@ -46,7 +46,7 @@ async fn authorization_uses_loopback_pkce_and_full_drive_scope() {
     );
     assert_eq!(
         parameters.get("prompt").map(String::as_str),
-        Some("select_account")
+        Some("consent select_account")
     );
     assert_eq!(
         parameters.get("redirect_uri").map(String::as_str),
