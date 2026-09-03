@@ -6,6 +6,8 @@ Status: draft for legal and release review. Publish a stable URL and add it to t
 
 GDOM accesses the Google Drive account identity, selected root and descendant metadata, permissions, and ownership state needed to scan and transfer ownership. It does not download, upload, copy, or analyze file content.
 
+GDOM requests the full Google Drive scope so it can list and transfer arbitrary existing items selected for migration. The narrower per-file scope cannot provide the complete Drive listing required by this workflow.
+
 ## Local storage
 
 Refresh tokens are stored only in the operating-system keychain. Account registry records, job checkpoints, and the minimum Drive metadata required to resume a job are stored in the local SQLite database on the user's device.

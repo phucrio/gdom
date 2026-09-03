@@ -10,6 +10,8 @@ Tracked text uses LF through `.gitattributes` and `.editorconfig`, independent o
 
 Development and production use separate Google Cloud projects. The personal production app will use an External OAuth consent screen in the In production state. OAuth authorization always uses the system browser and loopback callback, never the Tauri WebView.
 
+The loopback callback listener admits at most 16 in-flight handlers. When all slots are occupied, it aborts and reaps the oldest incomplete handler before admitting the newest connection so a legitimate browser redirect is not silently dropped. A continuously hostile same-host process can still deny OAuth by racing every replacement; this is an unavoidable limit of a local loopback listener.
+
 ## Ownership contract
 
 For consumer Google accounts, source and target must complete a two-step transfer:
@@ -35,7 +37,7 @@ Feature files are added only when their behavior is implemented; the scaffold do
 
 ## Scope and privacy gate
 
-Wave 0 will evaluate `drive.file` against the required root selection, recursive scan, and ownership-transfer flow. The app does not request full `drive` until the spike documents why it is necessary. If requested, the consent flow gives an in-app justification immediately before authorization.
+GDOM requests the restricted full `drive` scope because its core workflow must list and transfer arbitrary existing items in the user's Drive. The narrower `drive.file` scope was rejected because it is limited to files created by, opened with, or explicitly shared with the app, which cannot provide a complete migration list. The consent flow gives an in-app justification immediately before authorization.
 
 Drive metadata, file content, credentials, and derived data never go to analytics or AI. A published Privacy Policy and visible Limited Use disclosure are production-release blockers. The local-data deletion flow removes selected keychain credentials and SQLite account/job metadata after confirmation; it does not revoke the Google grant unless separately requested.
 
