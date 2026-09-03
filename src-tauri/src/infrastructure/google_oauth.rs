@@ -17,7 +17,7 @@ const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/au
 const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
-const MAX_IN_FLIGHT_CALLBACKS: usize = 16;
+pub(super) const MAX_IN_FLIGHT_CALLBACKS: usize = 16;
 
 pub struct DesktopOAuthSession {
     listener: TcpListener,
@@ -27,19 +27,13 @@ pub struct DesktopOAuthSession {
     pkce_verifier: PkceCodeVerifier,
     callback_timeout: Duration,
     connection_timeout: Duration,
+    #[cfg(test)]
+    fail_response_write: bool,
 }
 
 impl DesktopOAuthSession {
     pub async fn start(client_id: &str) -> Result<Self, DesktopOAuthError> {
         Self::bind(client_id, CALLBACK_TIMEOUT, CONNECTION_TIMEOUT).await
-    }
-
-    #[cfg(test)]
-    pub(super) async fn start_for_test(
-        client_id: &str,
-        callback_timeout: Duration,
-    ) -> Result<Self, DesktopOAuthError> {
-        Self::bind(client_id, callback_timeout, CONNECTION_TIMEOUT).await
     }
 
     #[cfg(test)]
@@ -95,6 +89,8 @@ impl DesktopOAuthSession {
             pkce_verifier,
             callback_timeout,
             connection_timeout,
+            #[cfg(test)]
+            fail_response_write: false,
         })
     }
 
@@ -106,6 +102,12 @@ impl DesktopOAuthSession {
         &self.redirect_uri
     }
 
+    #[cfg(test)]
+    pub(super) fn fail_response_write_for_test(mut self) -> Self {
+        self.fail_response_write = true;
+        self
+    }
+
     pub async fn receive_callback(self) -> Result<OAuthGrant, DesktopOAuthError> {
         let callback_timeout = self.callback_timeout;
         match timeout(callback_timeout, self.receive()).await {
@@ -115,30 +117,30 @@ impl DesktopOAuthSession {
     }
 
     async fn receive(self) -> Result<OAuthGrant, DesktopOAuthError> {
-        let expected_state = Arc::new(self.expected_state);
-        let pkce_verifier = Arc::new(self.pkce_verifier);
-        let redirect_uri: Arc<str> = self.redirect_uri.into();
+        let context = Arc::new(CallbackContext {
+            connection_timeout: self.connection_timeout,
+            expected_state: self.expected_state,
+            pkce_verifier: self.pkce_verifier,
+            redirect_uri: self.redirect_uri,
+            #[cfg(test)]
+            fail_response_write: self.fail_response_write,
+        });
         let mut connections = JoinSet::new();
 
         loop {
-            let completed = if connections.len() == MAX_IN_FLIGHT_CALLBACKS {
-                connections.join_next().await
-            } else {
-                tokio::select! {
-                    biased;
-                    completed = connections.join_next(), if !connections.is_empty() => completed,
-                    accepted = self.listener.accept() => {
-                        let (stream, _) = accepted
-                            .map_err(|_| DesktopOAuthError::ListenerUnavailable)?;
+            let completed = tokio::select! {
+                biased;
+                completed = connections.join_next(), if !connections.is_empty() => completed,
+                accepted = self.listener.accept() => {
+                    let (stream, _) = accepted
+                        .map_err(|_| DesktopOAuthError::ListenerUnavailable)?;
+                    if connections.len() < MAX_IN_FLIGHT_CALLBACKS {
                         connections.spawn(handle_connection(
                             stream,
-                            self.connection_timeout,
-                            Arc::clone(&expected_state),
-                            Arc::clone(&pkce_verifier),
-                            Arc::clone(&redirect_uri),
+                            Arc::clone(&context),
                         ));
-                        continue;
                     }
+                    continue;
                 }
             };
 
@@ -154,26 +156,32 @@ impl DesktopOAuthSession {
     }
 }
 
+struct CallbackContext {
+    connection_timeout: Duration,
+    expected_state: CsrfToken,
+    pkce_verifier: PkceCodeVerifier,
+    redirect_uri: String,
+    #[cfg(test)]
+    fail_response_write: bool,
+}
+
 async fn handle_connection(
     mut stream: TcpStream,
-    connection_timeout: Duration,
-    expected_state: Arc<CsrfToken>,
-    pkce_verifier: Arc<PkceCodeVerifier>,
-    redirect_uri: Arc<str>,
+    context: Arc<CallbackContext>,
 ) -> Result<OAuthGrant, DesktopOAuthError> {
-    let result = match timeout(connection_timeout, async {
+    let result = match timeout(context.connection_timeout, async {
         let request = oauth_callback::read_request(&mut stream).await?;
         let parameters = oauth_callback::parse(&request)?;
         let received_state = CsrfToken::new(parameters.state);
-        if &received_state != expected_state.as_ref() {
+        if received_state != context.expected_state {
             return Err(DesktopOAuthError::StateMismatch);
         }
 
         match parameters.outcome {
             CallbackOutcome::AuthorizationCode(authorization_code) => Ok(OAuthGrant {
                 authorization_code,
-                pkce_verifier: pkce_verifier.secret().to_owned(),
-                redirect_uri: redirect_uri.to_string(),
+                pkce_verifier: context.pkce_verifier.secret().to_owned(),
+                redirect_uri: context.redirect_uri.clone(),
             }),
             CallbackOutcome::ProviderError(error) if error == "access_denied" => {
                 Err(DesktopOAuthError::AccessDenied)
@@ -190,13 +198,28 @@ async fn handle_connection(
         Ok(_) => oauth_callback::success_response(),
         Err(_) => oauth_callback::error_response(),
     };
+    #[cfg(not(test))]
     drop(
         timeout(
-            connection_timeout,
+            context.connection_timeout,
             stream.write_all(response.as_bytes()),
         )
         .await,
     );
+    #[cfg(test)]
+    match if context.fail_response_write {
+        Err(())
+    } else {
+        timeout(
+            context.connection_timeout,
+            stream.write_all(response.as_bytes()),
+        )
+        .await
+        .map_err(|_| ())
+        .and_then(|result| result.map_err(|_| ()))
+    } {
+        Ok(()) | Err(()) => {}
+    }
     result
 }
 
