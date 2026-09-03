@@ -1,117 +1,160 @@
+use std::num::ParseIntError;
 use std::path::Path;
 use std::{error::Error, fmt};
 
-use rusqlite::{Connection, OptionalExtension as _, Row, params, types::Type};
+use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
 use crate::domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId};
 
+type StoredAccount = (String, String, String, String);
+
 pub struct SqliteAccountStore {
-    connection: Connection,
+    pool: SqlitePool,
 }
 
 #[derive(Debug)]
-pub struct AccountStoreError(rusqlite::Error);
+pub enum AccountStoreError {
+    Database(sqlx::Error),
+    InvalidAccountId(ParseIntError),
+}
 
 impl fmt::Display for AccountStoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "account database operation failed: {}", self.0)
+        match self {
+            Self::Database(error) => {
+                write!(formatter, "account database operation failed: {error}")
+            }
+            Self::InvalidAccountId(error) => {
+                write!(formatter, "stored account ID is invalid: {error}")
+            }
+        }
     }
 }
 
 impl Error for AccountStoreError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&self.0)
+        match self {
+            Self::Database(error) => Some(error),
+            Self::InvalidAccountId(error) => Some(error),
+        }
     }
 }
 
-impl From<rusqlite::Error> for AccountStoreError {
-    fn from(error: rusqlite::Error) -> Self {
-        Self(error)
+impl From<sqlx::Error> for AccountStoreError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Database(error)
+    }
+}
+
+impl From<ParseIntError> for AccountStoreError {
+    fn from(error: ParseIntError) -> Self {
+        Self::InvalidAccountId(error)
     }
 }
 
 impl SqliteAccountStore {
-    pub fn open(path: &Path) -> Result<Self, AccountStoreError> {
-        Self::from_connection(Connection::open(path)?)
+    pub async fn open(path: &Path) -> Result<Self, AccountStoreError> {
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal);
+        Self::from_options(options).await
     }
 
     #[cfg(test)]
-    fn open_in_memory() -> Result<Self, AccountStoreError> {
-        Self::from_connection(Connection::open_in_memory()?)
+    async fn open_in_memory() -> Result<Self, AccountStoreError> {
+        Self::from_options(
+            SqliteConnectOptions::new()
+                .in_memory(true)
+                .foreign_keys(true),
+        )
+        .await
     }
 
-    fn from_connection(connection: Connection) -> Result<Self, AccountStoreError> {
-        connection.execute_batch(include_str!("migrations/001_accounts.sql"))?;
-        Ok(Self { connection })
+    async fn from_options(options: SqliteConnectOptions) -> Result<Self, AccountStoreError> {
+        // ponytail: one connection is enough for the local MVP; raise only if concurrent scans contend.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        sqlx::raw_sql(include_str!("../../migrations/001_accounts.sql"))
+            .execute(&pool)
+            .await?;
+        Ok(Self { pool })
     }
 
-    pub fn connect(
+    pub async fn connect(
         &self,
         account: &ConnectedAccount,
     ) -> Result<ConnectedAccount, AccountStoreError> {
-        Ok(self.connection.query_row(
+        let stored = sqlx::query_as::<_, StoredAccount>(
             "INSERT INTO accounts (id, google_permission_id, email, display_name)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (google_permission_id) DO UPDATE SET
                  email = excluded.email,
                  display_name = excluded.display_name
              RETURNING id, google_permission_id, email, display_name",
-            params![
-                account.id().value().to_string(),
-                account.google_permission_id().as_str(),
-                account.email(),
-                account.display_name(),
-            ],
-            map_account,
-        )?)
+        )
+        .bind(account.id().value().to_string())
+        .bind(account.google_permission_id().as_str())
+        .bind(account.email())
+        .bind(account.display_name())
+        .fetch_one(&self.pool)
+        .await?;
+
+        parse_account(stored)
     }
 
-    pub fn account_count(&self) -> Result<i64, AccountStoreError> {
-        Ok(self
-            .connection
-            .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?)
+    pub async fn account_count(&self) -> Result<i64, AccountStoreError> {
+        Ok(sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+            .fetch_one(&self.pool)
+            .await?)
     }
 
-    pub fn find_by_permission_id(
+    pub async fn find_by_permission_id(
         &self,
         permission_id: &GooglePermissionId,
     ) -> Result<Option<ConnectedAccount>, AccountStoreError> {
-        Ok(self
-            .connection
-            .query_row(
-                "SELECT id, google_permission_id, email, display_name
-                 FROM accounts
-                 WHERE google_permission_id = ?1",
-                [permission_id.as_str()],
-                map_account,
-            )
-            .optional()?)
+        sqlx::query_as::<_, StoredAccount>(
+            "SELECT id, google_permission_id, email, display_name
+             FROM accounts
+             WHERE google_permission_id = ?1",
+        )
+        .bind(permission_id.as_str())
+        .fetch_optional(&self.pool)
+        .await?
+        .map(parse_account)
+        .transpose()
     }
 }
 
-fn map_account(row: &Row<'_>) -> rusqlite::Result<ConnectedAccount> {
-    let raw_id = row.get::<_, String>(0)?;
-    let id = raw_id
-        .parse::<u128>()
-        .map(AccountId::new)
-        .map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(error))
-        })?;
-
+fn parse_account(stored: StoredAccount) -> Result<ConnectedAccount, AccountStoreError> {
     Ok(ConnectedAccount::new(
-        id,
-        GooglePermissionId::new(row.get::<_, String>(1)?),
-        AccountProfile::new(row.get::<_, String>(2)?, row.get::<_, String>(3)?),
+        AccountId::new(stored.0.parse::<u128>()?),
+        GooglePermissionId::new(stored.1),
+        AccountProfile::new(stored.2, stored.3),
     ))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use tokio::time::timeout;
 
     use crate::domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId};
 
     use super::SqliteAccountStore;
+
+    async fn complete<F: Future<Output = ()>>(scenario: F) {
+        timeout(Duration::from_secs(5), scenario)
+            .await
+            .expect("database scenario completes before timeout");
+    }
 
     fn account(id: u128, permission_id: &str, profile: AccountProfile) -> ConnectedAccount {
         ConnectedAccount::new(
@@ -121,98 +164,119 @@ mod tests {
         )
     }
 
-    #[test]
-    fn store_accepts_more_than_two_accounts() {
-        // Given
-        let store = SqliteAccountStore::open_in_memory().expect("in-memory database opens");
+    #[tokio::test]
+    async fn store_accepts_more_than_two_accounts() {
+        complete(async {
+            // Given
+            let store = SqliteAccountStore::open_in_memory()
+                .await
+                .expect("in-memory database opens");
 
-        // When
-        store
-            .connect(&account(
-                1,
-                "permission-a",
-                AccountProfile::new("a@example.com", "Account A"),
-            ))
-            .expect("first account persists");
-        store
-            .connect(&account(
-                2,
-                "permission-b",
-                AccountProfile::new("b@example.com", "Account B"),
-            ))
-            .expect("second account persists");
-        store
-            .connect(&account(
-                3,
-                "permission-c",
-                AccountProfile::new("c@example.com", "Account C"),
-            ))
-            .expect("third account persists");
+            // When
+            for account in [
+                account(
+                    1,
+                    "permission-a",
+                    AccountProfile::new("a@example.com", "Account A"),
+                ),
+                account(
+                    2,
+                    "permission-b",
+                    AccountProfile::new("b@example.com", "Account B"),
+                ),
+                account(
+                    3,
+                    "permission-c",
+                    AccountProfile::new("c@example.com", "Account C"),
+                ),
+            ] {
+                store.connect(&account).await.expect("account persists");
+            }
 
-        // Then
-        assert_eq!(store.account_count().expect("account count loads"), 3);
+            // Then
+            assert_eq!(store.account_count().await.expect("account count loads"), 3);
+        })
+        .await;
     }
 
-    #[test]
-    fn reconnect_preserves_id_and_updates_profile() {
-        // Given
-        let store = SqliteAccountStore::open_in_memory().expect("in-memory database opens");
-        store
-            .connect(&account(
-                1,
-                "permission-a",
-                AccountProfile::new("old@example.com", "Old Name"),
-            ))
-            .expect("original account persists");
-
-        // When
-        let reconnected = store
-            .connect(&account(
-                99,
-                "permission-a",
-                AccountProfile::new("new@example.com", "New Name"),
-            ))
-            .expect("account reconnects");
-
-        // Then
-        assert_eq!(reconnected.id(), AccountId::new(1));
-        assert_eq!(reconnected.email(), "new@example.com");
-        assert_eq!(reconnected.display_name(), "New Name");
-        assert_eq!(store.account_count().expect("account count loads"), 1);
-        assert_eq!(
+    #[tokio::test]
+    async fn reconnect_preserves_id_and_updates_profile() {
+        complete(async {
+            // Given
+            let store = SqliteAccountStore::open_in_memory()
+                .await
+                .expect("in-memory database opens");
             store
-                .find_by_permission_id(&GooglePermissionId::new("permission-a"))
-                .expect("account lookup succeeds"),
-            Some(reconnected)
-        );
+                .connect(&account(
+                    1,
+                    "permission-a",
+                    AccountProfile::new("old@example.com", "Old Name"),
+                ))
+                .await
+                .expect("original account persists");
+
+            // When
+            let reconnected = store
+                .connect(&account(
+                    99,
+                    "permission-a",
+                    AccountProfile::new("new@example.com", "New Name"),
+                ))
+                .await
+                .expect("account reconnects");
+
+            // Then
+            assert_eq!(reconnected.id(), AccountId::new(1));
+            assert_eq!(reconnected.email(), "new@example.com");
+            assert_eq!(reconnected.display_name(), "New Name");
+            assert_eq!(store.account_count().await.expect("account count loads"), 1);
+            assert_eq!(
+                store
+                    .find_by_permission_id(&GooglePermissionId::new("permission-a"))
+                    .await
+                    .expect("account lookup succeeds"),
+                Some(reconnected)
+            );
+        })
+        .await;
     }
 
-    #[test]
-    fn account_survives_database_reopen() {
-        // Given
-        static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
-        let sequence = NEXT_DATABASE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "gdom-account-store-{}-{sequence}.sqlite",
-            std::process::id()
-        ));
-        {
-            let store = SqliteAccountStore::open(&path).expect("database opens");
+    #[tokio::test]
+    async fn account_survives_database_reopen() {
+        complete(async {
+            // Given
+            static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
+            let sequence = NEXT_DATABASE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "gdom-account-store-{}-{sequence}.sqlite",
+                std::process::id()
+            ));
+            let store = SqliteAccountStore::open(&path)
+                .await
+                .expect("database opens");
             store
                 .connect(&account(
                     1,
                     "permission-a",
                     AccountProfile::new("a@example.com", "Account A"),
                 ))
+                .await
                 .expect("account persists");
-        }
+            store.pool.close().await;
 
-        // When
-        let reopened = SqliteAccountStore::open(&path).expect("database reopens");
+            // When
+            let reopened = SqliteAccountStore::open(&path)
+                .await
+                .expect("database reopens");
 
-        // Then
-        assert_eq!(reopened.account_count().expect("account count loads"), 1);
-        drop(reopened);
-        std::fs::remove_file(path).expect("test database is removed");
+            // Then
+            assert_eq!(
+                reopened.account_count().await.expect("account count loads"),
+                1
+            );
+            reopened.pool.close().await;
+            std::fs::remove_file(path).expect("test database is removed");
+        })
+        .await;
     }
 }
