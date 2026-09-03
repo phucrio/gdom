@@ -319,6 +319,7 @@ async fn callback_drops_stalled_connection_before_valid_redirect() {
     )
     .await
     .expect("OAuth session starts");
+    let (session, mut handler_started) = session.notify_handler_started_for_test();
     let parameters = query(session.authorization_url());
     let state = parameters
         .get("state")
@@ -343,17 +344,35 @@ async fn callback_drops_stalled_connection_before_valid_redirect() {
 
     // When
     let callbacks = async {
+        tokio::time::timeout(Duration::from_millis(200), async {
+            for _ in 0..MAX_IN_FLIGHT_CALLBACKS {
+                handler_started
+                    .recv()
+                    .await
+                    .expect("handler notification channel stays open");
+            }
+        })
+        .await
+        .expect("all stalled callback handlers start");
         let overload_rejected = tokio::time::timeout(Duration::from_millis(200), async {
             let mut stream = TcpStream::connect(&address)
                 .await
                 .expect("excess callback connects");
-            drop(
-                stream
-                    .write_all(b"GET /?code=excess&state=wrong HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-                    .await,
-            );
-            let mut response = String::new();
-            drop(stream.read_to_string(&mut response).await);
+            let write_result = stream.write_all(b"GET / HTTP/1.1\r\n").await;
+            let mut response = [0];
+            match stream.read(&mut response).await {
+                Ok(0) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::ConnectionReset
+                    ) => {}
+                read_result => {
+                    panic!("excess callback remained open: {read_result:?}, {write_result:?}")
+                }
+            }
         })
         .await;
         assert!(

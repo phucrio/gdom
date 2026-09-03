@@ -8,6 +8,8 @@ use oauth2::{
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
+#[cfg(test)]
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
@@ -29,6 +31,8 @@ pub struct DesktopOAuthSession {
     connection_timeout: Duration,
     #[cfg(test)]
     fail_response_write: bool,
+    #[cfg(test)]
+    handler_started: Option<mpsc::UnboundedSender<()>>,
 }
 
 impl DesktopOAuthSession {
@@ -91,6 +95,8 @@ impl DesktopOAuthSession {
             connection_timeout,
             #[cfg(test)]
             fail_response_write: false,
+            #[cfg(test)]
+            handler_started: None,
         })
     }
 
@@ -106,6 +112,13 @@ impl DesktopOAuthSession {
     pub(super) fn fail_response_write_for_test(mut self) -> Self {
         self.fail_response_write = true;
         self
+    }
+
+    #[cfg(test)]
+    pub(super) fn notify_handler_started_for_test(mut self) -> (Self, mpsc::UnboundedReceiver<()>) {
+        let (handler_started, receiver) = mpsc::unbounded_channel();
+        self.handler_started = Some(handler_started);
+        (self, receiver)
     }
 
     pub async fn receive_callback(self) -> Result<OAuthGrant, DesktopOAuthError> {
@@ -124,6 +137,8 @@ impl DesktopOAuthSession {
             redirect_uri: self.redirect_uri,
             #[cfg(test)]
             fail_response_write: self.fail_response_write,
+            #[cfg(test)]
+            handler_started: self.handler_started,
         });
         let mut connections = JoinSet::new();
 
@@ -163,12 +178,19 @@ struct CallbackContext {
     redirect_uri: String,
     #[cfg(test)]
     fail_response_write: bool,
+    #[cfg(test)]
+    handler_started: Option<mpsc::UnboundedSender<()>>,
 }
 
 async fn handle_connection(
     mut stream: TcpStream,
     context: Arc<CallbackContext>,
 ) -> Result<OAuthGrant, DesktopOAuthError> {
+    #[cfg(test)]
+    if let Some(handler_started) = &context.handler_started {
+        let _ = handler_started.send(());
+    }
+
     let result = match timeout(context.connection_timeout, async {
         let request = oauth_callback::read_request(&mut stream).await?;
         let parameters = oauth_callback::parse(&request)?;
@@ -198,18 +220,20 @@ async fn handle_connection(
         Ok(_) => oauth_callback::success_response(),
         Err(_) => oauth_callback::error_response(),
     };
-    #[cfg(not(test))]
-    drop(
-        timeout(
-            context.connection_timeout,
-            stream.write_all(response.as_bytes()),
-        )
-        .await,
-    );
-    #[cfg(test)]
-    match if context.fail_response_write {
-        Err(())
-    } else {
+    let fail_response_write = {
+        #[cfg(test)]
+        {
+            context.fail_response_write
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    };
+    let response_write = async {
+        if fail_response_write {
+            return Err(());
+        }
         timeout(
             context.connection_timeout,
             stream.write_all(response.as_bytes()),
@@ -217,10 +241,16 @@ async fn handle_connection(
         .await
         .map_err(|_| ())
         .and_then(|result| result.map_err(|_| ()))
-    } {
-        Ok(()) | Err(()) => {}
-    }
-    result
+    };
+    preserve_outcome_after_write(result, response_write).await
+}
+
+async fn preserve_outcome_after_write<T, E>(
+    outcome: Result<T, E>,
+    response_write: impl std::future::Future,
+) -> Result<T, E> {
+    let _ = response_write.await;
+    outcome
 }
 
 pub struct OAuthGrant {
