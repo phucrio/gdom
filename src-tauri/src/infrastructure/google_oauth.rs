@@ -11,6 +11,8 @@ use tokio::net::{TcpListener, TcpStream};
 #[cfg(test)]
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+#[cfg(test)]
+use tokio::time::sleep;
 use tokio::time::timeout;
 
 use super::oauth_callback::{self, CallbackOutcome};
@@ -33,6 +35,10 @@ pub struct DesktopOAuthSession {
     fail_response_write: bool,
     #[cfg(test)]
     handler_started: Option<mpsc::UnboundedSender<()>>,
+    #[cfg(test)]
+    response_write_delay: Duration,
+    #[cfg(test)]
+    response_write_started: Option<mpsc::UnboundedSender<()>>,
 }
 
 impl DesktopOAuthSession {
@@ -97,6 +103,10 @@ impl DesktopOAuthSession {
             fail_response_write: false,
             #[cfg(test)]
             handler_started: None,
+            #[cfg(test)]
+            response_write_delay: Duration::ZERO,
+            #[cfg(test)]
+            response_write_started: None,
         })
     }
 
@@ -121,15 +131,27 @@ impl DesktopOAuthSession {
         (self, receiver)
     }
 
+    #[cfg(test)]
+    pub(super) fn delay_response_write_for_test(
+        mut self,
+        delay: Duration,
+    ) -> (Self, mpsc::UnboundedReceiver<()>) {
+        let (response_write_started, receiver) = mpsc::unbounded_channel();
+        self.response_write_delay = delay;
+        self.response_write_started = Some(response_write_started);
+        (self, receiver)
+    }
+
     pub async fn receive_callback(self) -> Result<OAuthGrant, DesktopOAuthError> {
         let callback_timeout = self.callback_timeout;
         match timeout(callback_timeout, self.receive()).await {
-            Ok(result) => result,
+            Ok(Ok(callback)) => callback.respond().await,
+            Ok(Err(error)) => Err(error),
             Err(_) => Err(DesktopOAuthError::Timeout),
         }
     }
 
-    async fn receive(self) -> Result<OAuthGrant, DesktopOAuthError> {
+    async fn receive(self) -> Result<TerminalCallback, DesktopOAuthError> {
         let context = Arc::new(CallbackContext {
             connection_timeout: self.connection_timeout,
             expected_state: self.expected_state,
@@ -139,6 +161,10 @@ impl DesktopOAuthSession {
             fail_response_write: self.fail_response_write,
             #[cfg(test)]
             handler_started: self.handler_started,
+            #[cfg(test)]
+            response_write_delay: self.response_write_delay,
+            #[cfg(test)]
+            response_write_started: self.response_write_started,
         });
         let mut connections = JoinSet::new();
 
@@ -159,13 +185,10 @@ impl DesktopOAuthSession {
                 }
             };
 
-            let result = match completed {
-                Some(Ok(result)) => result,
+            match completed {
+                Some(Ok(ConnectionOutcome::Ignored)) => {}
+                Some(Ok(ConnectionOutcome::Terminal(callback))) => return Ok(callback),
                 Some(Err(_)) | None => return Err(DesktopOAuthError::ListenerUnavailable),
-            };
-            match result {
-                Err(DesktopOAuthError::InvalidRequest | DesktopOAuthError::StateMismatch) => {}
-                result => return result,
             }
         }
     }
@@ -180,12 +203,41 @@ struct CallbackContext {
     fail_response_write: bool,
     #[cfg(test)]
     handler_started: Option<mpsc::UnboundedSender<()>>,
+    #[cfg(test)]
+    response_write_delay: Duration,
+    #[cfg(test)]
+    response_write_started: Option<mpsc::UnboundedSender<()>>,
+}
+
+enum ConnectionOutcome {
+    Ignored,
+    Terminal(TerminalCallback),
+}
+
+struct TerminalCallback {
+    stream: TcpStream,
+    response: String,
+    context: Arc<CallbackContext>,
+    outcome: Result<OAuthGrant, DesktopOAuthError>,
+}
+
+impl TerminalCallback {
+    async fn respond(self) -> Result<OAuthGrant, DesktopOAuthError> {
+        let Self {
+            mut stream,
+            response,
+            context,
+            outcome,
+        } = self;
+        preserve_outcome_after_write(outcome, write_response(&mut stream, &response, &context))
+            .await
+    }
 }
 
 async fn handle_connection(
     mut stream: TcpStream,
     context: Arc<CallbackContext>,
-) -> Result<OAuthGrant, DesktopOAuthError> {
+) -> ConnectionOutcome {
     #[cfg(test)]
     if let Some(handler_started) = &context.handler_started {
         let _ = handler_started.send(());
@@ -220,6 +272,30 @@ async fn handle_connection(
         Ok(_) => oauth_callback::success_response(),
         Err(_) => oauth_callback::error_response(),
     };
+    if matches!(
+        &result,
+        Err(DesktopOAuthError::InvalidRequest | DesktopOAuthError::StateMismatch)
+    ) {
+        let _ = write_response(&mut stream, &response, &context).await;
+        return ConnectionOutcome::Ignored;
+    }
+    ConnectionOutcome::Terminal(TerminalCallback {
+        stream,
+        response,
+        context,
+        outcome: result,
+    })
+}
+
+async fn write_response(
+    stream: &mut TcpStream,
+    response: &str,
+    context: &CallbackContext,
+) -> Result<(), ()> {
+    #[cfg(test)]
+    if let Some(response_write_started) = &context.response_write_started {
+        let _ = response_write_started.send(());
+    }
     let fail_response_write = {
         #[cfg(test)]
         {
@@ -230,19 +306,16 @@ async fn handle_connection(
             false
         }
     };
-    let response_write = async {
+    timeout(context.connection_timeout, async {
+        #[cfg(test)]
+        sleep(context.response_write_delay).await;
         if fail_response_write {
             return Err(());
         }
-        timeout(
-            context.connection_timeout,
-            stream.write_all(response.as_bytes()),
-        )
-        .await
-        .map_err(|_| ())
-        .and_then(|result| result.map_err(|_| ()))
-    };
-    preserve_outcome_after_write(result, response_write).await
+        stream.write_all(response.as_bytes()).await.map_err(|_| ())
+    })
+    .await
+    .map_err(|_| ())?
 }
 
 async fn preserve_outcome_after_write<T, E>(

@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 
 use super::google_oauth::{DesktopOAuthError, DesktopOAuthSession, MAX_IN_FLIGHT_CALLBACKS};
 
@@ -429,6 +430,88 @@ async fn callback_preserves_grant_when_response_write_fails() {
     // Then
     assert_eq!(grant.authorization_code(), authorization_code);
     assert!(response.is_empty());
+}
+
+#[tokio::test]
+async fn callback_preserves_grant_when_response_write_crosses_session_deadline() {
+    // Given
+    let session = DesktopOAuthSession::start_for_test_with_timeouts(
+        CLIENT_ID,
+        Duration::from_secs(10),
+        Duration::from_secs(20),
+    )
+    .await
+    .expect("OAuth session starts");
+    let (session, mut handler_started) = session.notify_handler_started_for_test();
+    let (session, mut response_write_started) =
+        session.delay_response_write_for_test(Duration::from_secs(2));
+    let parameters = query(session.authorization_url());
+    let state = parameters
+        .get("state")
+        .expect("authorization URL contains state");
+    let redirect = reqwest::Url::parse(session.redirect_uri()).expect("redirect URI is valid");
+    let address = format!(
+        "{}:{}",
+        redirect.host_str().expect("redirect URI has a host"),
+        redirect.port().expect("redirect URI has a port")
+    );
+    let request =
+        format!("GET /?code=near-deadline&state={state} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    let (send_request, receive_request) = oneshot::channel();
+
+    // When
+    let browser = async {
+        let mut stream = TcpStream::connect(address)
+            .await
+            .expect("callback client connects");
+        receive_request.await.expect("callback request is released");
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("callback request writes");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .await
+            .expect("callback response reads");
+        response
+    };
+    let clock = async {
+        handler_started
+            .recv()
+            .await
+            .expect("callback handler starts");
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(9)).await;
+        send_request.send(()).expect("callback request releases");
+        let mut response_started = false;
+        for _ in 0..1_000 {
+            match response_write_started.try_recv() {
+                Ok(()) => {
+                    response_started = true;
+                    break;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    tokio::task::yield_now().await;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    panic!("response write notification disconnected")
+                }
+            }
+        }
+        assert!(response_started, "response write starts");
+        tokio::time::advance(Duration::from_secs(2)).await;
+    };
+    let (grant, response, ()) = tokio::join!(session.receive_callback(), browser, clock);
+
+    // Then
+    assert_eq!(
+        grant
+            .expect("near-deadline callback succeeds")
+            .authorization_code(),
+        "near-deadline"
+    );
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
 }
 
 #[tokio::test]
