@@ -175,11 +175,7 @@ pub struct OAuthGrant {
 }
 
 impl OAuthGrant {
-    pub(super) fn new(
-        authorization_code: String,
-        pkce_verifier: String,
-        redirect_uri: String,
-    ) -> Self {
+    pub fn new(authorization_code: String, pkce_verifier: String, redirect_uri: String) -> Self {
         Self {
             authorization_code,
             pkce_verifier,

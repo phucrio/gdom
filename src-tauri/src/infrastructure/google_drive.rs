@@ -75,6 +75,18 @@ pub struct DriveAccountIdentity {
 }
 
 impl DriveAccountIdentity {
+    pub fn new(
+        permission_id: GooglePermissionId,
+        email: impl Into<String>,
+        display_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            permission_id,
+            email: email.into(),
+            display_name: display_name.into(),
+        }
+    }
+
     pub const fn permission_id(&self) -> &GooglePermissionId {
         &self.permission_id
     }

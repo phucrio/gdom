@@ -7,7 +7,13 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
 use crate::domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId};
 
-type StoredAccount = (String, String, String, String);
+#[derive(sqlx::FromRow)]
+struct StoredAccountRow {
+    id: String,
+    google_permission_id: String,
+    email: String,
+    display_name: String,
+}
 
 pub struct SqliteAccountStore {
     pool: SqlitePool,
@@ -89,7 +95,7 @@ impl SqliteAccountStore {
         &self,
         account: &ConnectedAccount,
     ) -> Result<ConnectedAccount, AccountStoreError> {
-        let stored = sqlx::query_as::<_, StoredAccount>(
+        let stored = sqlx::query_as::<_, StoredAccountRow>(
             "INSERT INTO accounts (id, google_permission_id, email, display_name)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (google_permission_id) DO UPDATE SET
@@ -117,7 +123,7 @@ impl SqliteAccountStore {
         &self,
         permission_id: &GooglePermissionId,
     ) -> Result<Option<ConnectedAccount>, AccountStoreError> {
-        sqlx::query_as::<_, StoredAccount>(
+        sqlx::query_as::<_, StoredAccountRow>(
             "SELECT id, google_permission_id, email, display_name
              FROM accounts
              WHERE google_permission_id = ?1",
@@ -128,13 +134,21 @@ impl SqliteAccountStore {
         .map(parse_account)
         .transpose()
     }
+
+    pub async fn remove(&self, account_id: AccountId) -> Result<(), AccountStoreError> {
+        sqlx::query("DELETE FROM accounts WHERE id = ?1")
+            .bind(account_id.value().to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
-fn parse_account(stored: StoredAccount) -> Result<ConnectedAccount, AccountStoreError> {
+fn parse_account(stored: StoredAccountRow) -> Result<ConnectedAccount, AccountStoreError> {
     Ok(ConnectedAccount::new(
-        AccountId::new(stored.0.parse::<u128>()?),
-        GooglePermissionId::new(stored.1),
-        AccountProfile::new(stored.2, stored.3),
+        AccountId::new(stored.id.parse::<u128>()?),
+        GooglePermissionId::new(stored.google_permission_id),
+        AccountProfile::new(stored.email, stored.display_name),
     ))
 }
 
@@ -276,6 +290,42 @@ mod tests {
             );
             reopened.pool.close().await;
             std::fs::remove_file(path).expect("test database is removed");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_specified_account() {
+        complete(async {
+            // Given
+            let store = SqliteAccountStore::open_in_memory()
+                .await
+                .expect("in-memory database opens");
+            store
+                .connect(&account(
+                    1,
+                    "permission-a",
+                    AccountProfile::new("a@example.com", "Account A"),
+                ))
+                .await
+                .expect("account persists");
+            assert_eq!(store.account_count().await.expect("account count"), 1);
+
+            // When
+            store
+                .remove(AccountId::new(1))
+                .await
+                .expect("account removal succeeds");
+
+            // Then
+            assert_eq!(store.account_count().await.expect("account count"), 0);
+            assert_eq!(
+                store
+                    .find_by_permission_id(&GooglePermissionId::new("permission-a"))
+                    .await
+                    .expect("lookup succeeds"),
+                None
+            );
         })
         .await;
     }
