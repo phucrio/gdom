@@ -13,7 +13,7 @@ impl AccountId {
     }
 }
 
-#[derive(Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct GooglePermissionId(String);
 
 impl GooglePermissionId {
@@ -26,7 +26,7 @@ impl GooglePermissionId {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccountProfile {
     email: String,
     display_name: String,
@@ -41,7 +41,7 @@ impl AccountProfile {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectedAccount {
     id: AccountId,
     google_permission_id: GooglePermissionId,
