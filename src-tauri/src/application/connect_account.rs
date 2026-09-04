@@ -201,6 +201,42 @@ pub trait AccountStorePort {
         &self,
         account_id: AccountId,
     ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send;
+
+    fn list_all(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<ConnectedAccount>, AccountStorePortError>> + Send;
+}
+
+impl<T: AccountStorePort + Send + Sync> AccountStorePort for Arc<T> {
+    fn find_by_permission_id(
+        &self,
+        permission_id: &GooglePermissionId,
+    ) -> impl std::future::Future<Output = Result<Option<ConnectedAccount>, AccountStorePortError>> + Send
+    {
+        (**self).find_by_permission_id(permission_id)
+    }
+
+    fn connect(
+        &self,
+        account: &ConnectedAccount,
+    ) -> impl std::future::Future<Output = Result<ConnectedAccount, AccountStorePortError>> + Send
+    {
+        (**self).connect(account)
+    }
+
+    fn remove(
+        &self,
+        account_id: AccountId,
+    ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send {
+        (**self).remove(account_id)
+    }
+
+    fn list_all(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<ConnectedAccount>, AccountStorePortError>> + Send
+    {
+        (**self).list_all()
+    }
 }
 
 #[derive(Clone)]

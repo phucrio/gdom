@@ -23,6 +23,15 @@ impl WindowsCredentialStore {
         Ok(Self { store })
     }
 
+    /// Create a `WindowsCredentialStore` backed by an in-memory mock.
+    /// Available only in test builds.
+    #[cfg(test)]
+    pub fn new_mock() -> Self {
+        let store: std::sync::Arc<keyring_core::CredentialStore> =
+            keyring_core::mock::Store::new().expect("mock credential store initializes");
+        Self { store }
+    }
+
     fn entry(&self, account_id: AccountId) -> Result<keyring_core::Entry, RefreshTokenStoreError> {
         self.store
             .build(SERVICE, &credential_username(account_id), None)

@@ -110,6 +110,13 @@ impl AccountStorePort for MockAccountStore {
         guard.retain(|_, acc| acc.id() != id);
         Ok(())
     }
+
+    async fn list_all(&self) -> Result<Vec<ConnectedAccount>, AccountStorePortError> {
+        let guard = self.accounts.lock().unwrap();
+        let mut accounts: Vec<ConnectedAccount> = guard.values().cloned().collect();
+        accounts.sort_by(|a, b| a.email().cmp(b.email()));
+        Ok(accounts)
+    }
 }
 
 #[derive(Clone, Default)]

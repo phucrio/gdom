@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, sync::Arc};
 
 use crate::domain::AccountId;
 
@@ -45,6 +45,24 @@ pub trait RefreshTokenStore: Send + Sync {
     fn load(&self, account_id: AccountId) -> Result<Option<RefreshToken>, RefreshTokenStoreError>;
 
     fn delete(&self, account_id: AccountId) -> Result<(), RefreshTokenStoreError>;
+}
+
+impl<T: RefreshTokenStore> RefreshTokenStore for Arc<T> {
+    fn save(
+        &self,
+        account_id: AccountId,
+        token: RefreshToken,
+    ) -> Result<(), RefreshTokenStoreError> {
+        (**self).save(account_id, token)
+    }
+
+    fn load(&self, account_id: AccountId) -> Result<Option<RefreshToken>, RefreshTokenStoreError> {
+        (**self).load(account_id)
+    }
+
+    fn delete(&self, account_id: AccountId) -> Result<(), RefreshTokenStoreError> {
+        (**self).delete(account_id)
+    }
 }
 
 #[cfg(test)]
