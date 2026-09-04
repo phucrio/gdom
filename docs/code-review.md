@@ -27,11 +27,11 @@ Before submitting a Pull Request, authors must ensure:
   - **Testing**: Evidence of test execution (test commands run, mock scenarios added).
   - **Security Considerations**: Any impact on tokens, network listeners, or permissions.
 - [ ] **Self-Review Completed**: The author has reviewed their own diff, verified line endings (LF), and confirmed that no debug logs or temporary files are included.
-- [ ] **Clean CI**: All local checks pass cleanly:
+- [ ] **Clean CI**: All local checks pass cleanly from the repository root:
   ```powershell
-  cargo fmt --check
-  cargo clippy --all-targets --all-features -- -D warnings
-  cargo test --all-features
+  cargo fmt --check --manifest-path src-tauri/Cargo.toml
+  cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+  cargo test --manifest-path src-tauri/Cargo.toml --all-features
   pnpm lint
   pnpm build
   ```
