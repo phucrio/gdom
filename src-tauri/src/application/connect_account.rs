@@ -1,35 +1,233 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, sync::Arc};
 
 use crate::{
     application::{AccessToken, RefreshToken, RefreshTokenStore, RefreshTokenStoreError},
     domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId},
-    infrastructure::{
-        account_store::{AccountStoreError, SqliteAccountStore},
-        google_drive::{DriveAccountIdentity, GoogleDriveClient, GoogleDriveError},
-        google_oauth::OAuthGrant,
-        google_token::{GoogleTokenClient, GoogleTokenError, GoogleTokenResponse},
-    },
 };
 
+pub struct OAuthGrant {
+    authorization_code: String,
+    pkce_verifier: String,
+    redirect_uri: String,
+}
+
+impl OAuthGrant {
+    pub fn new(authorization_code: String, pkce_verifier: String, redirect_uri: String) -> Self {
+        Self {
+            authorization_code,
+            pkce_verifier,
+            redirect_uri,
+        }
+    }
+
+    pub fn authorization_code(&self) -> &str {
+        &self.authorization_code
+    }
+
+    pub fn pkce_verifier(&self) -> &str {
+        &self.pkce_verifier
+    }
+
+    pub fn redirect_uri(&self) -> &str {
+        &self.redirect_uri
+    }
+}
+
+impl fmt::Debug for OAuthGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OAuthGrant([REDACTED])")
+    }
+}
+
+#[derive(Debug)]
+pub struct TokenResponse {
+    pub access_token: AccessToken,
+    pub refresh_token: Option<RefreshToken>,
+}
+
+impl TokenResponse {
+    pub const fn new(access_token: AccessToken, refresh_token: Option<RefreshToken>) -> Self {
+        Self {
+            access_token,
+            refresh_token,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TokenExchangeError {
+    InvalidGrant,
+    InvalidClient,
+    RateLimited,
+    Unavailable,
+    Transport,
+    InvalidResponse,
+    UnexpectedStatus(u16),
+}
+
+impl fmt::Display for TokenExchangeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidGrant => formatter.write_str("token exchange rejected grant or verifier"),
+            Self::InvalidClient => {
+                formatter.write_str("token exchange rejected client credentials")
+            }
+            Self::RateLimited => formatter.write_str("token exchange rate limit reached"),
+            Self::Unavailable => formatter.write_str("token service is unavailable"),
+            Self::Transport => formatter.write_str("token exchange network request failed"),
+            Self::InvalidResponse => {
+                formatter.write_str("token service returned an invalid response")
+            }
+            Self::UnexpectedStatus(status) => {
+                write!(
+                    formatter,
+                    "token service returned unexpected status {status}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for TokenExchangeError {}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccountIdentity {
+    permission_id: GooglePermissionId,
+    email: String,
+    display_name: String,
+}
+
+impl AccountIdentity {
+    pub fn new(
+        permission_id: GooglePermissionId,
+        email: impl Into<String>,
+        display_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            permission_id,
+            email: email.into(),
+            display_name: display_name.into(),
+        }
+    }
+
+    pub const fn permission_id(&self) -> &GooglePermissionId {
+        &self.permission_id
+    }
+
+    pub fn email(&self) -> &str {
+        &self.email
+    }
+
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IdentityLookupError {
+    Unauthorized,
+    Forbidden,
+    RateLimited,
+    Unavailable,
+    Transport,
+    InvalidResponse,
+    UnexpectedStatus(u16),
+}
+
+impl fmt::Display for IdentityLookupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unauthorized => formatter.write_str("identity service rejected access token"),
+            Self::Forbidden => formatter.write_str("identity service denied access"),
+            Self::RateLimited => formatter.write_str("identity service rate limit reached"),
+            Self::Unavailable => formatter.write_str("identity service is unavailable"),
+            Self::Transport => formatter.write_str("identity service request failed"),
+            Self::InvalidResponse => {
+                formatter.write_str("identity service returned an invalid response")
+            }
+            Self::UnexpectedStatus(status) => {
+                write!(
+                    formatter,
+                    "identity service returned unexpected status {status}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for IdentityLookupError {}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AccountStorePortError {
+    Storage(String),
+}
+
+impl fmt::Display for AccountStorePortError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Storage(message) => write!(formatter, "{message}"),
+        }
+    }
+}
+
+impl Error for AccountStorePortError {}
+
+pub trait TokenExchangePort {
+    fn exchange_code(
+        &self,
+        grant: OAuthGrant,
+    ) -> impl std::future::Future<Output = Result<TokenResponse, TokenExchangeError>> + Send;
+}
+
+pub trait IdentityLookupPort {
+    fn account_identity(
+        &self,
+        token: &AccessToken,
+    ) -> impl std::future::Future<Output = Result<AccountIdentity, IdentityLookupError>> + Send;
+}
+
+pub trait AccountStorePort {
+    fn find_by_permission_id(
+        &self,
+        permission_id: &GooglePermissionId,
+    ) -> impl std::future::Future<Output = Result<Option<ConnectedAccount>, AccountStorePortError>> + Send;
+
+    fn connect(
+        &self,
+        account: &ConnectedAccount,
+    ) -> impl std::future::Future<Output = Result<ConnectedAccount, AccountStorePortError>> + Send;
+
+    fn remove(
+        &self,
+        account_id: AccountId,
+    ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send;
+}
+
+#[derive(Clone)]
 pub struct ConnectAccountService<
-    TokenExchange = GoogleTokenClient,
-    IdentityLookup = GoogleDriveClient,
-    AccountPersistence = SqliteAccountStore,
-    CredentialPersistence = Box<dyn RefreshTokenStore + Send + Sync>,
+    TokenExchange,
+    IdentityLookup,
+    AccountPersistence,
+    CredentialPersistence,
 > {
     token_exchange: TokenExchange,
     identity_lookup: IdentityLookup,
     account_persistence: AccountPersistence,
     credential_persistence: CredentialPersistence,
+    lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug)]
 pub enum ConnectAccountError {
-    TokenExchange(GoogleTokenError),
-    DriveIdentity(GoogleDriveError),
-    Database(AccountStoreError),
+    TokenExchange(TokenExchangeError),
+    IdentityLookup(IdentityLookupError),
+    Database(AccountStorePortError),
     MissingRefreshToken,
     Keychain(RefreshTokenStoreError),
+    RollbackFailed {
+        primary_error: Box<ConnectAccountError>,
+        rollback_error: Box<AccountStorePortError>,
+    },
 }
 
 impl fmt::Display for ConnectAccountError {
@@ -38,8 +236,8 @@ impl fmt::Display for ConnectAccountError {
             Self::TokenExchange(error) => {
                 write!(formatter, "failed to exchange OAuth code: {error}")
             }
-            Self::DriveIdentity(error) => {
-                write!(formatter, "failed to fetch Drive account identity: {error}")
+            Self::IdentityLookup(error) => {
+                write!(formatter, "failed to fetch account identity: {error}")
             }
             Self::Database(error) => {
                 write!(formatter, "database error while storing account: {error}")
@@ -51,6 +249,13 @@ impl fmt::Display for ConnectAccountError {
                 formatter,
                 "keychain error while storing refresh token: {error}"
             ),
+            Self::RollbackFailed {
+                primary_error,
+                rollback_error,
+            } => write!(
+                formatter,
+                "account connection failed ({primary_error}) and rollback also failed: {rollback_error}"
+            ),
         }
     }
 }
@@ -59,80 +264,12 @@ impl Error for ConnectAccountError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::TokenExchange(error) => Some(error),
-            Self::DriveIdentity(error) => Some(error),
+            Self::IdentityLookup(error) => Some(error),
             Self::Database(error) => Some(error),
             Self::MissingRefreshToken => None,
             Self::Keychain(error) => Some(error),
+            Self::RollbackFailed { primary_error, .. } => Some(primary_error),
         }
-    }
-}
-
-pub trait TokenExchangePort {
-    fn exchange_code(
-        &self,
-        grant: OAuthGrant,
-    ) -> impl std::future::Future<Output = Result<GoogleTokenResponse, GoogleTokenError>> + Send;
-}
-
-impl TokenExchangePort for GoogleTokenClient {
-    async fn exchange_code(
-        &self,
-        grant: OAuthGrant,
-    ) -> Result<GoogleTokenResponse, GoogleTokenError> {
-        self.exchange_code(grant).await
-    }
-}
-
-pub trait DriveIdentityPort {
-    fn account_identity(
-        &self,
-        token: &AccessToken,
-    ) -> impl std::future::Future<Output = Result<DriveAccountIdentity, GoogleDriveError>> + Send;
-}
-
-impl DriveIdentityPort for GoogleDriveClient {
-    async fn account_identity(
-        &self,
-        token: &AccessToken,
-    ) -> Result<DriveAccountIdentity, GoogleDriveError> {
-        self.account_identity(token).await
-    }
-}
-
-pub trait AccountStorePort {
-    fn find_by_permission_id(
-        &self,
-        permission_id: &GooglePermissionId,
-    ) -> impl std::future::Future<Output = Result<Option<ConnectedAccount>, AccountStoreError>> + Send;
-
-    fn connect(
-        &self,
-        account: &ConnectedAccount,
-    ) -> impl std::future::Future<Output = Result<ConnectedAccount, AccountStoreError>> + Send;
-
-    fn remove(
-        &self,
-        account_id: AccountId,
-    ) -> impl std::future::Future<Output = Result<(), AccountStoreError>> + Send;
-}
-
-impl AccountStorePort for SqliteAccountStore {
-    async fn find_by_permission_id(
-        &self,
-        permission_id: &GooglePermissionId,
-    ) -> Result<Option<ConnectedAccount>, AccountStoreError> {
-        self.find_by_permission_id(permission_id).await
-    }
-
-    async fn connect(
-        &self,
-        account: &ConnectedAccount,
-    ) -> Result<ConnectedAccount, AccountStoreError> {
-        self.connect(account).await
-    }
-
-    async fn remove(&self, account_id: AccountId) -> Result<(), AccountStoreError> {
-        self.remove(account_id).await
     }
 }
 
@@ -140,7 +277,7 @@ impl<TokenExchange, IdentityLookup, AccountPersistence, CredentialPersistence>
     ConnectAccountService<TokenExchange, IdentityLookup, AccountPersistence, CredentialPersistence>
 where
     TokenExchange: TokenExchangePort + Send + Sync,
-    IdentityLookup: DriveIdentityPort + Send + Sync,
+    IdentityLookup: IdentityLookupPort + Send + Sync,
     AccountPersistence: AccountStorePort + Send + Sync,
     CredentialPersistence: RefreshTokenStore + Send + Sync,
 {
@@ -155,6 +292,7 @@ where
             identity_lookup,
             account_persistence,
             credential_persistence,
+            lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -173,7 +311,9 @@ where
             .identity_lookup
             .account_identity(&token_response.access_token)
             .await
-            .map_err(ConnectAccountError::DriveIdentity)?;
+            .map_err(ConnectAccountError::IdentityLookup)?;
+
+        let _guard = self.lock.lock().await;
 
         let prior_account = self
             .account_persistence
@@ -188,7 +328,7 @@ where
 
         let candidate_account = ConnectedAccount::new(
             target_account_id,
-            GooglePermissionId::new(identity.permission_id().as_str()),
+            identity.permission_id().clone(),
             AccountProfile::new(identity.email(), identity.display_name()),
         );
 
@@ -198,13 +338,20 @@ where
             .await
             .map_err(ConnectAccountError::Database)?;
 
-        if let Err(error) = self
+        if let Err(primary_error) = self
             .persist_credential(persisted_account.id(), token_response.refresh_token)
             .await
         {
-            self.rollback_account(persisted_account.id(), prior_account)
-                .await;
-            return Err(error);
+            if let Err(rollback_error) = self
+                .rollback_account(persisted_account.id(), prior_account)
+                .await
+            {
+                return Err(ConnectAccountError::RollbackFailed {
+                    primary_error: Box::new(primary_error),
+                    rollback_error: Box::new(rollback_error),
+                });
+            }
+            return Err(primary_error);
         }
 
         Ok(persisted_account)
@@ -238,14 +385,26 @@ where
         &self,
         account_id: AccountId,
         prior_account: Option<ConnectedAccount>,
-    ) {
+    ) -> Result<(), AccountStorePortError> {
         match prior_account {
             None => {
-                let _ = self.account_persistence.remove(account_id).await;
+                let has_valid_token = self
+                    .credential_persistence
+                    .load(account_id)
+                    .map(|token| token.is_some())
+                    .unwrap_or(false);
+
+                if has_valid_token {
+                    Ok(())
+                } else {
+                    self.account_persistence.remove(account_id).await
+                }
             }
-            Some(previous) => {
-                let _ = self.account_persistence.connect(&previous).await;
-            }
+            Some(previous) => self
+                .account_persistence
+                .connect(&previous)
+                .await
+                .map(|_| ()),
         }
     }
 }

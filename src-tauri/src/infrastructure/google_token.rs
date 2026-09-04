@@ -4,9 +4,8 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use url::form_urlencoded;
 
-use crate::{
-    application::{AccessToken, RefreshToken},
-    infrastructure::google_oauth::OAuthGrant,
+use crate::application::{
+    AccessToken, OAuthGrant, RefreshToken, TokenExchangeError, TokenExchangePort, TokenResponse,
 };
 
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com";
@@ -204,4 +203,28 @@ struct RawTokenResponse {
 #[derive(Deserialize)]
 struct OAuthErrorResponse {
     error: String,
+}
+
+impl TokenExchangePort for GoogleTokenClient {
+    async fn exchange_code(&self, grant: OAuthGrant) -> Result<TokenResponse, TokenExchangeError> {
+        let response = self.exchange_code(grant).await?;
+        Ok(TokenResponse::new(
+            response.access_token,
+            response.refresh_token,
+        ))
+    }
+}
+
+impl From<GoogleTokenError> for TokenExchangeError {
+    fn from(error: GoogleTokenError) -> Self {
+        match error {
+            GoogleTokenError::InvalidGrant => Self::InvalidGrant,
+            GoogleTokenError::InvalidClient => Self::InvalidClient,
+            GoogleTokenError::RateLimited => Self::RateLimited,
+            GoogleTokenError::ServerUnavailable => Self::Unavailable,
+            GoogleTokenError::Transport => Self::Transport,
+            GoogleTokenError::InvalidResponse => Self::InvalidResponse,
+            GoogleTokenError::UnexpectedStatus(status) => Self::UnexpectedStatus(status),
+        }
+    }
 }

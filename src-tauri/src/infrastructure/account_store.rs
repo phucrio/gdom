@@ -5,7 +5,10 @@ use std::{error::Error, fmt};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
-use crate::domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId};
+use crate::{
+    application::{AccountStorePort, AccountStorePortError},
+    domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId},
+};
 
 #[derive(sqlx::FromRow)]
 struct StoredAccountRow {
@@ -152,6 +155,38 @@ fn parse_account(stored: StoredAccountRow) -> Result<ConnectedAccount, AccountSt
     ))
 }
 
+impl AccountStorePort for SqliteAccountStore {
+    async fn find_by_permission_id(
+        &self,
+        permission_id: &GooglePermissionId,
+    ) -> Result<Option<ConnectedAccount>, AccountStorePortError> {
+        self.find_by_permission_id(permission_id)
+            .await
+            .map_err(AccountStorePortError::from)
+    }
+
+    async fn connect(
+        &self,
+        account: &ConnectedAccount,
+    ) -> Result<ConnectedAccount, AccountStorePortError> {
+        self.connect(account)
+            .await
+            .map_err(AccountStorePortError::from)
+    }
+
+    async fn remove(&self, account_id: AccountId) -> Result<(), AccountStorePortError> {
+        self.remove(account_id)
+            .await
+            .map_err(AccountStorePortError::from)
+    }
+}
+
+impl From<AccountStoreError> for AccountStorePortError {
+    fn from(error: AccountStoreError) -> Self {
+        Self::Storage(error.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::future::Future;
@@ -160,9 +195,8 @@ mod tests {
 
     use tokio::time::timeout;
 
-    use crate::domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId};
-
     use super::SqliteAccountStore;
+    use crate::domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId};
 
     async fn complete<F: Future<Output = ()>>(scenario: F) {
         timeout(Duration::from_secs(5), scenario)

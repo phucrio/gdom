@@ -1,24 +1,19 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use crate::{
     application::{
-        AccessToken, RefreshToken, RefreshTokenStore, RefreshTokenStoreError,
-        connect_account::{
-            AccountStorePort, ConnectAccountError, ConnectAccountService, DriveIdentityPort,
-            TokenExchangePort,
-        },
+        AccessToken, AccountIdentity, AccountStorePort, AccountStorePortError, ConnectAccountError,
+        ConnectAccountService, IdentityLookupError, IdentityLookupPort, OAuthGrant, RefreshToken,
+        RefreshTokenStore, RefreshTokenStoreError, TokenExchangeError, TokenExchangePort,
+        TokenResponse,
     },
     domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId},
-    infrastructure::{
-        account_store::AccountStoreError,
-        google_drive::{DriveAccountIdentity, GoogleDriveError},
-        google_oauth::OAuthGrant,
-        google_token::{GoogleTokenError, GoogleTokenResponse},
-    },
 };
 
 fn grant() -> OAuthGrant {
@@ -31,38 +26,32 @@ fn grant() -> OAuthGrant {
 
 #[derive(Clone)]
 struct MockTokenClient {
-    response: Result<(String, Option<String>), GoogleTokenError>,
+    response: Result<(String, Option<String>), TokenExchangeError>,
 }
 
 impl TokenExchangePort for MockTokenClient {
-    async fn exchange_code(
-        &self,
-        _grant: OAuthGrant,
-    ) -> Result<GoogleTokenResponse, GoogleTokenError> {
+    async fn exchange_code(&self, _grant: OAuthGrant) -> Result<TokenResponse, TokenExchangeError> {
         self.response
             .clone()
-            .map(|(access, refresh)| GoogleTokenResponse {
+            .map(|(access, refresh)| TokenResponse {
                 access_token: AccessToken::new(access),
-                expires_in: Duration::from_secs(3600),
                 refresh_token: refresh.map(RefreshToken::new),
-                token_type: "Bearer".to_owned(),
-                scope: None,
             })
     }
 }
 
 #[derive(Clone)]
-struct MockDriveClient {
-    response: Result<(String, String, String), GoogleDriveError>,
+struct MockIdentityClient {
+    response: Result<(String, String, String), IdentityLookupError>,
 }
 
-impl DriveIdentityPort for MockDriveClient {
+impl IdentityLookupPort for MockIdentityClient {
     async fn account_identity(
         &self,
         _token: &AccessToken,
-    ) -> Result<DriveAccountIdentity, GoogleDriveError> {
+    ) -> Result<AccountIdentity, IdentityLookupError> {
         self.response.clone().map(|(perm, email, name)| {
-            DriveAccountIdentity::new(GooglePermissionId::new(perm), email, name)
+            AccountIdentity::new(GooglePermissionId::new(perm), email, name)
         })
     }
 }
@@ -70,13 +59,16 @@ impl DriveIdentityPort for MockDriveClient {
 #[derive(Clone, Default)]
 struct MockAccountStore {
     accounts: Arc<Mutex<HashMap<String, ConnectedAccount>>>,
+    fail_remove: bool,
+    fail_connect_after: Option<usize>,
+    connect_count: Arc<AtomicUsize>,
 }
 
 impl AccountStorePort for MockAccountStore {
     async fn find_by_permission_id(
         &self,
         perm_id: &GooglePermissionId,
-    ) -> Result<Option<ConnectedAccount>, AccountStoreError> {
+    ) -> Result<Option<ConnectedAccount>, AccountStorePortError> {
         let guard = self.accounts.lock().unwrap();
         Ok(guard.get(perm_id.as_str()).cloned())
     }
@@ -84,7 +76,15 @@ impl AccountStorePort for MockAccountStore {
     async fn connect(
         &self,
         account: &ConnectedAccount,
-    ) -> Result<ConnectedAccount, AccountStoreError> {
+    ) -> Result<ConnectedAccount, AccountStorePortError> {
+        let count = self.connect_count.fetch_add(1, Ordering::SeqCst);
+        if let Some(threshold) = self.fail_connect_after
+            && count >= threshold
+        {
+            return Err(AccountStorePortError::Storage(
+                "database failure during connect".to_owned(),
+            ));
+        }
         let mut guard = self.accounts.lock().unwrap();
         let perm = account.google_permission_id().as_str().to_owned();
         let final_account = if let Some(existing) = guard.get(&perm) {
@@ -100,7 +100,12 @@ impl AccountStorePort for MockAccountStore {
         Ok(final_account)
     }
 
-    async fn remove(&self, id: AccountId) -> Result<(), AccountStoreError> {
+    async fn remove(&self, id: AccountId) -> Result<(), AccountStorePortError> {
+        if self.fail_remove {
+            return Err(AccountStorePortError::Storage(
+                "database failure during remove".to_owned(),
+            ));
+        }
         let mut guard = self.accounts.lock().unwrap();
         guard.retain(|_, acc| acc.id() != id);
         Ok(())
@@ -111,6 +116,7 @@ impl AccountStorePort for MockAccountStore {
 struct MockKeyring {
     tokens: Arc<Mutex<HashMap<u128, String>>>,
     fail_save: bool,
+    fail_on_token: Option<String>,
 }
 
 impl RefreshTokenStore for MockKeyring {
@@ -120,6 +126,11 @@ impl RefreshTokenStore for MockKeyring {
         token: RefreshToken,
     ) -> Result<(), RefreshTokenStoreError> {
         if self.fail_save {
+            return Err(RefreshTokenStoreError::Unavailable);
+        }
+        if let Some(ref fail_token) = self.fail_on_token
+            && token.expose_secret() == fail_token
+        {
             return Err(RefreshTokenStoreError::Unavailable);
         }
         let mut guard = self.tokens.lock().unwrap();
@@ -148,7 +159,7 @@ async fn connect_account_persists_new_account_and_keychain() {
     let token_client = MockTokenClient {
         response: Ok(("access-1".to_owned(), Some("refresh-1".to_owned()))),
     };
-    let drive_client = MockDriveClient {
+    let identity_client = MockIdentityClient {
         response: Ok((
             "perm-1".to_owned(),
             "user@gmail.com".to_owned(),
@@ -160,7 +171,7 @@ async fn connect_account_persists_new_account_and_keychain() {
 
     let service = ConnectAccountService::new(
         token_client,
-        drive_client,
+        identity_client,
         account_store.clone(),
         keyring.clone(),
     );
@@ -210,7 +221,7 @@ async fn connect_account_reconnect_preserves_id_and_updates_token() {
     let token_client = MockTokenClient {
         response: Ok(("access-2".to_owned(), Some("new-refresh".to_owned()))),
     };
-    let drive_client = MockDriveClient {
+    let identity_client = MockIdentityClient {
         response: Ok((
             "perm-existing".to_owned(),
             "new@gmail.com".to_owned(),
@@ -220,7 +231,7 @@ async fn connect_account_reconnect_preserves_id_and_updates_token() {
 
     let service = ConnectAccountService::new(
         token_client,
-        drive_client,
+        identity_client,
         account_store.clone(),
         keyring.clone(),
     );
@@ -249,7 +260,7 @@ async fn connect_account_rolls_back_sqlite_when_keychain_fails() {
     let token_client = MockTokenClient {
         response: Ok(("access-1".to_owned(), Some("refresh-1".to_owned()))),
     };
-    let drive_client = MockDriveClient {
+    let identity_client = MockIdentityClient {
         response: Ok((
             "perm-1".to_owned(),
             "user@gmail.com".to_owned(),
@@ -264,7 +275,7 @@ async fn connect_account_rolls_back_sqlite_when_keychain_fails() {
 
     let service = ConnectAccountService::new(
         token_client,
-        drive_client,
+        identity_client,
         account_store.clone(),
         keyring.clone(),
     );
@@ -291,7 +302,7 @@ async fn connect_account_rejects_new_account_missing_refresh_token() {
     let token_client = MockTokenClient {
         response: Ok(("access-1".to_owned(), None)), // No refresh token
     };
-    let drive_client = MockDriveClient {
+    let identity_client = MockIdentityClient {
         response: Ok((
             "perm-new".to_owned(),
             "user@gmail.com".to_owned(),
@@ -303,7 +314,7 @@ async fn connect_account_rejects_new_account_missing_refresh_token() {
 
     let service = ConnectAccountService::new(
         token_client,
-        drive_client,
+        identity_client,
         account_store.clone(),
         keyring.clone(),
     );
@@ -327,10 +338,6 @@ async fn connect_account_rejects_new_account_missing_refresh_token() {
 async fn reconnect_restores_previous_profile_when_keychain_save_fails() {
     // Given
     let account_store = MockAccountStore::default();
-    let keyring = MockKeyring {
-        fail_save: true,
-        ..Default::default()
-    };
 
     // Seed existing account
     account_store
@@ -341,26 +348,20 @@ async fn reconnect_restores_previous_profile_when_keychain_save_fails() {
         ))
         .await
         .unwrap();
-    keyring
-        .save(
-            AccountId::new(1),
-            RefreshToken::new("old-refresh".to_owned()),
-        )
-        .unwrap_or(()); // save succeeds during seed (fail_save only blocks ConnectAccountService)
 
-    // Re-create keyring with old token pre-loaded but fail_save enabled
     let keyring = MockKeyring {
         tokens: Arc::new(Mutex::new(HashMap::from([(
             1_u128,
             "old-refresh".to_owned(),
         )]))),
         fail_save: true,
+        ..Default::default()
     };
 
     let token_client = MockTokenClient {
         response: Ok(("access-2".to_owned(), Some("new-refresh".to_owned()))),
     };
-    let drive_client = MockDriveClient {
+    let identity_client = MockIdentityClient {
         response: Ok((
             "perm-existing".to_owned(),
             "new@gmail.com".to_owned(),
@@ -370,7 +371,7 @@ async fn reconnect_restores_previous_profile_when_keychain_save_fails() {
 
     let service = ConnectAccountService::new(
         token_client,
-        drive_client,
+        identity_client,
         account_store.clone(),
         keyring.clone(),
     );
@@ -422,7 +423,7 @@ async fn reconnect_restores_previous_profile_when_refresh_token_missing_and_keyr
     let token_client = MockTokenClient {
         response: Ok(("access-2".to_owned(), None)), // No refresh token
     };
-    let drive_client = MockDriveClient {
+    let identity_client = MockIdentityClient {
         response: Ok((
             "perm-existing".to_owned(),
             "new@gmail.com".to_owned(),
@@ -432,7 +433,7 @@ async fn reconnect_restores_previous_profile_when_refresh_token_missing_and_keyr
 
     let service = ConnectAccountService::new(
         token_client,
-        drive_client,
+        identity_client,
         account_store.clone(),
         keyring.clone(),
     );
@@ -454,4 +455,197 @@ async fn reconnect_restores_previous_profile_when_refresh_token_missing_and_keyr
         .expect("account still exists");
     assert_eq!(restored.email(), "old@gmail.com");
     assert_eq!(restored.display_name(), "Old Name");
+}
+
+#[tokio::test]
+async fn connect_account_propagates_rollback_failure_on_new_account() {
+    // Given: Keyring save will fail, and account store removal will also fail during rollback
+    let token_client = MockTokenClient {
+        response: Ok(("access-1".to_owned(), Some("refresh-1".to_owned()))),
+    };
+    let identity_client = MockIdentityClient {
+        response: Ok((
+            "perm-fail-rollback".to_owned(),
+            "user@gmail.com".to_owned(),
+            "User".to_owned(),
+        )),
+    };
+    let account_store = MockAccountStore {
+        fail_remove: true,
+        ..Default::default()
+    };
+    let keyring = MockKeyring {
+        fail_save: true,
+        ..Default::default()
+    };
+
+    let service = ConnectAccountService::new(
+        token_client,
+        identity_client,
+        account_store.clone(),
+        keyring.clone(),
+    );
+
+    // When
+    let error = service
+        .connect_account(grant(), AccountId::new(100))
+        .await
+        .expect_err("fails and surfaces rollback failure");
+
+    // Then
+    match error {
+        ConnectAccountError::RollbackFailed {
+            primary_error,
+            rollback_error,
+        } => {
+            assert!(matches!(*primary_error, ConnectAccountError::Keychain(_)));
+            assert!(matches!(*rollback_error, AccountStorePortError::Storage(_)));
+        }
+        other => panic!("expected RollbackFailed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn reconnect_propagates_rollback_failure_when_profile_restoration_fails() {
+    // Given: Existing account, keyring save fails, and subsequent profile restoration fails
+    let account_store = MockAccountStore::default();
+    account_store
+        .connect(&ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-existing"),
+            AccountProfile::new("old@gmail.com", "Old Name"),
+        ))
+        .await
+        .unwrap();
+
+    let keyring = MockKeyring {
+        tokens: Arc::new(Mutex::new(HashMap::from([(
+            1_u128,
+            "old-refresh".to_owned(),
+        )]))),
+        fail_save: true,
+        ..Default::default()
+    };
+
+    let token_client = MockTokenClient {
+        response: Ok(("access-2".to_owned(), Some("new-refresh".to_owned()))),
+    };
+    let identity_client = MockIdentityClient {
+        response: Ok((
+            "perm-existing".to_owned(),
+            "new@gmail.com".to_owned(),
+            "New Name".to_owned(),
+        )),
+    };
+
+    // Make connect fail on the second call during connect_account:
+    // Call 0: seeding (done above)
+    // Call 1: candidate account update in connect_account (succeeds)
+    // Call 2: rollback restore in rollback_account (fails)
+    let failing_account_store = MockAccountStore {
+        accounts: account_store.accounts.clone(),
+        fail_connect_after: Some(2),
+        connect_count: Arc::new(AtomicUsize::new(1)), // seeding was 0, so next call is 1
+        ..Default::default()
+    };
+
+    let service = ConnectAccountService::new(
+        token_client,
+        identity_client,
+        failing_account_store,
+        keyring,
+    );
+
+    // When
+    let error = service
+        .connect_account(grant(), AccountId::new(999))
+        .await
+        .expect_err("fails and surfaces rollback failure");
+
+    // Then
+    match error {
+        ConnectAccountError::RollbackFailed {
+            primary_error,
+            rollback_error,
+        } => {
+            assert!(matches!(*primary_error, ConnectAccountError::Keychain(_)));
+            assert!(matches!(*rollback_error, AccountStorePortError::Storage(_)));
+        }
+        other => panic!("expected RollbackFailed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn concurrent_connects_for_same_identity_do_not_delete_successful_account() {
+    // Given: Two connect requests for the same new permission ID.
+    // Request 1 succeeds with refresh-1.
+    // Request 2 has refresh-2 but fails on keychain save (triggering rollback).
+    let account_store = MockAccountStore::default();
+    let keyring = MockKeyring {
+        fail_on_token: Some("refresh-2".to_owned()),
+        ..Default::default()
+    };
+
+    let service = Arc::new(ConnectAccountService::new(
+        MockTokenClient {
+            response: Ok(("access-1".to_owned(), Some("refresh-1".to_owned()))),
+        },
+        MockIdentityClient {
+            response: Ok((
+                "perm-concurrent".to_owned(),
+                "shared@gmail.com".to_owned(),
+                "Shared".to_owned(),
+            )),
+        },
+        account_store.clone(),
+        keyring.clone(),
+    ));
+
+    let failing_service = Arc::new(ConnectAccountService::new(
+        MockTokenClient {
+            response: Ok(("access-2".to_owned(), Some("refresh-2".to_owned()))),
+        },
+        MockIdentityClient {
+            response: Ok((
+                "perm-concurrent".to_owned(),
+                "shared@gmail.com".to_owned(),
+                "Shared".to_owned(),
+            )),
+        },
+        account_store.clone(),
+        keyring.clone(),
+    ));
+
+    // When: Run both concurrently
+    let h1 = {
+        let s = service.clone();
+        tokio::spawn(async move { s.connect_account(grant(), AccountId::new(100)).await })
+    };
+
+    let h2 = {
+        let s = failing_service.clone();
+        tokio::spawn(async move { s.connect_account(grant(), AccountId::new(101)).await })
+    };
+
+    let (res1, res2) = tokio::join!(h1, h2);
+    let res1 = res1.unwrap();
+    let res2 = res2.unwrap();
+
+    // One succeeds, one fails due to Keychain
+    assert!(res1.is_ok());
+    assert!(matches!(
+        res2.unwrap_err(),
+        ConnectAccountError::Keychain(_)
+    ));
+
+    // Then: The successfully connected account MUST still exist in the store!
+    let stored = account_store
+        .find_by_permission_id(&GooglePermissionId::new("perm-concurrent"))
+        .await
+        .unwrap();
+    assert!(
+        stored.is_some(),
+        "successful account must not be deleted by the failing concurrent request"
+    );
+    assert_eq!(stored.unwrap().email(), "shared@gmail.com");
 }

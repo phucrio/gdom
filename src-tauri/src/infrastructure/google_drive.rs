@@ -3,7 +3,10 @@ use std::{error::Error, fmt, time::Duration};
 use reqwest::StatusCode;
 use serde::Deserialize;
 
-use crate::{application::AccessToken, domain::GooglePermissionId};
+use crate::{
+    application::{AccessToken, AccountIdentity, IdentityLookupError, IdentityLookupPort},
+    domain::GooglePermissionId,
+};
 
 const API_BASE_URL: &str = "https://www.googleapis.com";
 const ABOUT_PATH: &str =
@@ -157,4 +160,32 @@ struct AboutUser {
     permission_id: String,
     email_address: String,
     display_name: String,
+}
+
+impl IdentityLookupPort for GoogleDriveClient {
+    async fn account_identity(
+        &self,
+        token: &AccessToken,
+    ) -> Result<AccountIdentity, IdentityLookupError> {
+        let identity = self.account_identity(token).await?;
+        Ok(AccountIdentity::new(
+            identity.permission_id().clone(),
+            identity.email(),
+            identity.display_name(),
+        ))
+    }
+}
+
+impl From<GoogleDriveError> for IdentityLookupError {
+    fn from(error: GoogleDriveError) -> Self {
+        match error {
+            GoogleDriveError::Unauthorized => Self::Unauthorized,
+            GoogleDriveError::Forbidden => Self::Forbidden,
+            GoogleDriveError::RateLimited => Self::RateLimited,
+            GoogleDriveError::ServerUnavailable => Self::Unavailable,
+            GoogleDriveError::Transport => Self::Transport,
+            GoogleDriveError::InvalidResponse => Self::InvalidResponse,
+            GoogleDriveError::UnexpectedStatus(status) => Self::UnexpectedStatus(status),
+        }
+    }
 }

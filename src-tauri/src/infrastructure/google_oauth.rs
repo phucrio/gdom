@@ -168,39 +168,7 @@ impl DesktopOAuthSession {
     }
 }
 
-pub struct OAuthGrant {
-    authorization_code: String,
-    pkce_verifier: String,
-    redirect_uri: String,
-}
-
-impl OAuthGrant {
-    pub fn new(authorization_code: String, pkce_verifier: String, redirect_uri: String) -> Self {
-        Self {
-            authorization_code,
-            pkce_verifier,
-            redirect_uri,
-        }
-    }
-
-    pub fn authorization_code(&self) -> &str {
-        &self.authorization_code
-    }
-
-    pub fn pkce_verifier(&self) -> &str {
-        &self.pkce_verifier
-    }
-
-    pub fn redirect_uri(&self) -> &str {
-        &self.redirect_uri
-    }
-}
-
-impl fmt::Debug for OAuthGrant {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("OAuthGrant([REDACTED])")
-    }
-}
+pub use crate::application::OAuthGrant;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DesktopOAuthError {
