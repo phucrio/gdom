@@ -48,7 +48,7 @@ Detailed architectural specifications, engineering standards, and product decisi
 
 | Document | Description |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | **System Architecture**: Clean Architecture layers, multi-account domain model, security boundaries, loopback listener design, and token-routing invariants. *(Also indexed as [docs/architecure.md](docs/architecure.md))* |
+| [docs/architecture.md](docs/architecture.md) | **System Architecture**: Clean Architecture layers, multi-account domain model, security boundaries, loopback listener design, and token-routing invariants. |
 | [docs/code-convention.md](docs/code-convention.md) | **Code Conventions**: Rust 2024 idioms, strict TypeScript standards, error handling without unwrap, WCAG 2.2 AA accessibility, LF line endings, and Conventional commit rules. |
 | [docs/code-review.md](docs/code-review.md) | **Code Review Guidelines**: Reviewer checklists, verification gates (Security, Architecture, Invariants, Durability), and author responsibilities. |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | **Architectural Decision Records (ADR)**: Scope boundaries, OAuth PKCE flow, loopback connection limits, full Drive scope rationale, and rate limit policies. |
