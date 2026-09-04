@@ -68,6 +68,7 @@ Reviewers must evaluate PRs against the following non-negotiable gates:
 
 ### Gate 4: Durability & Concurrency
 - [ ] **Single Mutation Job Lease**: Ensure that only one job can hold the mutation lease at a time.
+- [ ] **Mandatory Canary Gate**: Bulk migration must be preceded by a canary run (`RUNNING_CANARY`) and an explicit user confirmation gate (`CANARY_REVIEW`). Automatic progression to bulk transfer without user approval is strictly forbidden.
 - [ ] **Account Pair Immutability**: The `(source, target)` pair must be locked once scanning begins.
 - [ ] **Leaf-First Ordering**: File and folder migrations must process items in `depth DESC` order (deepest files -> child folders -> root folder).
 - [ ] **Rate-Limiting Discipline**:

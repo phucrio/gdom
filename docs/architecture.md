@@ -32,11 +32,11 @@ graph TD
     Commands --> Application
     Application --> Domain
     Application --> Runtime
+    Runtime -.->|Coordinates Use Cases via Ports| Application
     Infrastructure -.->|Implements Ports| Application
     Infrastructure --> GoogleDrive
     Infrastructure --> Keychain
     Infrastructure --> SQLite
-    Runtime --> Infrastructure
 ```
 
 ### Key Architectural Characteristics
@@ -223,22 +223,43 @@ sequenceDiagram
 3. **Leaf-First Ordering**: Discovered items are ordered by `depth DESC`. Transferring deepest files first ensures child items remain accessible and retains folder hierarchy.
 4. **Dry Run & Quota Check**: Evaluates target quota using the target token and presents item summaries to the user.
 
-### 6.2 Idempotent Transfer Algorithm
+### 6.2 Mandatory Canary & Transfer Workflow
+Before advancing to bulk migration, a job must execute a canary run:
+1. **Canary Selection**: A bounded subset of items (default size 5) is selected.
+2. **Canary Execution (`RUNNING_CANARY`)**: Runs the transfer algorithm on the canary subset.
+3. **Canary Review Gate (`CANARY_REVIEW`)**: Live migration pauses automatically. Bulk execution requires explicit user review and confirmation (re-entering target email). It never advances automatically.
+4. **Bulk Execution (`RUNNING`)**: After user confirmation, the remaining eligible items are processed in leaf-first order.
+
+### 6.3 Idempotent Transfer Algorithm
 For each item in leaf-first order:
 1. **Reconcile**: Read current remote state.
    - If target already owns the item: proceed to verification.
    - If owner is neither source nor target: record permanent failure.
    - If target already has `pendingOwner = true`: proceed to acceptance.
 2. **Step 1 (Source)**:
-   - If target has no permission: `POST /drive/v3/files/{id}/permissions` with `role=writer, pendingOwner=true`.
-   - If target is already a writer: `PATCH /drive/v3/files/{id}/permissions/{permId}` with `pendingOwner=true`.
+   - If target has no permission: `POST /drive/v3/files/{id}/permissions` with:
+     ```json
+     {
+       "type": "user",
+       "role": "writer",
+       "emailAddress": "target@gmail.com",
+       "pendingOwner": true
+     }
+     ```
+   - If target is already a writer: `PATCH /drive/v3/files/{id}/permissions/{permId}` with:
+     ```json
+     {
+       "role": "writer",
+       "pendingOwner": true
+     }
+     ```
    - Notification emails are mandatory and never suppressed (`sendNotificationEmail=true`).
 3. **Step 2 (Target)**:
    - `PATCH /drive/v3/files/{id}/permissions/{permId}?transferOwnership=true` with `role=owner`.
 4. **Step 3 (Verify)**:
    - Read item using target token. Verify target is now `owner`, original parent IDs are intact, and item is not trashed.
 
-### 6.3 Rate Limiting & Recovery
+### 6.4 Rate Limiting & Recovery
 - **Default Concurrency**: Scan concurrency is 4; transfer concurrency defaults to 1.
 - **Handling `sharingRateLimitExceeded`**:
   - When Google responds with a sharing rate limit, GDOM **never performs fast retries**.

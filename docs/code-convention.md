@@ -67,7 +67,7 @@ This document outlines the coding standards, language idioms, architectural conv
   }
   ```
 - **Keep Files Focused**: Follow the ~250 LOC guideline where feasible. Avoid monolithic files and split complex services into cohesive sub-modules.
-- **Rollback Safety**: Any multi-step application use case that modifies external state (e.g., account record + keychain token) must provide compensating rollback if subsequent steps fail.
+- **Compensating Rollback in Local Persistence**: Multi-step local state mutations (such as saving an account in SQLite followed by storing credentials in the OS keychain) must provide compensating rollback if subsequent local steps fail. Note: Automatic rollback does not apply to Google Drive ownership transfers, which require manual intervention and reconciliation.
 
 ### 2.4 Async & Concurrency Rules
 - Use Tokio async primitives (`tokio::sync::Mutex`, `CancellationToken`).

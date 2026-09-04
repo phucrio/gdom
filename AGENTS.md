@@ -51,8 +51,7 @@ Detailed architectural specifications, engineering standards, and product decisi
 | [docs/architecture.md](docs/architecture.md) | **System Architecture**: Clean Architecture layers, multi-account domain model, security boundaries, loopback listener design, and token-routing invariants. |
 | [docs/code-convention.md](docs/code-convention.md) | **Code Conventions**: Rust 2024 idioms, strict TypeScript standards, error handling without unwrap, WCAG 2.2 AA accessibility, LF line endings, and Conventional commit rules. |
 | [docs/code-review.md](docs/code-review.md) | **Code Review Guidelines**: Reviewer checklists, verification gates (Security, Architecture, Invariants, Durability), and author responsibilities. |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | **Architectural Decision Records (ADR)**: Scope boundaries, OAuth PKCE flow, loopback connection limits, full Drive scope rationale, and rate limit policies. |
-| [docs/PLAN.md](docs/PLAN.md) | **Master Implementation Plan**: Comprehensive multi-account specifications, state machines, implementation waves (0 through 6), and Definition of Done. |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | **Architectural Decision Records (ADR)**: Scope boundaries, OAuth PKCE flow, loopback connection limits, full Drive scope rationale, rate limit policies, and canary requirements. |
 | [docs/LIMITED_USE_DISCLOSURE.md](docs/LIMITED_USE_DISCLOSURE.md) | **Limited Use Disclosure**: Google API Services User Data Policy adherence. |
 | [docs/PRIVACY_POLICY_DRAFT.md](docs/PRIVACY_POLICY_DRAFT.md) | **Privacy Policy Draft**: Local-first data governance and user privacy commitments. |
 
