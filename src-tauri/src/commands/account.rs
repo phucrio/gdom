@@ -28,6 +28,12 @@ async fn configure_oauth_inner(
     input: ConfigureOAuthInput,
     state: &AppState,
 ) -> Result<(), CommandError> {
+    let _lock = state.connect_account_lock.try_lock().map_err(|_| {
+        CommandError::OAuth(
+            "Cannot change OAuth configuration while an account connection is in progress".into(),
+        )
+    })?;
+
     let client_id = input.client_id.trim();
     if client_id.is_empty() {
         return Err(CommandError::NotConfigured(
@@ -321,6 +327,26 @@ mod tests {
                 .await
                 .unwrap(),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn configure_oauth_rejected_while_connection_in_progress() {
+        let state = test_state(None).await;
+        let _active_lock = state.connect_account_lock.lock().await;
+
+        let input = ConfigureOAuthInput {
+            client_id: "client".into(),
+            client_secret: None,
+        };
+
+        let result = configure_oauth_inner(input, &state).await;
+        let error = result.expect_err("rejected due to active lock");
+        assert!(matches!(error, CommandError::OAuth(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("account connection is in progress")
         );
     }
 
