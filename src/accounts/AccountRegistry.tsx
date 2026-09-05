@@ -13,7 +13,6 @@ type AccountRegistryProps = {
   loadError: string | null;
   onRefresh: () => void;
   onAnnounce: (message: string) => void;
-  onOpenLegal: (document: "privacy" | "limited-use") => void;
 };
 
 type PendingAction =
@@ -28,7 +27,6 @@ export function AccountRegistry({
   loadError,
   onRefresh,
   onAnnounce,
-  onOpenLegal,
 }: AccountRegistryProps) {
   const [connectOpen, setConnectOpen] = useState(false);
   const [pending, setPending] = useState<PendingAction | null>(null);
@@ -150,7 +148,6 @@ export function AccountRegistry({
           onClose={() => setConnectOpen(false)}
           onConnected={onRefresh}
           onAnnounce={onAnnounce}
-          onOpenLegal={onOpenLegal}
         />
       )}
 

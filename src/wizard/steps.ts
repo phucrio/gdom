@@ -1,5 +1,4 @@
 import { selectAccountPair } from "./accountPair.ts";
-import { confirmCanaryEmail } from "./canary.ts";
 
 export const WIZARD_STEP_ORDER = [
   "select-accounts",
@@ -34,6 +33,7 @@ export type WizardGate = {
   validRootCount: number;
   preflightReady: boolean;
   canaryConfirmed: boolean;
+  pairLocked: boolean;
 };
 
 export type StepMoveResult =
@@ -101,13 +101,6 @@ export function moveToStep(
 
 export function advanceWizard(from: WizardStepId, gate: WizardGate): StepMoveResult {
   return canLeaveStep(from, gate);
-}
-
-export function canaryGateAllowsContinue(
-  enteredEmail: string,
-  targetEmail: string,
-): boolean {
-  return confirmCanaryEmail(enteredEmail, targetEmail);
 }
 
 export function wizardAdvanceErrorMessage(reason: WizardAdvanceError): string {

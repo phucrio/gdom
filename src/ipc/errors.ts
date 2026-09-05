@@ -5,7 +5,7 @@ export type IpcError = {
 };
 
 const UNKNOWN_COMMAND_PATTERN =
-  /unknown command|command ['`]?[\w-]+['`]? not found|not allowed by (the )?acl|command .+ not allowed|command is not available in this build/;
+  /unknown command|command ['`]?[\w-]+['`]? not found|command is not available in this build/;
 
 export function isCommandMissing(error: IpcError): boolean {
   if (error.kind === "commandMissing") {

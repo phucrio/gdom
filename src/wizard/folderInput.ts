@@ -11,7 +11,7 @@ export type FolderParseFailure = {
 
 export type FolderParseResult = FolderParseSuccess | FolderParseFailure;
 
-const FOLDER_ID_PATTERN = /^[A-Za-z0-9_-]{10,}$/;
+const FOLDER_ID_PATTERN = /^[A-Za-z0-9_-]{15,64}$/;
 
 export function parseFolderInput(raw: string): FolderParseResult {
   const trimmed = raw.trim();
@@ -21,13 +21,17 @@ export function parseFolderInput(raw: string): FolderParseResult {
 
   const fromUrl = extractFolderIdFromUrl(trimmed);
   if (fromUrl !== null) {
-    if (!FOLDER_ID_PATTERN.test(fromUrl)) {
+    if (fromUrl.toLowerCase() === "root" || !FOLDER_ID_PATTERN.test(fromUrl)) {
       return { ok: false, reason: "invalid" };
     }
     return { ok: true, folderId: fromUrl, source: "url" };
   }
 
   if (looksLikeUrl(trimmed)) {
+    return { ok: false, reason: "invalid" };
+  }
+
+  if (trimmed.toLowerCase() === "root") {
     return { ok: false, reason: "invalid" };
   }
 
@@ -52,15 +56,16 @@ function looksLikeUrl(value: string): boolean {
 }
 
 function extractFolderIdFromUrl(value: string): string | null {
+  const candidate = /^https?:\/\//i.test(value) ? value : `https://${value}`;
   let url: URL;
   try {
-    url = new URL(value);
+    url = new URL(candidate);
   } catch {
     return null;
   }
 
-  const host = url.hostname.toLowerCase();
-  if (host !== "drive.google.com" && host !== "docs.google.com") {
+  const host = url.hostname.toLowerCase().replace(/^www\./, "");
+  if (host !== "drive.google.com") {
     return null;
   }
 

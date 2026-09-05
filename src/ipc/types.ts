@@ -70,24 +70,39 @@ export type DeleteAccountDataInput = AssertNoSecrets<{
 export const JOB_STATUSES = [
   "DRAFT",
   "SCANNING",
-  "SCAN_COMPLETE",
+  "READY_FOR_REVIEW",
   "RUNNING_CANARY",
   "CANARY_REVIEW",
-  "TRANSFERRING",
+  "QUEUED",
+  "RUNNING",
+  "PAUSING",
   "PAUSED",
+  "CANCELLING",
+  "CANCELLED",
+  "COMPLETED",
+  "COMPLETED_WITH_ERRORS",
+  "FAILED",
+  "AUTH_REQUIRED",
   "SOURCE_RATE_LIMITED",
   "WAITING_FOR_QUOTA",
-  "COMPLETED",
-  "CANCELLED",
-  "FAILED",
 ] as const;
 
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
+export type AccountSnapshotDto = AssertNoSecrets<{
+  accountId: string;
+  email: string;
+  displayName: string;
+  permissionId: string;
+}>;
+
 export type JobRoot = AssertNoSecrets<{
   id: string;
-  folderId: string;
-  input: string;
+  jobId: string;
+  rootFileId: string;
+  rootName: string;
+  validationStatus: string;
+  createdAt: string;
 }>;
 
 export type ScanSummary = AssertNoSecrets<{
@@ -114,18 +129,24 @@ export type JobDto = AssertNoSecrets<{
   id: string;
   sourceAccountId: string;
   targetAccountId: string;
-  targetEmail: string;
+  sourceSnapshot: AccountSnapshotDto;
+  targetSnapshot: AccountSnapshotDto;
   status: JobStatus;
+  queuePosition: number | null;
+  canarySize: number;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  lastError: string | null;
   roots: JobRoot[];
-  scan: ScanSummary | null;
-  progress: MigrationProgress | null;
-  errors: JobErrorEntry[];
+  scan?: ScanSummary | null;
+  progress?: MigrationProgress | null;
+  errors?: JobErrorEntry[];
 }>;
 
 export type RootValidation = AssertNoSecrets<{
   folderId: string;
-  valid: boolean;
-  message: string;
+  name: string;
 }>;
 
 export const ACCOUNT_COMMANDS = {

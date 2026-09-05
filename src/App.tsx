@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AccountRegistry } from "./accounts/AccountRegistry.tsx";
 import type { BackendPort } from "./ipc/port.ts";
@@ -22,17 +22,26 @@ export function App({ backend }: AppProps) {
     setAnnouncement(message);
   }, []);
 
+  const refreshGeneration = useRef(0);
+
   const refreshAccounts = useCallback(() => {
+    const generation = refreshGeneration.current + 1;
+    refreshGeneration.current = generation;
     setLoading(true);
     backend
       .listAccounts()
       .then((next) => {
+        if (refreshGeneration.current !== generation) {
+          return;
+        }
         setAccounts(next);
         setLoadError(null);
         setLoading(false);
       })
       .catch((caught: unknown) => {
-        setAccounts([]);
+        if (refreshGeneration.current !== generation) {
+          return;
+        }
         setLoadError(
           caught instanceof Error
             ? caught.message
@@ -99,7 +108,6 @@ export function App({ backend }: AppProps) {
           loadError={loadError}
           onRefresh={refreshAccounts}
           onAnnounce={announce}
-          onOpenLegal={setLegal}
         />
         <MigrationWizard backend={backend} accounts={accounts} onAnnounce={announce} />
       </main>

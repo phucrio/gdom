@@ -50,5 +50,23 @@ describe("parseFolderInput", () => {
       ok: false,
       reason: "invalid",
     });
+    expect(parseFolderInput("root")).toEqual({ ok: false, reason: "invalid" });
+    expect(parseFolderInput("https://drive.google.com/drive/folders/root")).toEqual({
+      ok: false,
+      reason: "invalid",
+    });
+  });
+
+  it("accepts scheme-less and www Drive folder URLs", () => {
+    expect(parseFolderInput(`drive.google.com/drive/folders/${FOLDER_ID}`)).toEqual({
+      ok: true,
+      folderId: FOLDER_ID,
+      source: "url",
+    });
+    expect(parseFolderInput(`https://www.drive.google.com/drive/folders/${FOLDER_ID}`)).toEqual({
+      ok: true,
+      folderId: FOLDER_ID,
+      source: "url",
+    });
   });
 });

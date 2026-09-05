@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { advanceWizard, canaryGateAllowsContinue, moveToStep, type WizardGate } from "./steps.ts";
+import { confirmCanaryEmail } from "./canary.ts";
+import { advanceWizard, moveToStep, type WizardGate } from "./steps.ts";
 
 const readyThroughScan: WizardGate = {
   sourceAccountId: "src",
@@ -8,6 +9,7 @@ const readyThroughScan: WizardGate = {
   validRootCount: 1,
   preflightReady: true,
   canaryConfirmed: false,
+  pairLocked: false,
 };
 
 describe("wizard step order", () => {
@@ -18,6 +20,7 @@ describe("wizard step order", () => {
       validRootCount: 0,
       preflightReady: false,
       canaryConfirmed: false,
+      pairLocked: false,
     });
     expect(result).toEqual({ ok: false, reason: "same-source-and-target" });
   });
@@ -29,6 +32,7 @@ describe("wizard step order", () => {
       validRootCount: 0,
       preflightReady: false,
       canaryConfirmed: false,
+      pairLocked: false,
     });
     expect(result).toEqual({ ok: true, step: "add-roots" });
   });
@@ -44,15 +48,29 @@ describe("wizard step order", () => {
   it("refuses to leave canary review until the target email is confirmed", () => {
     const blocked = advanceWizard("canary-review", readyThroughScan);
     expect(blocked).toEqual({ ok: false, reason: "canary-not-confirmed" });
-    expect(canaryGateAllowsContinue("wrong@gmail.com", "target@gmail.com")).toBe(false);
+    expect(confirmCanaryEmail("wrong@gmail.com", "target@gmail.com")).toBe(false);
   });
 
   it("allows live migration only after the canary email matches", () => {
-    expect(canaryGateAllowsContinue("target@gmail.com", "target@gmail.com")).toBe(true);
+    expect(confirmCanaryEmail("target@gmail.com", "target@gmail.com")).toBe(true);
     const allowed = advanceWizard("canary-review", {
       ...readyThroughScan,
       canaryConfirmed: true,
     });
     expect(allowed).toEqual({ ok: true, step: "live-migration" });
+  });
+
+  it("allows returning to select-accounts after scan without skipping canary forward", () => {
+    const back = moveToStep("scan-preflight", "select-accounts", {
+      ...readyThroughScan,
+      pairLocked: true,
+    });
+    expect(back).toEqual({ ok: true, step: "select-accounts" });
+    const skipped = moveToStep("scan-preflight", "live-migration", {
+      ...readyThroughScan,
+      pairLocked: true,
+      canaryConfirmed: true,
+    });
+    expect(skipped).toEqual({ ok: false, reason: "cannot-skip-step" });
   });
 });

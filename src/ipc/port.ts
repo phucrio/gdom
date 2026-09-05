@@ -18,6 +18,11 @@ export type BackendPort = {
   deleteLocalAccountData(accountId: string, confirmation: true): Promise<void>;
 
   createJob(sourceAccountId: string, targetAccountId: string): Promise<JobDto>;
+  updateDraftJobAccounts(
+    jobId: string,
+    sourceAccountId: string,
+    targetAccountId: string,
+  ): Promise<JobDto>;
   getJob(jobId: string): Promise<JobDto>;
   validateRoot(jobId: string, input: string): Promise<RootValidation>;
   addRoot(jobId: string, input: string): Promise<JobDto>;

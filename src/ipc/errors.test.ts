@@ -22,4 +22,10 @@ describe("isCommandMissing", () => {
     const unknown = toIpcError("unknown command start_scan", "start_scan");
     expect(isCommandMissing(unknown)).toBe(true);
   });
+
+  it("does not treat ACL denials as a missing command", () => {
+    const denied = toIpcError("command start_scan not allowed by the acl", "start_scan");
+    expect(isCommandMissing(denied)).toBe(false);
+    expect(denied.kind).toBe("internal");
+  });
 });

@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 type DialogProps = {
   title: string;
@@ -51,23 +52,35 @@ export function Dialog({ title, onClose, children, wide = false }: DialogProps) 
         return;
       }
 
-      if (event.shiftKey && document.activeElement === first) {
+      const active = document.activeElement;
+      const activeIsTrapped = active instanceof HTMLElement && nodes.includes(active);
+      if (!activeIsTrapped) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
+
+      if (event.shiftKey && active === first) {
         event.preventDefault();
         last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
+      } else if (!event.shiftKey && active === last) {
         event.preventDefault();
         first.focus();
       }
     }
 
+    const shell = document.querySelector(".app-shell");
+    shell?.setAttribute("inert", "");
+
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
+      shell?.removeAttribute("inert");
       previouslyFocused?.focus();
     };
   }, []);
 
-  return (
+  return createPortal(
     <div className="dialog-backdrop">
       <div
         ref={rootRef}
@@ -84,6 +97,7 @@ export function Dialog({ title, onClose, children, wide = false }: DialogProps) 
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

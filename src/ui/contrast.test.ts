@@ -14,7 +14,7 @@ import {
 const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../App.css"), "utf8");
 
 describe("contrastRatio", () => {
-  it("measures the previous input border/fill pair as below the 3:1 identifying boundary", () => {
+  it("measures an under-contrast field border below 3:1 and a passing pair at or above 3:1", () => {
     expect(contrastRatio("#3a4254", "#0a0c11")).toBeLessThan(3);
     expect(contrastRatio("#8a93a8", "#0a0c11")).toBeGreaterThanOrEqual(3);
   });

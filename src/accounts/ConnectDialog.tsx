@@ -7,6 +7,7 @@ import {
   LIMITED_USE_SENTENCE,
   SYSTEM_BROWSER_OAUTH_EXPLANATION,
 } from "../legal/copy.ts";
+import { LegalDocument, legalDocumentTitle, type LegalDocumentId } from "../legal/LegalDialogs.tsx";
 import { Dialog } from "../ui/Dialog.tsx";
 
 type ConnectDialogProps = {
@@ -14,7 +15,6 @@ type ConnectDialogProps = {
   onClose: () => void;
   onConnected: () => void;
   onAnnounce: (message: string) => void;
-  onOpenLegal: (document: "privacy" | "limited-use") => void;
 };
 
 export function ConnectDialog({
@@ -22,13 +22,13 @@ export function ConnectDialog({
   onClose,
   onConnected,
   onAnnounce,
-  onOpenLegal,
 }: ConnectDialogProps) {
   const [config, setConfig] = useState<OAuthConfigDto | null>(null);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [clientId, setClientId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [legal, setLegal] = useState<LegalDocumentId | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,6 +91,21 @@ export function ConnectDialog({
 
   const oauthConfigured = config?.isConfigured === true;
 
+  if (legal !== null) {
+    return (
+      <Dialog title={legalDocumentTitle(legal)} onClose={() => setLegal(null)} wide>
+        <div className="dialog-body">
+          <LegalDocument document={legal} />
+          <div className="dialog-actions">
+            <button type="button" className="ghost-button" onClick={() => setLegal(null)}>
+              Back
+            </button>
+          </div>
+        </div>
+      </Dialog>
+    );
+  }
+
   return (
     <Dialog title="Connect a Google account" onClose={onClose} wide>
       <form className="dialog-body" onSubmit={handleConnect}>
@@ -98,11 +113,11 @@ export function ConnectDialog({
         <p>{FULL_DRIVE_SCOPE_JUSTIFICATION}</p>
         <p className="limited-use">{LIMITED_USE_SENTENCE}</p>
         <p>
-          <button type="button" className="link-button" onClick={() => onOpenLegal("privacy")}>
+          <button type="button" className="link-button" onClick={() => setLegal("privacy")}>
             Privacy Policy
           </button>
           {" · "}
-          <button type="button" className="link-button" onClick={() => onOpenLegal("limited-use")}>
+          <button type="button" className="link-button" onClick={() => setLegal("limited-use")}>
             Limited Use Disclosure
           </button>
         </p>

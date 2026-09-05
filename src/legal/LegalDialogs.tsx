@@ -6,38 +6,48 @@ import {
   PRIVACY_POLICY_TITLE,
 } from "./copy.ts";
 
+export type LegalDocumentId = "privacy" | "limited-use";
+
 type LegalDialogsProps = {
-  open: "privacy" | "limited-use" | null;
+  open: LegalDocumentId | null;
   onClose: () => void;
 };
 
+export function legalDocumentTitle(document: LegalDocumentId): string {
+  return document === "privacy" ? PRIVACY_POLICY_TITLE : LIMITED_USE_TITLE;
+}
+
+export function LegalDocument({ document }: { document: LegalDocumentId }) {
+  if (document === "privacy") {
+    return (
+      <div className="legal-copy">
+        {PRIVACY_POLICY_SECTIONS.map((section) => (
+          <section key={section.heading}>
+            <h3>{section.heading}</h3>
+            <p>{section.body}</p>
+          </section>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="legal-copy">
+      {LIMITED_USE_BODY.map((paragraph) => (
+        <p key={paragraph}>{paragraph}</p>
+      ))}
+    </div>
+  );
+}
+
 export function LegalDialogs({ open, onClose }: LegalDialogsProps) {
-  if (open === "privacy") {
-    return (
-      <Dialog title={PRIVACY_POLICY_TITLE} onClose={onClose} wide>
-        <div className="legal-copy">
-          {PRIVACY_POLICY_SECTIONS.map((section) => (
-            <section key={section.heading}>
-              <h3>{section.heading}</h3>
-              <p>{section.body}</p>
-            </section>
-          ))}
-        </div>
-      </Dialog>
-    );
+  if (open === null) {
+    return null;
   }
 
-  if (open === "limited-use") {
-    return (
-      <Dialog title={LIMITED_USE_TITLE} onClose={onClose} wide>
-        <div className="legal-copy">
-          {LIMITED_USE_BODY.map((paragraph) => (
-            <p key={paragraph}>{paragraph}</p>
-          ))}
-        </div>
-      </Dialog>
-    );
-  }
-
-  return null;
+  return (
+    <Dialog title={legalDocumentTitle(open)} onClose={onClose} wide>
+      <LegalDocument document={open} />
+    </Dialog>
+  );
 }

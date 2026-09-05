@@ -67,30 +67,35 @@ export function createTauriBackend(): BackendPort {
 
     createJob: (sourceAccountId, targetAccountId) =>
       invokeCommand<JobDto>(JOB_COMMANDS.createJob, {
-        sourceAccountId,
-        targetAccountId,
+        input: { sourceAccountId, targetAccountId },
       }),
-    getJob: (jobId) => invokeCommand<JobDto>(JOB_COMMANDS.getJob, { jobId }),
+    updateDraftJobAccounts: (jobId, sourceAccountId, targetAccountId) =>
+      invokeCommand<JobDto>(JOB_COMMANDS.updateDraftJobAccounts, {
+        input: { jobId, sourceAccountId, targetAccountId },
+      }),
+    getJob: (jobId) => invokeCommand<JobDto>(JOB_COMMANDS.getJob, { input: { jobId } }),
     validateRoot: (jobId, input) =>
-      invokeCommand<RootValidation>(JOB_COMMANDS.validateRoot, { jobId, input }),
+      invokeCommand<RootValidation>(JOB_COMMANDS.validateRoot, {
+        input: { jobId, input },
+      }),
     addRoot: (jobId, input) =>
-      invokeCommand<JobDto>(JOB_COMMANDS.addRoot, { jobId, input }),
+      invokeCommand<JobDto>(JOB_COMMANDS.addRoot, { input: { jobId, input } }),
     removeRoot: (jobId, rootId) =>
-      invokeCommand<JobDto>(JOB_COMMANDS.removeRoot, { jobId, rootId }),
-    startScan: (jobId) => invokeCommand<JobDto>(JOB_COMMANDS.startScan, { jobId }),
+      invokeCommand<JobDto>(JOB_COMMANDS.removeRoot, { input: { jobId, rootId } }),
+    startScan: (jobId) =>
+      invokeCommand<JobDto>(JOB_COMMANDS.startScan, { input: { jobId } }),
     startCanary: (jobId, confirmationEmail) =>
       invokeCommand<JobDto>(JOB_COMMANDS.startCanary, {
-        jobId,
-        confirmation: confirmationEmail,
+        input: { jobId, confirmation: confirmationEmail },
       }),
     continueMigration: (jobId) =>
-      invokeCommand<JobDto>(JOB_COMMANDS.continueMigration, { jobId }),
+      invokeCommand<JobDto>(JOB_COMMANDS.continueMigration, { input: { jobId } }),
     pauseMigration: (jobId) =>
-      invokeCommand<JobDto>(JOB_COMMANDS.pauseMigration, { jobId }),
+      invokeCommand<JobDto>(JOB_COMMANDS.pauseMigration, { input: { jobId } }),
     resumeMigration: (jobId) =>
-      invokeCommand<JobDto>(JOB_COMMANDS.resumeMigration, { jobId }),
+      invokeCommand<JobDto>(JOB_COMMANDS.resumeMigration, { input: { jobId } }),
     cancelMigration: (jobId) =>
-      invokeCommand<JobDto>(JOB_COMMANDS.cancelMigration, { jobId }),
+      invokeCommand<JobDto>(JOB_COMMANDS.cancelMigration, { input: { jobId } }),
 
     subscribe: async (event, listener) => {
       try {
