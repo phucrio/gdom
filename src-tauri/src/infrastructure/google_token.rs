@@ -108,6 +108,57 @@ impl GoogleTokenClient {
             scope: raw_token.scope,
         })
     }
+
+    pub async fn refresh_token(
+        &self,
+        refresh_token: &RefreshToken,
+    ) -> Result<GoogleTokenResponse, GoogleTokenError> {
+        let body = {
+            let mut form = form_urlencoded::Serializer::new(String::new());
+            form.append_pair("grant_type", "refresh_token");
+            form.append_pair("refresh_token", refresh_token.expose_secret());
+            form.append_pair("client_id", &self.client_id);
+
+            if let Some(secret) = &self.client_secret {
+                form.append_pair("client_secret", secret);
+            }
+
+            form.finish()
+        };
+
+        let response = self
+            .client
+            .post(format!("{}{TOKEN_PATH}", self.base_url))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .map_err(|_| GoogleTokenError::Transport)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            if let Ok(error_body) = response.json::<OAuthErrorResponse>().await {
+                return Err(GoogleTokenError::from_oauth_error(
+                    &error_body.error,
+                    status,
+                ));
+            }
+            return Err(GoogleTokenError::from_status(status));
+        }
+
+        let raw_token = response
+            .json::<RawTokenResponse>()
+            .await
+            .map_err(|_| GoogleTokenError::InvalidResponse)?;
+
+        Ok(GoogleTokenResponse {
+            access_token: AccessToken::new(raw_token.access_token),
+            expires_in: Duration::from_secs(raw_token.expires_in),
+            refresh_token: raw_token.refresh_token.map(RefreshToken::new),
+            token_type: raw_token.token_type,
+            scope: raw_token.scope,
+        })
+    }
 }
 
 pub struct GoogleTokenResponse {

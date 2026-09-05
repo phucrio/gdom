@@ -73,6 +73,14 @@ impl AccountStorePort for MockAccountStore {
         Ok(guard.get(perm_id.as_str()).cloned())
     }
 
+    async fn find_by_id(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<ConnectedAccount>, AccountStorePortError> {
+        let guard = self.accounts.lock().unwrap();
+        Ok(guard.values().find(|acc| acc.id() == account_id).cloned())
+    }
+
     async fn connect(
         &self,
         account: &ConnectedAccount,
@@ -100,6 +108,41 @@ impl AccountStorePort for MockAccountStore {
         Ok(final_account)
     }
 
+    async fn update_auth_status(
+        &self,
+        account_id: AccountId,
+        status: crate::domain::AuthStatus,
+    ) -> Result<(), AccountStorePortError> {
+        let mut guard = self.accounts.lock().unwrap();
+        if let Some(acc) = guard.values_mut().find(|acc| acc.id() == account_id) {
+            acc.set_auth_status(status);
+        }
+        Ok(())
+    }
+
+    async fn update_label(
+        &self,
+        account_id: AccountId,
+        label: Option<&crate::domain::AccountLabel>,
+    ) -> Result<(), AccountStorePortError> {
+        let mut guard = self.accounts.lock().unwrap();
+        if let Some(acc) = guard.values_mut().find(|acc| acc.id() == account_id) {
+            acc.set_label(label.cloned());
+        }
+        Ok(())
+    }
+
+    async fn mark_last_authenticated(
+        &self,
+        account_id: AccountId,
+    ) -> Result<(), AccountStorePortError> {
+        let mut guard = self.accounts.lock().unwrap();
+        if let Some(acc) = guard.values_mut().find(|acc| acc.id() == account_id) {
+            acc.set_auth_status(crate::domain::AuthStatus::Connected);
+        }
+        Ok(())
+    }
+
     async fn remove(&self, id: AccountId) -> Result<(), AccountStorePortError> {
         if self.fail_remove {
             return Err(AccountStorePortError::Storage(
@@ -109,6 +152,10 @@ impl AccountStorePort for MockAccountStore {
         let mut guard = self.accounts.lock().unwrap();
         guard.retain(|_, acc| acc.id() != id);
         Ok(())
+    }
+
+    async fn hard_delete(&self, id: AccountId) -> Result<(), AccountStorePortError> {
+        self.remove(id).await
     }
 
     async fn list_all(&self) -> Result<Vec<ConnectedAccount>, AccountStorePortError> {

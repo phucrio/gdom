@@ -3,6 +3,7 @@ use std::{collections::HashMap, error::Error, fmt};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccountError {
     UnsupportedAccountType,
+    InvalidLabel,
 }
 
 impl fmt::Display for AccountError {
@@ -12,6 +13,7 @@ impl fmt::Display for AccountError {
                 f,
                 "only personal Google accounts (@gmail.com / @googlemail.com) are supported"
             ),
+            Self::InvalidLabel => write!(f, "account label cannot exceed 100 characters"),
         }
     }
 }
@@ -50,6 +52,67 @@ impl GooglePermissionId {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccountLabel(String);
+
+impl AccountLabel {
+    pub fn new(value: impl Into<String>) -> Result<Self, AccountError> {
+        let trimmed = value.into().trim().to_string();
+        if trimmed.chars().count() > 100 {
+            return Err(AccountError::InvalidLabel);
+        }
+        Ok(Self(trimmed))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AuthStatus {
+    #[default]
+    Connected,
+    TokenRefreshing,
+    ReauthRequired,
+    Disconnected,
+    RemovalPending,
+}
+
+impl AuthStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Connected => "CONNECTED",
+            Self::TokenRefreshing => "TOKEN_REFRESHING",
+            Self::ReauthRequired => "REAUTH_REQUIRED",
+            Self::Disconnected => "DISCONNECTED",
+            Self::RemovalPending => "REMOVAL_PENDING",
+        }
+    }
+
+    pub fn parse_status(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_uppercase().as_str() {
+            "CONNECTED" => Some(Self::Connected),
+            "TOKEN_REFRESHING" => Some(Self::TokenRefreshing),
+            "REAUTH_REQUIRED" => Some(Self::ReauthRequired),
+            "DISCONNECTED" => Some(Self::Disconnected),
+            "REMOVAL_PENDING" => Some(Self::RemovalPending),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for AuthStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccountProfile {
     email: String,
     display_name: String,
@@ -83,6 +146,12 @@ pub struct ConnectedAccount {
     id: AccountId,
     google_permission_id: GooglePermissionId,
     profile: AccountProfile,
+    label: Option<AccountLabel>,
+    auth_status: AuthStatus,
+    connected_at: String,
+    last_authenticated_at: String,
+    updated_at: String,
+    removed_at: Option<String>,
 }
 
 impl ConnectedAccount {
@@ -95,6 +164,37 @@ impl ConnectedAccount {
             id,
             google_permission_id,
             profile,
+            label: None,
+            auth_status: AuthStatus::Connected,
+            connected_at: String::new(),
+            last_authenticated_at: String::new(),
+            updated_at: String::new(),
+            removed_at: None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_lifecycle(
+        id: AccountId,
+        google_permission_id: GooglePermissionId,
+        profile: AccountProfile,
+        label: Option<AccountLabel>,
+        auth_status: AuthStatus,
+        connected_at: String,
+        last_authenticated_at: String,
+        updated_at: String,
+        removed_at: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            google_permission_id,
+            profile,
+            label,
+            auth_status,
+            connected_at,
+            last_authenticated_at,
+            updated_at,
+            removed_at,
         }
     }
 
@@ -123,6 +223,42 @@ impl ConnectedAccount {
     pub fn display_name(&self) -> &str {
         &self.profile.display_name
     }
+
+    pub fn label(&self) -> Option<&AccountLabel> {
+        self.label.as_ref()
+    }
+
+    pub fn set_label(&mut self, label: Option<AccountLabel>) {
+        self.label = label;
+    }
+
+    pub fn auth_status(&self) -> AuthStatus {
+        self.auth_status
+    }
+
+    pub fn set_auth_status(&mut self, status: AuthStatus) {
+        self.auth_status = status;
+    }
+
+    pub fn connected_at(&self) -> &str {
+        &self.connected_at
+    }
+
+    pub fn last_authenticated_at(&self) -> &str {
+        &self.last_authenticated_at
+    }
+
+    pub fn updated_at(&self) -> &str {
+        &self.updated_at
+    }
+
+    pub fn removed_at(&self) -> Option<&str> {
+        self.removed_at.as_deref()
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.removed_at.is_none()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -149,10 +285,8 @@ mod tests {
 
     #[test]
     fn registry_accepts_more_than_two_accounts() {
-        // Given
         let mut registry = AccountRegistry::default();
 
-        // When
         registry.connect(ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("permission-a"),
@@ -169,13 +303,11 @@ mod tests {
             AccountProfile::new("c@example.com", "Account C"),
         ));
 
-        // Then
         assert_eq!(registry.account_count(), 3);
     }
 
     #[test]
     fn registry_preserves_account_id_when_identity_reconnects() {
-        // Given
         let mut registry = AccountRegistry::default();
         let original_id = registry.connect(ConnectedAccount::new(
             AccountId::new(1),
@@ -183,14 +315,12 @@ mod tests {
             AccountProfile::new("a@example.com", "Account A"),
         ));
 
-        // When
         let reconnected_id = registry.connect(ConnectedAccount::new(
             AccountId::new(99),
             GooglePermissionId::new("permission-a"),
             AccountProfile::new("updated@example.com", "Updated Account A"),
         ));
 
-        // Then
         assert_eq!(reconnected_id, original_id);
         assert_eq!(registry.account_count(), 1);
     }
@@ -221,5 +351,43 @@ mod tests {
             AccountProfile::new_personal("", "Empty"),
             Err(AccountError::UnsupportedAccountType)
         );
+    }
+
+    #[test]
+    fn account_label_validates_length() {
+        assert!(AccountLabel::new("Work Personal").is_ok());
+        let valid_100 = "a".repeat(100);
+        assert!(AccountLabel::new(valid_100).is_ok());
+
+        let invalid_101 = "a".repeat(101);
+        assert_eq!(
+            AccountLabel::new(invalid_101),
+            Err(AccountError::InvalidLabel)
+        );
+    }
+
+    #[test]
+    fn auth_status_serialization_and_parsing() {
+        assert_eq!(
+            AuthStatus::parse_status("CONNECTED"),
+            Some(AuthStatus::Connected)
+        );
+        assert_eq!(
+            AuthStatus::parse_status("token_refreshing"),
+            Some(AuthStatus::TokenRefreshing)
+        );
+        assert_eq!(
+            AuthStatus::parse_status("REAUTH_REQUIRED"),
+            Some(AuthStatus::ReauthRequired)
+        );
+        assert_eq!(
+            AuthStatus::parse_status("disconnected"),
+            Some(AuthStatus::Disconnected)
+        );
+        assert_eq!(
+            AuthStatus::parse_status("REMOVAL_PENDING"),
+            Some(AuthStatus::RemovalPending)
+        );
+        assert_eq!(AuthStatus::parse_status("unknown"), None);
     }
 }

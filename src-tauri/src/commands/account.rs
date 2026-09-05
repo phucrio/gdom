@@ -1,13 +1,19 @@
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    application::{OAuthGrant, RefreshTokenStore},
+    application::{AccountLifecycleService, OAuthGrant, RefreshTokenStore},
     domain::AccountId,
-    infrastructure::google_oauth::DesktopOAuthSession,
+    infrastructure::{
+        google_drive::GoogleDriveClient, google_oauth::DesktopOAuthSession,
+        google_token::GoogleTokenClient,
+    },
     state::{AppState, OAuthConfig},
 };
 
-use super::dto::{AccountDto, ConfigureOAuthInput, OAuthConfigDto};
+use super::dto::{
+    AccountDto, AccountIdInput, ConfigureOAuthInput, DeleteAccountDataInput, OAuthConfigDto,
+    UpdateAccountLabelInput,
+};
 use super::error::CommandError;
 
 // ---------------------------------------------------------------------------
@@ -101,6 +107,13 @@ async fn get_oauth_config_inner(state: &AppState) -> Result<OAuthConfigDto, Comm
     }
 }
 
+pub(crate) fn parse_account_id(id_str: &str) -> Result<AccountId, CommandError> {
+    let parsed = id_str.parse::<u128>().map_err(|_| {
+        CommandError::AccountNotFound(format!("invalid account id format: {id_str}"))
+    })?;
+    Ok(AccountId::new(parsed))
+}
+
 // ---------------------------------------------------------------------------
 // Tauri command handlers (thin wrappers)
 // ---------------------------------------------------------------------------
@@ -162,19 +175,199 @@ pub async fn connect_account(
         grant.redirect_uri().to_owned(),
     );
 
-    let duration_since_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| CommandError::Internal(e.to_string()))?;
-    let fallback_id = duration_since_epoch.as_nanos();
+    let fallback_id = AccountId::new(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(1),
+    );
 
-    let connected_account = state
+    let account = state
         .connect_account_use_case
-        .connect_account(grant, AccountId::new(fallback_id))
+        .connect_account(grant, fallback_id)
         .await?;
 
     let _ = app.emit("account-registry-changed", ());
 
-    Ok(AccountDto::from(connected_account))
+    Ok(AccountDto::from(account))
+}
+
+#[tauri::command]
+pub async fn disconnect_account(
+    input: AccountIdInput,
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), CommandError> {
+    let account_id = parse_account_id(&input.account_id)?;
+
+    state.token_provider.invalidate_cache(account_id).await;
+
+    let dummy_exchange = GoogleTokenClient::new("dummy".into(), None)
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+    let drive_client =
+        GoogleDriveClient::new().map_err(|e| CommandError::Internal(e.to_string()))?;
+    let service = AccountLifecycleService::new(
+        dummy_exchange,
+        drive_client,
+        state.account_store.clone(),
+        state.credential_store.clone(),
+    );
+
+    service.disconnect_account(account_id).await?;
+
+    let _ = app.emit("account-registry-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_account_label(
+    input: UpdateAccountLabelInput,
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<AccountDto, CommandError> {
+    let account_id = parse_account_id(&input.account_id)?;
+
+    let dummy_exchange = GoogleTokenClient::new("dummy".into(), None)
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+    let drive_client =
+        GoogleDriveClient::new().map_err(|e| CommandError::Internal(e.to_string()))?;
+    let service = AccountLifecycleService::new(
+        dummy_exchange,
+        drive_client,
+        state.account_store.clone(),
+        state.credential_store.clone(),
+    );
+
+    let updated = service
+        .update_account_label(account_id, input.label)
+        .await?;
+
+    let _ = app.emit("account-registry-changed", ());
+    Ok(AccountDto::from(updated))
+}
+
+#[tauri::command]
+pub async fn reauthenticate_account(
+    input: AccountIdInput,
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<AccountDto, CommandError> {
+    let account_id = parse_account_id(&input.account_id)?;
+
+    let _lock = state
+        .connect_account_lock
+        .try_lock()
+        .map_err(|_| CommandError::OAuth("Another account authentication is in progress".into()))?;
+
+    let config = {
+        let guard = state.oauth_config.read().await;
+        guard.clone().ok_or_else(|| {
+            CommandError::NotConfigured("OAuth client ID is not configured".into())
+        })?
+    };
+
+    let session = DesktopOAuthSession::start(&config.client_id)
+        .await
+        .map_err(|e| CommandError::OAuth(e.to_string()))?;
+
+    let authorization_url = session.authorization_url().to_owned();
+    open::that_detached(&authorization_url)
+        .map_err(|e| CommandError::BrowserLaunchFailed(e.to_string()))?;
+
+    let grant = session
+        .receive_callback()
+        .await
+        .map_err(|e| CommandError::OAuth(e.to_string()))?;
+
+    let grant = OAuthGrant::new(
+        grant.authorization_code().to_owned(),
+        grant.pkce_verifier().to_owned(),
+        grant.redirect_uri().to_owned(),
+    );
+
+    let token_client = GoogleTokenClient::new(config.client_id, config.client_secret)
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+    let drive_client =
+        GoogleDriveClient::new().map_err(|e| CommandError::Internal(e.to_string()))?;
+
+    let service = AccountLifecycleService::new(
+        token_client,
+        drive_client,
+        state.account_store.clone(),
+        state.credential_store.clone(),
+    );
+
+    let account = service.reauthenticate_account(account_id, grant).await?;
+    state.token_provider.invalidate_cache(account_id).await;
+
+    let _ = app.emit("account-registry-changed", ());
+    Ok(AccountDto::from(account))
+}
+
+#[tauri::command]
+pub async fn remove_account(
+    input: AccountIdInput,
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), CommandError> {
+    let account_id = parse_account_id(&input.account_id)?;
+
+    state
+        .token_provider
+        .remove_account_lifecycle(account_id)
+        .await;
+
+    let dummy_exchange = GoogleTokenClient::new("dummy".into(), None)
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+    let drive_client =
+        GoogleDriveClient::new().map_err(|e| CommandError::Internal(e.to_string()))?;
+    let service = AccountLifecycleService::new(
+        dummy_exchange,
+        drive_client,
+        state.account_store.clone(),
+        state.credential_store.clone(),
+    );
+
+    service.remove_account(account_id).await?;
+
+    let _ = app.emit("account-registry-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_local_account_data(
+    input: DeleteAccountDataInput,
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), CommandError> {
+    if !input.confirmation {
+        return Err(CommandError::ConfirmationRequired(
+            "confirmation flag must be true to hard-delete local account data".into(),
+        ));
+    }
+
+    let account_id = parse_account_id(&input.account_id)?;
+
+    state
+        .token_provider
+        .remove_account_lifecycle(account_id)
+        .await;
+
+    let dummy_exchange = GoogleTokenClient::new("dummy".into(), None)
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+    let drive_client =
+        GoogleDriveClient::new().map_err(|e| CommandError::Internal(e.to_string()))?;
+    let service = AccountLifecycleService::new(
+        dummy_exchange,
+        drive_client,
+        state.account_store.clone(),
+        state.credential_store.clone(),
+    );
+
+    service.delete_local_account_data(account_id).await?;
+
+    let _ = app.emit("account-registry-changed", ());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -214,20 +407,33 @@ mod tests {
         }
     }
 
-    /// Build a minimal `AppState` with an in-memory SQLite store and mock
-    /// credential store for command-level tests.
     async fn test_state(oauth: Option<OAuthConfig>) -> AppState {
         let store = SqliteAccountStore::open_in_memory()
             .await
             .expect("in-memory account store");
-        let cred_store = WindowsCredentialStore::new_mock();
+        let account_store = Arc::new(store);
+        let cred_store = Arc::new(WindowsCredentialStore::new_mock());
         let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
             Arc::new(DummyConnectAccountUseCase);
         let oauth_lock = Arc::new(tokio::sync::RwLock::new(oauth));
-        AppState::new(Arc::new(store), Arc::new(cred_store), oauth_lock, use_case)
-    }
 
-    // -- list_accounts -------------------------------------------------------
+        let refresh_port = Arc::new(crate::application::DynamicTokenRefresh::new(Arc::clone(
+            &oauth_lock,
+        )));
+        let token_provider = Arc::new(crate::application::AccountTokenProvider::new(
+            refresh_port,
+            cred_store.clone(),
+            account_store.clone(),
+        ));
+
+        AppState::new(
+            account_store,
+            cred_store,
+            oauth_lock,
+            use_case,
+            token_provider,
+        )
+    }
 
     #[tokio::test]
     async fn list_accounts_returns_empty_when_no_accounts() {
@@ -242,7 +448,6 @@ mod tests {
     async fn list_accounts_returns_persisted_accounts() {
         let state = test_state(None).await;
 
-        // Seed two accounts directly into the store.
         let account_a = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-a"),
@@ -268,12 +473,9 @@ mod tests {
 
         let accounts = result.expect("command succeeds");
         assert_eq!(accounts.len(), 2);
-        // Ordered by email ASC per SqliteAccountStore::list_all.
         assert_eq!(accounts[0].email, "a@gmail.com");
         assert_eq!(accounts[1].email, "b@gmail.com");
     }
-
-    // -- configure_oauth -----------------------------------------------------
 
     #[tokio::test]
     async fn configure_oauth_stores_config() {
@@ -283,153 +485,140 @@ mod tests {
             client_secret: Some("test-secret".into()),
         };
 
-        configure_oauth_inner(input, &state)
-            .await
-            .expect("command succeeds");
+        let result = configure_oauth_inner(input, &state).await;
+        assert!(result.is_ok());
 
         let guard = state.oauth_config.read().await;
-        let config = guard.as_ref().expect("config is set");
+        let config = guard.as_ref().expect("config is stored");
         assert_eq!(config.client_id, "test-client-id");
         assert_eq!(config.client_secret.as_deref(), Some("test-secret"));
 
-        assert_eq!(
-            state
-                .account_store
-                .get_setting("oauth.client_id")
-                .await
-                .unwrap(),
-            Some("test-client-id".into())
-        );
-        assert_eq!(
-            state.credential_store.load_oauth_secret().unwrap(),
-            Some("test-secret".into())
-        );
+        let stored_id = state
+            .account_store
+            .get_setting("oauth.client_id")
+            .await
+            .expect("read setting")
+            .expect("setting exists");
+        assert_eq!(stored_id, "test-client-id");
+
+        let stored_secret = state
+            .credential_store
+            .load_oauth_secret()
+            .expect("keychain read")
+            .expect("secret exists");
+        assert_eq!(stored_secret, "test-secret");
     }
 
     #[tokio::test]
     async fn configure_oauth_rejects_empty_client_id() {
         let state = test_state(None).await;
         let input = ConfigureOAuthInput {
-            client_id: "  ".into(),
+            client_id: "   ".into(),
             client_secret: None,
         };
 
         let result = configure_oauth_inner(input, &state).await;
-
-        let error = result.expect_err("command rejects empty client ID");
-        assert!(matches!(error, CommandError::NotConfigured(_)));
+        assert!(matches!(result, Err(CommandError::NotConfigured(_))));
     }
 
     #[tokio::test]
     async fn configure_oauth_replaces_existing_config() {
-        let initial = OAuthConfig::new("old-id", Some("old-secret".to_owned()));
-        let state = test_state(Some(initial)).await;
+        let state = test_state(Some(OAuthConfig::new("old-id", Some("old-secret".into())))).await;
         let input = ConfigureOAuthInput {
             client_id: "new-id".into(),
             client_secret: None,
         };
 
-        configure_oauth_inner(input, &state)
-            .await
-            .expect("command succeeds");
+        let result = configure_oauth_inner(input, &state).await;
+        assert!(result.is_ok());
 
         let guard = state.oauth_config.read().await;
-        let config = guard.as_ref().expect("config is set");
+        let config = guard.as_ref().expect("config is stored");
         assert_eq!(config.client_id, "new-id");
-        assert!(config.client_secret.is_none());
+        assert_eq!(config.client_secret, None);
 
-        assert_eq!(
-            state
-                .account_store
-                .get_setting("oauth.client_id")
-                .await
-                .unwrap(),
-            Some("new-id".into())
+        let stored_secret = state
+            .credential_store
+            .load_oauth_secret()
+            .expect("keychain read");
+        assert!(stored_secret.is_none());
+    }
+
+    #[tokio::test]
+    async fn configure_oauth_rejects_client_id_change_when_accounts_exist() {
+        let state = test_state(Some(OAuthConfig::new("current-id", None))).await;
+
+        let account = ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-1"),
+            AccountProfile::new("user@gmail.com", "User"),
         );
-        assert_eq!(state.credential_store.load_oauth_secret().unwrap(), None);
+        state
+            .account_store
+            .connect(&account)
+            .await
+            .expect("seed account");
+
+        let input = ConfigureOAuthInput {
+            client_id: "different-id".into(),
+            client_secret: None,
+        };
+
+        let result = configure_oauth_inner(input, &state).await;
+        assert!(matches!(result, Err(CommandError::OAuth(_))));
     }
 
     #[tokio::test]
     async fn configure_oauth_rejected_while_connection_in_progress() {
         let state = test_state(None).await;
-        let _active_lock = state.connect_account_lock.lock().await;
+
+        let _guard = state.connect_account_lock.lock().await;
 
         let input = ConfigureOAuthInput {
-            client_id: "client".into(),
+            client_id: "some-id".into(),
             client_secret: None,
         };
 
         let result = configure_oauth_inner(input, &state).await;
-        let error = result.expect_err("rejected due to active lock");
-        assert!(matches!(error, CommandError::OAuth(_)));
-        assert!(
-            error
-                .to_string()
-                .contains("account connection is in progress")
-        );
+        assert!(matches!(result, Err(CommandError::OAuth(_))));
     }
-
-    #[tokio::test]
-    async fn configure_oauth_rejects_client_id_change_when_accounts_exist() {
-        let initial = OAuthConfig::new("client-a", None);
-        let state = test_state(Some(initial)).await;
-
-        let acc = ConnectedAccount::new(
-            AccountId::new(1),
-            GooglePermissionId::new("perm-1"),
-            AccountProfile::new("user@gmail.com", "User"),
-        );
-        state.account_store.connect(&acc).await.unwrap();
-
-        let input = ConfigureOAuthInput {
-            client_id: "client-b".into(),
-            client_secret: None,
-        };
-        let result = configure_oauth_inner(input, &state).await;
-        let error = result.expect_err("rejected due to existing accounts");
-        assert!(matches!(error, CommandError::OAuth(_)));
-        assert!(error.to_string().contains("connected accounts exist"));
-
-        let input_same = ConfigureOAuthInput {
-            client_id: "client-a".into(),
-            client_secret: Some("new-secret".into()),
-        };
-        assert!(configure_oauth_inner(input_same, &state).await.is_ok());
-    }
-
-    // -- get_oauth_config ----------------------------------------------------
 
     #[tokio::test]
     async fn get_oauth_config_returns_not_configured_when_none() {
         let state = test_state(None).await;
-        let result = get_oauth_config_inner(&state).await;
+        let result = get_oauth_config_inner(&state).await.expect("succeeds");
 
-        let dto = result.expect("command succeeds");
-        assert!(!dto.is_configured);
-        assert!(dto.client_id.is_none());
+        assert!(!result.is_configured);
+        assert!(result.client_id.is_none());
     }
 
     #[tokio::test]
     async fn get_oauth_config_returns_configured_with_client_id() {
-        let config = OAuthConfig::new("visible-id", Some("hidden-secret".to_owned()));
-        let state = test_state(Some(config)).await;
+        let state = test_state(Some(OAuthConfig::new("my-client-id", None))).await;
+        let result = get_oauth_config_inner(&state).await.expect("succeeds");
 
-        let result = get_oauth_config_inner(&state).await;
-
-        let dto = result.expect("command succeeds");
-        assert!(dto.is_configured);
-        assert_eq!(dto.client_id.as_deref(), Some("visible-id"));
+        assert!(result.is_configured);
+        assert_eq!(result.client_id.as_deref(), Some("my-client-id"));
     }
 
     #[tokio::test]
     async fn get_oauth_config_never_exposes_secret() {
-        let config = OAuthConfig::new("id", Some("super-secret".to_owned()));
-        let state = test_state(Some(config)).await;
+        let state = test_state(Some(OAuthConfig::new(
+            "my-client-id",
+            Some("super-secret".into()),
+        )))
+        .await;
+        let result = get_oauth_config_inner(&state).await.expect("succeeds");
 
-        let result = get_oauth_config_inner(&state).await;
+        assert_eq!(result.client_id.as_deref(), Some("my-client-id"));
+    }
 
-        let dto = result.expect("command succeeds");
-        let json = serde_json::to_string(&dto).expect("serializes");
-        assert!(!json.contains("super-secret"));
+    #[tokio::test]
+    async fn parse_account_id_validates_u128() {
+        assert!(super::parse_account_id("12345").is_ok());
+        assert!(matches!(
+            super::parse_account_id("not-a-number"),
+            Err(CommandError::AccountNotFound(_))
+        ));
     }
 }

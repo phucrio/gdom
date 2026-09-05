@@ -2,6 +2,7 @@ use std::{error::Error, fmt, sync::Arc};
 
 use crate::domain::AccountId;
 
+#[derive(Clone)]
 pub struct RefreshToken(String);
 
 impl RefreshToken {

@@ -24,6 +24,9 @@ pub enum CommandError {
     BrowserLaunchFailed(String),
     /// Catch-all for unexpected internal errors.
     Internal(String),
+    AccountNotFound(String),
+    IdentityMismatch(String),
+    ConfirmationRequired(String),
 }
 
 impl fmt::Display for CommandError {
@@ -36,11 +39,43 @@ impl fmt::Display for CommandError {
             Self::Keychain(msg) => write!(f, "keychain error: {msg}"),
             Self::BrowserLaunchFailed(msg) => write!(f, "browser launch failed: {msg}"),
             Self::Internal(msg) => write!(f, "internal error: {msg}"),
+            Self::AccountNotFound(msg) => write!(f, "account not found: {msg}"),
+            Self::IdentityMismatch(msg) => write!(f, "identity mismatch: {msg}"),
+            Self::ConfirmationRequired(msg) => write!(f, "confirmation required: {msg}"),
         }
     }
 }
 
 impl std::error::Error for CommandError {}
+
+impl From<crate::application::AccountLifecycleError> for CommandError {
+    fn from(err: crate::application::AccountLifecycleError) -> Self {
+        use crate::application::AccountLifecycleError;
+        match err {
+            AccountLifecycleError::AccountNotFound => {
+                Self::AccountNotFound("account not found".into())
+            }
+            AccountLifecycleError::IdentityMismatch { expected, actual } => {
+                Self::IdentityMismatch(format!(
+                    "expected google permission id {}, got {}",
+                    expected.as_str(),
+                    actual.as_str()
+                ))
+            }
+            AccountLifecycleError::ActiveJobsPreventRemoval => {
+                Self::Internal("cannot remove account with active jobs".into())
+            }
+            AccountLifecycleError::MissingRefreshToken => {
+                Self::OAuth("missing refresh token".into())
+            }
+            AccountLifecycleError::TokenExchange(e) => Self::OAuth(e.to_string()),
+            AccountLifecycleError::IdentityLookup(e) => Self::OAuth(e.to_string()),
+            AccountLifecycleError::Account(e) => Self::UnsupportedAccount(e.to_string()),
+            AccountLifecycleError::Database(e) => Self::Database(e.to_string()),
+            AccountLifecycleError::Keychain(e) => Self::Keychain(e.to_string()),
+        }
+    }
+}
 
 impl From<crate::application::ConnectAccountError> for CommandError {
     fn from(err: crate::application::ConnectAccountError) -> Self {

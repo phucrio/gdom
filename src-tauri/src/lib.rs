@@ -50,6 +50,11 @@ pub fn run() {
             commands::account::configure_oauth,
             commands::account::get_oauth_config,
             commands::account::connect_account,
+            commands::account::disconnect_account,
+            commands::account::update_account_label,
+            commands::account::reauthenticate_account,
+            commands::account::remove_account,
+            commands::account::delete_local_account_data,
         ])
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
@@ -111,12 +116,20 @@ pub fn run() {
 
             let connect_account_use_case: Arc<dyn ConnectAccountUseCase> = Arc::new(service);
 
+            let refresh_port = Arc::new(application::DynamicTokenRefresh::new(Arc::clone(&shared_oauth_config)));
+            let token_provider = Arc::new(application::AccountTokenProvider::new(
+                refresh_port,
+                Arc::clone(&credential_store) as Arc<dyn RefreshTokenStore + Send + Sync>,
+                Arc::clone(&account_store),
+            ));
+
             #[allow(unreachable_code)]
             let state = AppState::new(
                 account_store,
                 credential_store,
                 shared_oauth_config,
                 connect_account_use_case,
+                token_provider,
             );
 
             app.manage(state);
