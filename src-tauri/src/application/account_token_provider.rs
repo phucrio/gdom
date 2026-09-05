@@ -10,11 +10,11 @@ use std::{
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{
-    application::{AccessToken, RefreshToken, RefreshTokenStore, RefreshTokenStoreError},
+    application::{
+        AccessToken, AccountStorePort, AccountStorePortError, RefreshToken, RefreshTokenStore,
+        RefreshTokenStoreError,
+    },
     domain::{AccountId, AuthStatus},
-    infrastructure::account_store::{AccountStoreError, SqliteAccountStore},
-    infrastructure::google_token::{GoogleTokenClient, GoogleTokenError},
-    state::OAuthConfig,
 };
 
 const PRE_EXPIRY_BUFFER: Duration = Duration::from_secs(300); // 5 minutes
@@ -41,36 +41,6 @@ pub type RefreshFuture<'a> = Pin<
 
 pub trait TokenRefreshPort: Send + Sync {
     fn refresh_token(&self, refresh_token: &RefreshToken) -> RefreshFuture<'_>;
-}
-
-pub struct DynamicTokenRefresh {
-    oauth_config: Arc<RwLock<Option<OAuthConfig>>>,
-}
-
-impl DynamicTokenRefresh {
-    pub fn new(oauth_config: Arc<RwLock<Option<OAuthConfig>>>) -> Self {
-        Self { oauth_config }
-    }
-}
-
-impl TokenRefreshPort for DynamicTokenRefresh {
-    fn refresh_token(&self, refresh_token: &RefreshToken) -> RefreshFuture<'_> {
-        let refresh_token = refresh_token.clone();
-        Box::pin(async move {
-            let config = {
-                let guard = self.oauth_config.read().await;
-                guard.clone()
-            };
-            let config = config.ok_or(TokenRefreshError::InvalidClient)?;
-            let client = GoogleTokenClient::new(config.client_id, config.client_secret)
-                .map_err(|_| TokenRefreshError::Transport)?;
-            let response = client
-                .refresh_token(&refresh_token)
-                .await
-                .map_err(TokenRefreshError::from)?;
-            Ok((response.access_token, response.expires_in))
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -100,28 +70,15 @@ impl fmt::Display for TokenRefreshError {
 
 impl Error for TokenRefreshError {}
 
-impl From<GoogleTokenError> for TokenRefreshError {
-    fn from(err: GoogleTokenError) -> Self {
-        match err {
-            GoogleTokenError::InvalidGrant => Self::InvalidGrant,
-            GoogleTokenError::InvalidClient => Self::InvalidClient,
-            GoogleTokenError::RateLimited => Self::RateLimited,
-            GoogleTokenError::ServerUnavailable => Self::Unavailable,
-            GoogleTokenError::Transport => Self::Transport,
-            GoogleTokenError::InvalidResponse => Self::InvalidResponse,
-            GoogleTokenError::UnexpectedStatus(code) => Self::UnexpectedStatus(code),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum TokenProviderError {
     AccountNotFound,
     AccountDisconnected,
     AccountRemoved,
+    ReauthRequired,
     MissingRefreshToken,
     Keychain(RefreshTokenStoreError),
-    Database(AccountStoreError),
+    Database(AccountStorePortError),
     Refresh(TokenRefreshError),
 }
 
@@ -133,6 +90,7 @@ impl fmt::Display for TokenProviderError {
                 write!(f, "account is disconnected and requires re-authentication")
             }
             Self::AccountRemoved => write!(f, "account has been removed"),
+            Self::ReauthRequired => write!(f, "account requires re-authentication"),
             Self::MissingRefreshToken => write!(f, "no refresh token found for account"),
             Self::Keychain(err) => write!(f, "keychain error: {err}"),
             Self::Database(err) => write!(f, "database error: {err}"),
@@ -143,19 +101,22 @@ impl fmt::Display for TokenProviderError {
 
 impl Error for TokenProviderError {}
 
-pub struct AccountTokenProvider {
+pub struct AccountTokenProvider<AccountPersistence> {
     tokens: RwLock<HashMap<AccountId, CachedToken>>,
     locks: RwLock<HashMap<AccountId, Arc<Mutex<()>>>>,
     refresh_port: Arc<dyn TokenRefreshPort>,
     credential_store: Arc<dyn RefreshTokenStore + Send + Sync>,
-    account_store: Arc<SqliteAccountStore>,
+    account_store: Arc<AccountPersistence>,
 }
 
-impl AccountTokenProvider {
+impl<AccountPersistence> AccountTokenProvider<AccountPersistence>
+where
+    AccountPersistence: AccountStorePort + Send + Sync,
+{
     pub fn new(
         refresh_port: Arc<dyn TokenRefreshPort>,
         credential_store: Arc<dyn RefreshTokenStore + Send + Sync>,
-        account_store: Arc<SqliteAccountStore>,
+        account_store: Arc<AccountPersistence>,
     ) -> Self {
         Self {
             tokens: RwLock::new(HashMap::new()),
@@ -211,7 +172,6 @@ impl AccountTokenProvider {
         &self,
         account_id: AccountId,
     ) -> Result<AccessToken, TokenProviderError> {
-        // Check account exists and is not removed/disconnected
         let account = self
             .account_store
             .find_by_id(account_id)
@@ -223,7 +183,16 @@ impl AccountTokenProvider {
             return Err(TokenProviderError::AccountDisconnected);
         }
 
-        // Update status to TokenRefreshing in DB
+        if account.auth_status() == AuthStatus::RemovalPending || account.removed_at().is_some() {
+            return Err(TokenProviderError::AccountRemoved);
+        }
+
+        if account.auth_status() == AuthStatus::ReauthRequired {
+            return Err(TokenProviderError::ReauthRequired);
+        }
+
+        let previous_status = account.auth_status();
+
         let _ = self
             .account_store
             .update_auth_status(account_id, AuthStatus::TokenRefreshing)
@@ -245,12 +214,18 @@ impl AccountTokenProvider {
                     expires_at,
                 };
 
-                {
+                let is_still_active = match self.account_store.find_by_id(account_id).await {
+                    Ok(Some(acc)) => {
+                        acc.is_active() && acc.auth_status() != AuthStatus::Disconnected
+                    }
+                    _ => false,
+                };
+
+                if is_still_active {
                     let mut tokens = self.tokens.write().await;
                     tokens.insert(account_id, cached);
+                    let _ = self.account_store.mark_last_authenticated(account_id).await;
                 }
-
-                let _ = self.account_store.mark_last_authenticated(account_id).await;
 
                 Ok(new_access_token)
             }
@@ -264,7 +239,7 @@ impl AccountTokenProvider {
             Err(err) => {
                 let _ = self
                     .account_store
-                    .update_auth_status(account_id, AuthStatus::Connected)
+                    .update_auth_status(account_id, previous_status)
                     .await;
                 Err(TokenProviderError::Refresh(err))
             }
@@ -316,12 +291,14 @@ impl AccountTokenProvider {
 mod tests {
     use super::*;
     use crate::domain::{AccountProfile, ConnectedAccount, GooglePermissionId};
+    use crate::infrastructure::account_store::SqliteAccountStore;
     use std::sync::Mutex as StdMutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct MockRefreshPort {
         call_count: AtomicUsize,
         should_fail_invalid_grant: bool,
+        should_fail_transport: bool,
     }
 
     impl TokenRefreshPort for MockRefreshPort {
@@ -330,6 +307,9 @@ mod tests {
                 self.call_count.fetch_add(1, Ordering::SeqCst);
                 if self.should_fail_invalid_grant {
                     return Err(TokenRefreshError::InvalidGrant);
+                }
+                if self.should_fail_transport {
+                    return Err(TokenRefreshError::Transport);
                 }
                 Ok((
                     AccessToken::new("refreshed-token".to_string()),
@@ -391,6 +371,7 @@ mod tests {
         let refresh_port = Arc::new(MockRefreshPort {
             call_count: AtomicUsize::new(0),
             should_fail_invalid_grant: false,
+            should_fail_transport: false,
         });
 
         let provider = Arc::new(AccountTokenProvider::new(
@@ -399,7 +380,6 @@ mod tests {
             store,
         ));
 
-        // Fire 10 concurrent requests for account 1
         let mut handles = Vec::new();
         for _ in 0..10 {
             let p = Arc::clone(&provider);
@@ -413,7 +393,6 @@ mod tests {
             assert_eq!(token.expose_secret(), "refreshed-token");
         }
 
-        // Deduplication guarantee: exactly 1 refresh call was made
         assert_eq!(refresh_port.call_count.load(Ordering::SeqCst), 1);
     }
 
@@ -450,6 +429,7 @@ mod tests {
         let refresh_port = Arc::new(MockRefreshPort {
             call_count: AtomicUsize::new(0),
             should_fail_invalid_grant: false,
+            should_fail_transport: false,
         });
 
         let provider = Arc::new(AccountTokenProvider::new(
@@ -464,5 +444,144 @@ mod tests {
         assert_eq!(t1.expose_secret(), "refreshed-token");
         assert_eq!(t2.expose_secret(), "refreshed-token");
         assert_eq!(refresh_port.call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn token_provider_rejects_disconnected_account() {
+        let store = Arc::new(SqliteAccountStore::open_in_memory().await.unwrap());
+        let mut account = ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-1"),
+            AccountProfile::new("a@gmail.com", "A"),
+        );
+        account.set_auth_status(AuthStatus::Disconnected);
+        store.connect(&account).await.unwrap();
+        store
+            .update_auth_status(AccountId::new(1), AuthStatus::Disconnected)
+            .await
+            .unwrap();
+
+        let cred_store = Arc::new(MockCredStore::new());
+        let refresh_port = Arc::new(MockRefreshPort {
+            call_count: AtomicUsize::new(0),
+            should_fail_invalid_grant: false,
+            should_fail_transport: false,
+        });
+
+        let provider = AccountTokenProvider::new(refresh_port, cred_store, store);
+
+        let err = provider
+            .get_access_token(AccountId::new(1))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TokenProviderError::AccountDisconnected));
+    }
+
+    #[tokio::test]
+    async fn token_provider_rejects_reauth_required_account() {
+        let store = Arc::new(SqliteAccountStore::open_in_memory().await.unwrap());
+        let account = ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-1"),
+            AccountProfile::new("a@gmail.com", "A"),
+        );
+        store.connect(&account).await.unwrap();
+        store
+            .update_auth_status(AccountId::new(1), AuthStatus::ReauthRequired)
+            .await
+            .unwrap();
+
+        let cred_store = Arc::new(MockCredStore::new());
+        let refresh_port = Arc::new(MockRefreshPort {
+            call_count: AtomicUsize::new(0),
+            should_fail_invalid_grant: false,
+            should_fail_transport: false,
+        });
+
+        let provider = AccountTokenProvider::new(refresh_port, cred_store, store);
+
+        let err = provider
+            .get_access_token(AccountId::new(1))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TokenProviderError::ReauthRequired));
+    }
+
+    #[tokio::test]
+    async fn token_provider_restores_previous_status_on_transient_error() {
+        let store = Arc::new(SqliteAccountStore::open_in_memory().await.unwrap());
+        let account = ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-1"),
+            AccountProfile::new("a@gmail.com", "A"),
+        );
+        store.connect(&account).await.unwrap();
+
+        let cred_store = Arc::new(MockCredStore::new());
+        cred_store
+            .save(
+                AccountId::new(1),
+                RefreshToken::new("valid-refresh".to_string()),
+            )
+            .unwrap();
+
+        let refresh_port = Arc::new(MockRefreshPort {
+            call_count: AtomicUsize::new(0),
+            should_fail_invalid_grant: false,
+            should_fail_transport: true,
+        });
+
+        let provider = AccountTokenProvider::new(refresh_port, cred_store, store.clone());
+
+        let err = provider
+            .get_access_token(AccountId::new(1))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            TokenProviderError::Refresh(TokenRefreshError::Transport)
+        ));
+
+        let reloaded = store.find_by_id(AccountId::new(1)).await.unwrap().unwrap();
+        assert_eq!(reloaded.auth_status(), AuthStatus::Connected);
+    }
+
+    #[tokio::test]
+    async fn token_provider_transitions_to_reauth_required_on_invalid_grant() {
+        let store = Arc::new(SqliteAccountStore::open_in_memory().await.unwrap());
+        let account = ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-1"),
+            AccountProfile::new("a@gmail.com", "A"),
+        );
+        store.connect(&account).await.unwrap();
+
+        let cred_store = Arc::new(MockCredStore::new());
+        cred_store
+            .save(
+                AccountId::new(1),
+                RefreshToken::new("valid-refresh".to_string()),
+            )
+            .unwrap();
+
+        let refresh_port = Arc::new(MockRefreshPort {
+            call_count: AtomicUsize::new(0),
+            should_fail_invalid_grant: true,
+            should_fail_transport: false,
+        });
+
+        let provider = AccountTokenProvider::new(refresh_port, cred_store, store.clone());
+
+        let err = provider
+            .get_access_token(AccountId::new(1))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            TokenProviderError::Refresh(TokenRefreshError::InvalidGrant)
+        ));
+
+        let reloaded = store.find_by_id(AccountId::new(1)).await.unwrap().unwrap();
+        assert_eq!(reloaded.auth_status(), AuthStatus::ReauthRequired);
     }
 }

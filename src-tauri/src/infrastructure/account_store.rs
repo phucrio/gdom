@@ -122,14 +122,16 @@ impl SqliteAccountStore {
                 .fetch_optional(&pool)
                 .await?;
         if row.is_none() {
+            let mut tx = pool.begin().await?;
             sqlx::raw_sql(include_str!("../../migrations/001_accounts.sql"))
-                .execute(&pool)
+                .execute(&mut *tx)
                 .await?;
             sqlx::query(
                 "INSERT INTO _schema_migrations (version, applied_at) VALUES (1, datetime('now'))",
             )
-            .execute(&pool)
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
         }
 
         let row: Option<(i64,)> =
@@ -137,14 +139,16 @@ impl SqliteAccountStore {
                 .fetch_optional(&pool)
                 .await?;
         if row.is_none() {
+            let mut tx = pool.begin().await?;
             sqlx::raw_sql(include_str!("../../migrations/002_account_lifecycle.sql"))
-                .execute(&pool)
+                .execute(&mut *tx)
                 .await?;
             sqlx::query(
                 "INSERT INTO _schema_migrations (version, applied_at) VALUES (2, datetime('now'))",
             )
-            .execute(&pool)
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
         }
 
         Ok(Self { pool })

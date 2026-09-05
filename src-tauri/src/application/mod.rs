@@ -5,10 +5,11 @@ pub mod connect_account;
 mod refresh_token_store;
 
 pub use access_token::AccessToken;
-pub use account_lifecycle::{AccountLifecycleError, AccountLifecycleService};
+pub use account_lifecycle::{
+    AccountLifecycleError, AccountLifecycleService, AccountLifecycleUseCase,
+};
 pub use account_token_provider::{
-    AccountTokenProvider, DynamicTokenRefresh, TokenProviderError, TokenRefreshError,
-    TokenRefreshPort,
+    AccountTokenProvider, RefreshFuture, TokenProviderError, TokenRefreshError, TokenRefreshPort,
 };
 pub use connect_account::{
     AccountIdentity, AccountStorePort, AccountStorePortError, ConnectAccountError,
@@ -17,5 +18,7 @@ pub use connect_account::{
 };
 pub use refresh_token_store::{RefreshToken, RefreshTokenStore, RefreshTokenStoreError};
 
+#[cfg(test)]
+mod account_lifecycle_test;
 #[cfg(test)]
 mod connect_account_test;

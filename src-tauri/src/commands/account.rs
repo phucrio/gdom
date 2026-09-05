@@ -1,12 +1,9 @@
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    application::{AccountLifecycleService, OAuthGrant, RefreshTokenStore},
+    application::{OAuthGrant, RefreshTokenStore},
     domain::AccountId,
-    infrastructure::{
-        google_drive::GoogleDriveClient, google_oauth::DesktopOAuthSession,
-        google_token::GoogleTokenClient,
-    },
+    infrastructure::google_oauth::DesktopOAuthSession,
     state::{AppState, OAuthConfig},
 };
 
@@ -192,6 +189,64 @@ pub async fn connect_account(
     Ok(AccountDto::from(account))
 }
 
+async fn disconnect_account_inner(
+    state: &AppState,
+    account_id: AccountId,
+) -> Result<(), CommandError> {
+    state.token_provider.invalidate_cache(account_id).await;
+    state
+        .account_lifecycle_use_case
+        .disconnect_account(account_id)
+        .await?;
+    Ok(())
+}
+
+async fn update_account_label_inner(
+    state: &AppState,
+    account_id: AccountId,
+    label: Option<String>,
+) -> Result<AccountDto, CommandError> {
+    let updated = state
+        .account_lifecycle_use_case
+        .update_account_label(account_id, label)
+        .await?;
+    Ok(AccountDto::from(updated))
+}
+
+async fn remove_account_inner(state: &AppState, account_id: AccountId) -> Result<(), CommandError> {
+    state
+        .token_provider
+        .remove_account_lifecycle(account_id)
+        .await;
+    state
+        .account_lifecycle_use_case
+        .remove_account(account_id)
+        .await?;
+    Ok(())
+}
+
+async fn delete_local_account_data_inner(
+    state: &AppState,
+    account_id: AccountId,
+    confirmation: bool,
+) -> Result<(), CommandError> {
+    if !confirmation {
+        return Err(CommandError::ConfirmationRequired(
+            "confirmation flag must be true to hard-delete local account data".into(),
+        ));
+    }
+
+    state
+        .token_provider
+        .remove_account_lifecycle(account_id)
+        .await;
+    state
+        .account_lifecycle_use_case
+        .delete_local_account_data(account_id)
+        .await?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn disconnect_account(
     input: AccountIdInput,
@@ -199,22 +254,7 @@ pub async fn disconnect_account(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), CommandError> {
     let account_id = parse_account_id(&input.account_id)?;
-
-    state.token_provider.invalidate_cache(account_id).await;
-
-    let dummy_exchange = GoogleTokenClient::new("dummy".into(), None)
-        .map_err(|e| CommandError::Internal(e.to_string()))?;
-    let drive_client =
-        GoogleDriveClient::new().map_err(|e| CommandError::Internal(e.to_string()))?;
-    let service = AccountLifecycleService::new(
-        dummy_exchange,
-        drive_client,
-        state.account_store.clone(),
-        state.credential_store.clone(),
-    );
-
-    service.disconnect_account(account_id).await?;
-
+    disconnect_account_inner(&state, account_id).await?;
     let _ = app.emit("account-registry-changed", ());
     Ok(())
 }
@@ -226,24 +266,9 @@ pub async fn update_account_label(
     state: tauri::State<'_, AppState>,
 ) -> Result<AccountDto, CommandError> {
     let account_id = parse_account_id(&input.account_id)?;
-
-    let dummy_exchange = GoogleTokenClient::new("dummy".into(), None)
-        .map_err(|e| CommandError::Internal(e.to_string()))?;
-    let drive_client =
-        GoogleDriveClient::new().map_err(|e| CommandError::Internal(e.to_string()))?;
-    let service = AccountLifecycleService::new(
-        dummy_exchange,
-        drive_client,
-        state.account_store.clone(),
-        state.credential_store.clone(),
-    );
-
-    let updated = service
-        .update_account_label(account_id, input.label)
-        .await?;
-
+    let account = update_account_label_inner(&state, account_id, input.label).await?;
     let _ = app.emit("account-registry-changed", ());
-    Ok(AccountDto::from(updated))
+    Ok(account)
 }
 
 #[tauri::command]
@@ -285,19 +310,10 @@ pub async fn reauthenticate_account(
         grant.redirect_uri().to_owned(),
     );
 
-    let token_client = GoogleTokenClient::new(config.client_id, config.client_secret)
-        .map_err(|e| CommandError::Internal(e.to_string()))?;
-    let drive_client =
-        GoogleDriveClient::new().map_err(|e| CommandError::Internal(e.to_string()))?;
-
-    let service = AccountLifecycleService::new(
-        token_client,
-        drive_client,
-        state.account_store.clone(),
-        state.credential_store.clone(),
-    );
-
-    let account = service.reauthenticate_account(account_id, grant).await?;
+    let account = state
+        .account_lifecycle_use_case
+        .reauthenticate_account(account_id, grant)
+        .await?;
     state.token_provider.invalidate_cache(account_id).await;
 
     let _ = app.emit("account-registry-changed", ());
@@ -311,25 +327,7 @@ pub async fn remove_account(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), CommandError> {
     let account_id = parse_account_id(&input.account_id)?;
-
-    state
-        .token_provider
-        .remove_account_lifecycle(account_id)
-        .await;
-
-    let dummy_exchange = GoogleTokenClient::new("dummy".into(), None)
-        .map_err(|e| CommandError::Internal(e.to_string()))?;
-    let drive_client =
-        GoogleDriveClient::new().map_err(|e| CommandError::Internal(e.to_string()))?;
-    let service = AccountLifecycleService::new(
-        dummy_exchange,
-        drive_client,
-        state.account_store.clone(),
-        state.credential_store.clone(),
-    );
-
-    service.remove_account(account_id).await?;
-
+    remove_account_inner(&state, account_id).await?;
     let _ = app.emit("account-registry-changed", ());
     Ok(())
 }
@@ -340,32 +338,8 @@ pub async fn delete_local_account_data(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), CommandError> {
-    if !input.confirmation {
-        return Err(CommandError::ConfirmationRequired(
-            "confirmation flag must be true to hard-delete local account data".into(),
-        ));
-    }
-
     let account_id = parse_account_id(&input.account_id)?;
-
-    state
-        .token_provider
-        .remove_account_lifecycle(account_id)
-        .await;
-
-    let dummy_exchange = GoogleTokenClient::new("dummy".into(), None)
-        .map_err(|e| CommandError::Internal(e.to_string()))?;
-    let drive_client =
-        GoogleDriveClient::new().map_err(|e| CommandError::Internal(e.to_string()))?;
-    let service = AccountLifecycleService::new(
-        dummy_exchange,
-        drive_client,
-        state.account_store.clone(),
-        state.credential_store.clone(),
-    );
-
-    service.delete_local_account_data(account_id).await?;
-
+    delete_local_account_data_inner(&state, account_id, input.confirmation).await?;
     let _ = app.emit("account-registry-changed", ());
     Ok(())
 }
@@ -417,20 +391,32 @@ mod tests {
             Arc::new(DummyConnectAccountUseCase);
         let oauth_lock = Arc::new(tokio::sync::RwLock::new(oauth));
 
-        let refresh_port = Arc::new(crate::application::DynamicTokenRefresh::new(Arc::clone(
-            &oauth_lock,
-        )));
+        let token_service = Arc::new(
+            crate::infrastructure::google_token::DynamicGoogleTokenClient::new(Arc::clone(
+                &oauth_lock,
+            )),
+        );
         let token_provider = Arc::new(crate::application::AccountTokenProvider::new(
-            refresh_port,
+            token_service.clone(),
             cred_store.clone(),
             account_store.clone(),
         ));
+
+        let lifecycle_service = crate::application::AccountLifecycleService::new(
+            token_service,
+            crate::infrastructure::google_drive::GoogleDriveClient::new().unwrap(),
+            account_store.clone(),
+            cred_store.clone(),
+        );
+        let lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase> =
+            Arc::new(lifecycle_service);
 
         AppState::new(
             account_store,
             cred_store,
             oauth_lock,
             use_case,
+            lifecycle_use_case,
             token_provider,
         )
     }
@@ -620,5 +606,140 @@ mod tests {
             super::parse_account_id("not-a-number"),
             Err(CommandError::AccountNotFound(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn disconnect_account_inner_clears_token_and_sets_disconnected_status() {
+        let state = test_state(None).await;
+        let account = ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-1"),
+            AccountProfile::new("a@gmail.com", "Alice"),
+        );
+        state.account_store.connect(&account).await.unwrap();
+        state
+            .credential_store
+            .save(
+                AccountId::new(1),
+                crate::application::RefreshToken::new("token".into()),
+            )
+            .unwrap();
+
+        super::disconnect_account_inner(&state, AccountId::new(1))
+            .await
+            .unwrap();
+
+        let updated = state
+            .account_store
+            .find_by_id(AccountId::new(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            updated.auth_status(),
+            crate::domain::AuthStatus::Disconnected
+        );
+        assert!(
+            state
+                .credential_store
+                .load(AccountId::new(1))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn update_account_label_inner_updates_label_and_returns_dto() {
+        let state = test_state(None).await;
+        let account = ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-1"),
+            AccountProfile::new("a@gmail.com", "Alice"),
+        );
+        state.account_store.connect(&account).await.unwrap();
+
+        let dto = super::update_account_label_inner(
+            &state,
+            AccountId::new(1),
+            Some("Personal Work".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(dto.label.as_deref(), Some("Personal Work"));
+
+        let cleared =
+            super::update_account_label_inner(&state, AccountId::new(1), Some("  ".into()))
+                .await
+                .unwrap();
+        assert_eq!(cleared.label, None);
+    }
+
+    #[tokio::test]
+    async fn remove_account_inner_soft_deletes_account() {
+        let state = test_state(None).await;
+        let account = ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-1"),
+            AccountProfile::new("a@gmail.com", "Alice"),
+        );
+        state.account_store.connect(&account).await.unwrap();
+        state
+            .credential_store
+            .save(
+                AccountId::new(1),
+                crate::application::RefreshToken::new("token".into()),
+            )
+            .unwrap();
+
+        super::remove_account_inner(&state, AccountId::new(1))
+            .await
+            .unwrap();
+
+        assert!(
+            state
+                .account_store
+                .find_by_id(AccountId::new(1))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .credential_store
+                .load(AccountId::new(1))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_local_account_data_inner_requires_confirmation() {
+        let state = test_state(None).await;
+        let err = super::delete_local_account_data_inner(&state, AccountId::new(1), false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CommandError::ConfirmationRequired(_)));
+    }
+
+    #[tokio::test]
+    async fn delete_local_account_data_inner_hard_deletes_record() {
+        let state = test_state(None).await;
+        let account = ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-1"),
+            AccountProfile::new("a@gmail.com", "Alice"),
+        );
+        state.account_store.connect(&account).await.unwrap();
+
+        super::delete_local_account_data_inner(&state, AccountId::new(1), true)
+            .await
+            .unwrap();
+
+        let any = state
+            .account_store
+            .find_any_by_permission_id(&GooglePermissionId::new("perm-1"))
+            .await
+            .unwrap();
+        assert!(any.is_none());
     }
 }

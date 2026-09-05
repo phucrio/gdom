@@ -57,7 +57,7 @@ pub struct AccountLabel(String);
 impl AccountLabel {
     pub fn new(value: impl Into<String>) -> Result<Self, AccountError> {
         let trimmed = value.into().trim().to_string();
-        if trimmed.chars().count() > 100 {
+        if trimmed.is_empty() || trimmed.chars().count() > 100 {
             return Err(AccountError::InvalidLabel);
         }
         Ok(Self(trimmed))
@@ -109,6 +109,14 @@ impl AuthStatus {
 impl fmt::Display for AuthStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for AuthStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_status(s).ok_or(())
     }
 }
 
@@ -364,14 +372,20 @@ mod tests {
             AccountLabel::new(invalid_101),
             Err(AccountError::InvalidLabel)
         );
+
+        assert_eq!(AccountLabel::new(""), Err(AccountError::InvalidLabel));
+        assert_eq!(AccountLabel::new("   "), Err(AccountError::InvalidLabel));
     }
 
     #[test]
     fn auth_status_serialization_and_parsing() {
+        use std::str::FromStr;
+
         assert_eq!(
             AuthStatus::parse_status("CONNECTED"),
             Some(AuthStatus::Connected)
         );
+        assert_eq!(AuthStatus::from_str("CONNECTED"), Ok(AuthStatus::Connected));
         assert_eq!(
             AuthStatus::parse_status("token_refreshing"),
             Some(AuthStatus::TokenRefreshing)
@@ -389,5 +403,6 @@ mod tests {
             Some(AuthStatus::RemovalPending)
         );
         assert_eq!(AuthStatus::parse_status("unknown"), None);
+        assert!(AuthStatus::from_str("unknown").is_err());
     }
 }

@@ -10,37 +10,16 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use application::{
-    ConnectAccountService, ConnectAccountUseCase, OAuthGrant, RefreshTokenStore, TokenExchangePort,
-    TokenResponse,
+    AccountLifecycleUseCase, ConnectAccountService, ConnectAccountUseCase, RefreshTokenStore,
 };
 use infrastructure::{
     account_store::SqliteAccountStore, google_drive::GoogleDriveClient,
-    google_token::GoogleTokenClient,
+    google_token::DynamicGoogleTokenClient,
 };
 use state::{AppState, OAuthConfig};
 
 #[cfg(target_os = "windows")]
 use infrastructure::secrets::WindowsCredentialStore;
-
-struct DynamicTokenExchange {
-    oauth_config: Arc<tokio::sync::RwLock<Option<OAuthConfig>>>,
-}
-
-impl TokenExchangePort for DynamicTokenExchange {
-    async fn exchange_code(
-        &self,
-        grant: OAuthGrant,
-    ) -> Result<TokenResponse, application::TokenExchangeError> {
-        let config = {
-            let guard = self.oauth_config.read().await;
-            guard.clone()
-        };
-        let config = config.ok_or(application::TokenExchangeError::InvalidClient)?;
-        let client = GoogleTokenClient::new(config.client_id, config.client_secret)
-            .map_err(|_| application::TokenExchangeError::Transport)?;
-        TokenExchangePort::exchange_code(&client, grant).await
-    }
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -100,25 +79,33 @@ pub fn run() {
             let account_store = Arc::new(account_store);
             let shared_oauth_config = Arc::new(tokio::sync::RwLock::new(oauth_config));
 
-            let token_exchange = DynamicTokenExchange {
-                oauth_config: Arc::clone(&shared_oauth_config),
-            };
+            let token_service = Arc::new(DynamicGoogleTokenClient::new(Arc::clone(
+                &shared_oauth_config,
+            )));
 
             let drive_client = GoogleDriveClient::new()
                 .map_err(|e| format!("failed to initialize Google Drive client: {e}"))?;
 
-            let service = ConnectAccountService::new(
-                token_exchange,
+            let connect_service = ConnectAccountService::new(
+                token_service.clone(),
+                drive_client.clone(),
+                Arc::clone(&account_store),
+                Arc::clone(&credential_store),
+            );
+            let connect_account_use_case: Arc<dyn ConnectAccountUseCase> =
+                Arc::new(connect_service);
+
+            let lifecycle_service = application::AccountLifecycleService::new(
+                token_service.clone(),
                 drive_client,
                 Arc::clone(&account_store),
                 Arc::clone(&credential_store),
             );
+            let account_lifecycle_use_case: Arc<dyn AccountLifecycleUseCase> =
+                Arc::new(lifecycle_service);
 
-            let connect_account_use_case: Arc<dyn ConnectAccountUseCase> = Arc::new(service);
-
-            let refresh_port = Arc::new(application::DynamicTokenRefresh::new(Arc::clone(&shared_oauth_config)));
             let token_provider = Arc::new(application::AccountTokenProvider::new(
-                refresh_port,
+                token_service,
                 Arc::clone(&credential_store) as Arc<dyn RefreshTokenStore + Send + Sync>,
                 Arc::clone(&account_store),
             ));
@@ -129,6 +116,7 @@ pub fn run() {
                 credential_store,
                 shared_oauth_config,
                 connect_account_use_case,
+                account_lifecycle_use_case,
                 token_provider,
             );
 

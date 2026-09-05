@@ -5,7 +5,8 @@ use serde::Deserialize;
 use url::form_urlencoded;
 
 use crate::application::{
-    AccessToken, OAuthGrant, RefreshToken, TokenExchangeError, TokenExchangePort, TokenResponse,
+    AccessToken, OAuthGrant, RefreshFuture, RefreshToken, TokenExchangeError, TokenExchangePort,
+    TokenRefreshError, TokenRefreshPort, TokenResponse,
 };
 
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com";
@@ -277,5 +278,64 @@ impl From<GoogleTokenError> for TokenExchangeError {
             GoogleTokenError::InvalidResponse => Self::InvalidResponse,
             GoogleTokenError::UnexpectedStatus(status) => Self::UnexpectedStatus(status),
         }
+    }
+}
+
+impl From<GoogleTokenError> for TokenRefreshError {
+    fn from(err: GoogleTokenError) -> Self {
+        match err {
+            GoogleTokenError::InvalidGrant => Self::InvalidGrant,
+            GoogleTokenError::InvalidClient => Self::InvalidClient,
+            GoogleTokenError::RateLimited => Self::RateLimited,
+            GoogleTokenError::ServerUnavailable => Self::Unavailable,
+            GoogleTokenError::Transport => Self::Transport,
+            GoogleTokenError::InvalidResponse => Self::InvalidResponse,
+            GoogleTokenError::UnexpectedStatus(code) => Self::UnexpectedStatus(code),
+        }
+    }
+}
+
+pub struct DynamicGoogleTokenClient {
+    oauth_config: std::sync::Arc<tokio::sync::RwLock<Option<crate::state::OAuthConfig>>>,
+}
+
+impl DynamicGoogleTokenClient {
+    pub fn new(
+        oauth_config: std::sync::Arc<tokio::sync::RwLock<Option<crate::state::OAuthConfig>>>,
+    ) -> Self {
+        Self { oauth_config }
+    }
+}
+
+impl TokenExchangePort for DynamicGoogleTokenClient {
+    async fn exchange_code(&self, grant: OAuthGrant) -> Result<TokenResponse, TokenExchangeError> {
+        let config = {
+            let guard = self.oauth_config.read().await;
+            guard.clone()
+        };
+        let config = config.ok_or(TokenExchangeError::InvalidClient)?;
+        let client = GoogleTokenClient::new(config.client_id, config.client_secret)
+            .map_err(|_| TokenExchangeError::Transport)?;
+        TokenExchangePort::exchange_code(&client, grant).await
+    }
+}
+
+impl TokenRefreshPort for DynamicGoogleTokenClient {
+    fn refresh_token(&self, refresh_token: &RefreshToken) -> RefreshFuture<'_> {
+        let refresh_token = refresh_token.clone();
+        Box::pin(async move {
+            let config = {
+                let guard = self.oauth_config.read().await;
+                guard.clone()
+            };
+            let config = config.ok_or(TokenRefreshError::InvalidClient)?;
+            let client = GoogleTokenClient::new(config.client_id, config.client_secret)
+                .map_err(|_| TokenRefreshError::Transport)?;
+            let response = client
+                .refresh_token(&refresh_token)
+                .await
+                .map_err(TokenRefreshError::from)?;
+            Ok((response.access_token, response.expires_in))
+        })
     }
 }

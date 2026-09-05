@@ -278,6 +278,25 @@ where
     }
 }
 
+impl<T: TokenExchangePort + Send + Sync + ?Sized> TokenExchangePort for Arc<T> {
+    fn exchange_code(
+        &self,
+        grant: OAuthGrant,
+    ) -> impl std::future::Future<Output = Result<TokenResponse, TokenExchangeError>> + Send {
+        (**self).exchange_code(grant)
+    }
+}
+
+impl<T: IdentityLookupPort + Send + Sync + ?Sized> IdentityLookupPort for Arc<T> {
+    fn account_identity(
+        &self,
+        token: &AccessToken,
+    ) -> impl std::future::Future<Output = Result<AccountIdentity, IdentityLookupError>> + Send
+    {
+        (**self).account_identity(token)
+    }
+}
+
 impl<T: ConnectAccountUseCase + ?Sized> ConnectAccountUseCase for Arc<T> {
     fn connect_account(
         &self,

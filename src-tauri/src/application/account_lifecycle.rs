@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, sync::Arc};
 
 use crate::{
     application::{
@@ -10,6 +10,63 @@ use crate::{
         AccountError, AccountId, AccountLabel, AuthStatus, ConnectedAccount, GooglePermissionId,
     },
 };
+
+pub trait AccountLifecycleUseCase: Send + Sync {
+    fn list_accounts(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<ConnectedAccount>, AccountLifecycleError>>
+                + Send
+                + '_,
+        >,
+    >;
+
+    fn update_account_label(
+        &self,
+        account_id: AccountId,
+        label: Option<String>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<ConnectedAccount, AccountLifecycleError>>
+                + Send
+                + '_,
+        >,
+    >;
+
+    fn disconnect_account(
+        &self,
+        account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), AccountLifecycleError>> + Send + '_>,
+    >;
+
+    fn reauthenticate_account(
+        &self,
+        account_id: AccountId,
+        oauth_grant: OAuthGrant,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<ConnectedAccount, AccountLifecycleError>>
+                + Send
+                + '_,
+        >,
+    >;
+
+    fn remove_account(
+        &self,
+        account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), AccountLifecycleError>> + Send + '_>,
+    >;
+
+    fn delete_local_account_data(
+        &self,
+        account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), AccountLifecycleError>> + Send + '_>,
+    >;
+}
 
 #[derive(Debug)]
 pub enum AccountLifecycleError {
@@ -109,7 +166,7 @@ where
         account_id: AccountId,
         label: Option<String>,
     ) -> Result<ConnectedAccount, AccountLifecycleError> {
-        let account = self
+        let _account = self
             .account_store
             .find_by_id(account_id)
             .await
@@ -128,9 +185,11 @@ where
             .await
             .map_err(AccountLifecycleError::Database)?;
 
-        let mut updated = account;
-        updated.set_label(parsed_label);
-        Ok(updated)
+        self.account_store
+            .find_by_id(account_id)
+            .await
+            .map_err(AccountLifecycleError::Database)?
+            .ok_or(AccountLifecycleError::AccountNotFound)
     }
 
     pub async fn disconnect_account(
@@ -144,10 +203,10 @@ where
             .map_err(AccountLifecycleError::Database)?
             .ok_or(AccountLifecycleError::AccountNotFound)?;
 
-        // Purge token from credential store
-        let _ = self.credential_store.delete(account_id);
+        self.credential_store
+            .delete(account_id)
+            .map_err(AccountLifecycleError::Keychain)?;
 
-        // Update status in database
         self.account_store
             .update_auth_status(account_id, AuthStatus::Disconnected)
             .await
@@ -180,7 +239,6 @@ where
             .await
             .map_err(AccountLifecycleError::IdentityLookup)?;
 
-        // Invariant: verify permission ID strictly matches
         if identity.permission_id() != existing_account.google_permission_id() {
             return Err(AccountLifecycleError::IdentityMismatch {
                 expected: existing_account.google_permission_id().clone(),
@@ -188,7 +246,6 @@ where
             });
         }
 
-        // Save refresh token if provided
         if let Some(refresh_token) = token_response.refresh_token {
             self.credential_store
                 .save(account_id, refresh_token)
@@ -204,7 +261,6 @@ where
             }
         }
 
-        // Update profile, status, and last_authenticated_at in SQLite
         let updated_candidate = ConnectedAccount::new_personal(
             account_id,
             identity.permission_id().clone(),
@@ -213,21 +269,11 @@ where
         )
         .map_err(AccountLifecycleError::Account)?;
 
-        let mut persisted = self
+        let persisted = self
             .account_store
             .connect(&updated_candidate)
             .await
             .map_err(AccountLifecycleError::Database)?;
-
-        if let Some(label) = existing_account.label() {
-            let _ = self
-                .account_store
-                .update_label(account_id, Some(label))
-                .await;
-            persisted.set_label(Some(label.clone()));
-        }
-
-        let _ = self.account_store.mark_last_authenticated(account_id).await;
 
         Ok(persisted)
     }
@@ -240,10 +286,10 @@ where
             .map_err(AccountLifecycleError::Database)?
             .ok_or(AccountLifecycleError::AccountNotFound)?;
 
-        // Purge token from credential store
-        let _ = self.credential_store.delete(account_id);
+        self.credential_store
+            .delete(account_id)
+            .map_err(AccountLifecycleError::Keychain)?;
 
-        // Soft-delete in SQLite
         self.account_store
             .remove(account_id)
             .await
@@ -256,15 +302,166 @@ where
         &self,
         account_id: AccountId,
     ) -> Result<(), AccountLifecycleError> {
-        // Purge token from credential store
-        let _ = self.credential_store.delete(account_id);
+        self.credential_store
+            .delete(account_id)
+            .map_err(AccountLifecycleError::Keychain)?;
 
-        // Hard-delete in SQLite
         self.account_store
             .hard_delete(account_id)
             .await
             .map_err(AccountLifecycleError::Database)?;
 
         Ok(())
+    }
+}
+
+impl<TokenExchange, IdentityLookup, AccountPersistence, CredentialPersistence>
+    AccountLifecycleUseCase
+    for AccountLifecycleService<
+        TokenExchange,
+        IdentityLookup,
+        AccountPersistence,
+        CredentialPersistence,
+    >
+where
+    TokenExchange: TokenExchangePort + Send + Sync + 'static,
+    IdentityLookup: IdentityLookupPort + Send + Sync + 'static,
+    AccountPersistence: AccountStorePort + Send + Sync + 'static,
+    CredentialPersistence: RefreshTokenStore + Send + Sync + 'static,
+{
+    fn list_accounts(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<ConnectedAccount>, AccountLifecycleError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(self.list_accounts())
+    }
+
+    fn update_account_label(
+        &self,
+        account_id: AccountId,
+        label: Option<String>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<ConnectedAccount, AccountLifecycleError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(self.update_account_label(account_id, label))
+    }
+
+    fn disconnect_account(
+        &self,
+        account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), AccountLifecycleError>> + Send + '_>,
+    > {
+        Box::pin(self.disconnect_account(account_id))
+    }
+
+    fn reauthenticate_account(
+        &self,
+        account_id: AccountId,
+        oauth_grant: OAuthGrant,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<ConnectedAccount, AccountLifecycleError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(self.reauthenticate_account(account_id, oauth_grant))
+    }
+
+    fn remove_account(
+        &self,
+        account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), AccountLifecycleError>> + Send + '_>,
+    > {
+        Box::pin(self.remove_account(account_id))
+    }
+
+    fn delete_local_account_data(
+        &self,
+        account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), AccountLifecycleError>> + Send + '_>,
+    > {
+        Box::pin(self.delete_local_account_data(account_id))
+    }
+}
+
+impl<T: AccountLifecycleUseCase + ?Sized> AccountLifecycleUseCase for Arc<T> {
+    fn list_accounts(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<ConnectedAccount>, AccountLifecycleError>>
+                + Send
+                + '_,
+        >,
+    > {
+        (**self).list_accounts()
+    }
+
+    fn update_account_label(
+        &self,
+        account_id: AccountId,
+        label: Option<String>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<ConnectedAccount, AccountLifecycleError>>
+                + Send
+                + '_,
+        >,
+    > {
+        (**self).update_account_label(account_id, label)
+    }
+
+    fn disconnect_account(
+        &self,
+        account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), AccountLifecycleError>> + Send + '_>,
+    > {
+        (**self).disconnect_account(account_id)
+    }
+
+    fn reauthenticate_account(
+        &self,
+        account_id: AccountId,
+        oauth_grant: OAuthGrant,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<ConnectedAccount, AccountLifecycleError>>
+                + Send
+                + '_,
+        >,
+    > {
+        (**self).reauthenticate_account(account_id, oauth_grant)
+    }
+
+    fn remove_account(
+        &self,
+        account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), AccountLifecycleError>> + Send + '_>,
+    > {
+        (**self).remove_account(account_id)
+    }
+
+    fn delete_local_account_data(
+        &self,
+        account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), AccountLifecycleError>> + Send + '_>,
+    > {
+        (**self).delete_local_account_data(account_id)
     }
 }
