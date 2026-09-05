@@ -57,6 +57,7 @@ struct DriveScript {
     already_owned: Mutex<HashSet<String>>,
     writer_without_pending: Mutex<HashSet<String>>,
     trash_on_source_get: Mutex<HashSet<String>>,
+    not_found_on_source_get: Mutex<HashSet<String>>,
     trash_on_target_get: Mutex<HashSet<String>>,
     remaining_failures: AtomicUsize,
     fail_status: Mutex<String>,
@@ -71,6 +72,7 @@ impl DriveScript {
             already_owned: Mutex::new(HashSet::new()),
             writer_without_pending: Mutex::new(HashSet::new()),
             trash_on_source_get: Mutex::new(HashSet::new()),
+            not_found_on_source_get: Mutex::new(HashSet::new()),
             trash_on_target_get: Mutex::new(HashSet::new()),
             remaining_failures: AtomicUsize::new(0),
             fail_status: Mutex::new("429 Too Many Requests".into()),
@@ -154,6 +156,16 @@ fn handle_drive(script: &DriveScript, request: &str) -> (String, String) {
     }
 
     if method == "GET" && !is_permissions_request(path) {
+        let is_source_get = bearer.contains(SOURCE_TOKEN);
+        if is_source_get
+            && script
+                .not_found_on_source_get
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&file_id)
+        {
+            return ("404 Not Found".into(), "{}".into());
+        }
         let already_owned = script
             .already_owned
             .lock()
@@ -713,6 +725,47 @@ async fn accept_required_resume_does_not_create_pending_owner_again() {
     assert!(requests.iter().any(|request| {
         request_method(request) == Some("PATCH")
             && query_param(request, "transferOwnership").as_deref() == Some("true")
+    }));
+}
+
+#[tokio::test]
+async fn accept_required_resume_skips_source_reconcile_on_source_404() {
+    let fixture = setup(1, vec![("resume-file", 1)]).await;
+    let mut item = fixture
+        .store
+        .list_items_for_transfer(fixture.job.id())
+        .await
+        .expect("item")
+        .remove(0);
+    item.state = ItemState::AcceptRequired;
+    item.target_permission_id = Some(GooglePermissionId::new(TARGET_PERM));
+    fixture.store.save_item(&item).await.expect("seed");
+    fixture
+        .script
+        .not_found_on_source_get
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert("resume-file".into());
+
+    let mut job = fixture.job.clone();
+    let run = run_of(&fixture);
+    execute_canary(&run, &mut job)
+        .await
+        .expect("accept resume despite source 404");
+    assert_eq!(job.status(), JobStatus::CanaryReview);
+
+    let items = fixture
+        .store
+        .list_items_page(job.id(), None, 1, 50)
+        .await
+        .expect("items")
+        .items;
+    assert_eq!(items[0].state, ItemState::Verified);
+    let requests = captured_requests(&fixture);
+    assert!(requests.iter().any(|request| {
+        request_method(request) == Some("PATCH")
+            && query_param(request, "transferOwnership").as_deref() == Some("true")
+            && authorization_bearer(request) == Some(format!("Bearer {TARGET_TOKEN}"))
     }));
 }
 

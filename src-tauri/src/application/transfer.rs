@@ -236,6 +236,20 @@ async fn reconcile_and_prepare(
     run: &TransferRun<'_>,
     item: &mut MigrationItem,
 ) -> Result<PrepareAction, StepOutcome> {
+    if matches!(item.state, ItemState::Transferred | ItemState::Verifying) {
+        apply_state_outcome(item, ItemState::Verifying)?;
+        persist_outcome(run, item).await?;
+        return Ok(PrepareAction::VerifyOnly);
+    }
+    if matches!(item.state, ItemState::AcceptRequired | ItemState::Accepting) {
+        let permission_id = item
+            .target_permission_id
+            .as_ref()
+            .map(|id| id.as_str().to_string())
+            .ok_or(StepOutcome::Permanent)?;
+        return Ok(PrepareAction::Accept { permission_id });
+    }
+
     let snapshot = retry(run, TransferPhase::Reconcile, || {
         run.drive.get_file(run.source_token, &item.file_id)
     })
@@ -265,26 +279,14 @@ async fn reconcile_and_prepare(
         return Err(StepOutcome::Permanent);
     }
 
-    if matches!(item.state, ItemState::Transferred | ItemState::Verifying) {
-        apply_state_outcome(item, ItemState::Verifying)?;
-        persist_outcome(run, item).await?;
-        return Ok(PrepareAction::VerifyOnly);
-    }
-
     if let Some(existing) = find_target_permission(
         &snapshot.permissions,
         run.target_email,
         run.target_permission_id,
     ) {
         item.target_permission_id = Some(GooglePermissionId::new(existing.id.clone()));
-        if matches!(item.state, ItemState::AcceptRequired | ItemState::Accepting) {
-            persist_outcome(run, item).await?;
-            return Ok(PrepareAction::Accept {
-                permission_id: existing.id.clone(),
-            });
-        }
         if existing.pending_owner || existing.role.eq_ignore_ascii_case("owner") {
-            walk_to_accept_required(item)?;
+            advance_to_accept_required(item)?;
             persist_outcome(run, item).await?;
             return Ok(PrepareAction::Accept {
                 permission_id: existing.id.clone(),
@@ -299,20 +301,11 @@ async fn reconcile_and_prepare(
         })
         .await?;
         item.target_permission_id = Some(GooglePermissionId::new(updated.id.clone()));
-        walk_to_accept_required(item)?;
+        advance_to_accept_required(item)?;
         persist_outcome(run, item).await?;
         return Ok(PrepareAction::Accept {
             permission_id: updated.id,
         });
-    }
-
-    if matches!(item.state, ItemState::AcceptRequired | ItemState::Accepting) {
-        let permission_id = item
-            .target_permission_id
-            .as_ref()
-            .map(|id| id.as_str().to_string())
-            .ok_or(StepOutcome::Permanent)?;
-        return Ok(PrepareAction::Accept { permission_id });
     }
 
     apply_state_outcome(item, ItemState::PendingOwnerRequired)?;
@@ -323,27 +316,28 @@ async fn reconcile_and_prepare(
     })
     .await?;
     item.target_permission_id = Some(GooglePermissionId::new(created.id.clone()));
-    walk_to_accept_required(item)?;
+    advance_to_accept_required(item)?;
     persist_outcome(run, item).await?;
     Ok(PrepareAction::Accept {
         permission_id: created.id,
     })
 }
 
-fn walk_to_accept_required(item: &mut MigrationItem) -> Result<(), StepOutcome> {
-    for next in [
-        ItemState::PendingOwnerRequired,
-        ItemState::PendingOwnerCreated,
-        ItemState::AcceptRequired,
-    ] {
-        if item.state == next || item.state == ItemState::Accepting {
-            continue;
+fn advance_to_accept_required(item: &mut MigrationItem) -> Result<(), StepOutcome> {
+    match item.state {
+        ItemState::Eligible | ItemState::RetryableFailed => {
+            apply_state_outcome(item, ItemState::PendingOwnerRequired)?;
+            apply_state_outcome(item, ItemState::PendingOwnerCreated)?;
+            apply_state_outcome(item, ItemState::AcceptRequired)
         }
-        if item.state.can_transition_to(next) {
-            apply_state_outcome(item, next)?;
+        ItemState::PendingOwnerRequired => {
+            apply_state_outcome(item, ItemState::PendingOwnerCreated)?;
+            apply_state_outcome(item, ItemState::AcceptRequired)
         }
+        ItemState::PendingOwnerCreated => apply_state_outcome(item, ItemState::AcceptRequired),
+        ItemState::AcceptRequired | ItemState::Accepting => Ok(()),
+        _ => Err(StepOutcome::InvalidState),
     }
-    Ok(())
 }
 
 async fn accept_ownership(
