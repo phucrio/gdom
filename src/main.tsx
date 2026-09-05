@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { App } from "./App";
+import { App } from "./App.tsx";
+import { createTauriBackend } from "./ipc/tauri.ts";
 
 const rootElement = document.getElementById("root");
 
@@ -10,6 +11,6 @@ if (rootElement === null) {
 
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
-    <App />
+    <App backend={createTauriBackend()} />
   </React.StrictMode>,
 );

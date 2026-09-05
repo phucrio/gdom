@@ -1,39 +1,110 @@
+import { useCallback, useEffect, useState } from "react";
+
+import { AccountRegistry } from "./accounts/AccountRegistry.tsx";
+import type { BackendPort } from "./ipc/port.ts";
+import { IPC_EVENTS, type AccountDto } from "./ipc/types.ts";
+import { LegalDialogs } from "./legal/LegalDialogs.tsx";
+import { MigrationWizard } from "./wizard/MigrationWizard.tsx";
 import "./App.css";
 
-const nextSteps = [
-  "Connect a Google account with OAuth + PKCE.",
-  "Create a source-to-target migration job.",
-  "Scan folders, review the dry-run, then run a canary.",
-] as const;
+type AppProps = {
+  backend: BackendPort;
+};
 
-export function App() {
+export function App({ backend }: AppProps) {
+  const [accounts, setAccounts] = useState<AccountDto[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("GDOM is ready. No Google account is connected.");
+  const [legal, setLegal] = useState<"privacy" | "limited-use" | null>(null);
+
+  const announce = useCallback((message: string) => {
+    setAnnouncement(message);
+  }, []);
+
+  const refreshAccounts = useCallback(() => {
+    setLoading(true);
+    backend
+      .listAccounts()
+      .then((next) => {
+        setAccounts(next);
+        setLoadError(null);
+        setLoading(false);
+      })
+      .catch((caught: unknown) => {
+        setAccounts([]);
+        setLoadError(
+          caught instanceof Error
+            ? caught.message
+            : "Could not load the account registry from the local backend.",
+        );
+        setLoading(false);
+      });
+  }, [backend]);
+
+  useEffect(() => {
+    refreshAccounts();
+  }, [refreshAccounts]);
+
+  useEffect(() => {
+    const subscriptions: Array<Promise<() => void>> = [
+      backend.subscribe(IPC_EVENTS.accountRegistryChanged, refreshAccounts),
+    ];
+
+    return () => {
+      void Promise.all(subscriptions).then((unlistens) => {
+        for (const unlisten of unlistens) {
+          unlisten();
+        }
+      });
+    };
+  }, [backend, refreshAccounts]);
+
   return (
-    <main className="app-shell">
+    <div className="app-shell">
       <header className="topbar">
-        <div className="brand"><span className="brand-mark">G</span> GDOM</div>
-        <span className="status"><i /> Local-first foundation</span>
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            G
+          </span>
+          GDOM
+        </div>
+        <nav className="nav" aria-label="Primary">
+          <a className="nav-link" href="#account-registry">
+            Accounts
+          </a>
+          <a className="nav-link" href="#migration-wizard">
+            New job
+          </a>
+        </nav>
+        <div className="legal-links">
+          <button type="button" className="link-button" onClick={() => setLegal("privacy")}>
+            Privacy Policy
+          </button>
+          <button type="button" className="link-button" onClick={() => setLegal("limited-use")}>
+            Limited Use Disclosure
+          </button>
+        </div>
       </header>
-      <section className="hero" aria-labelledby="page-title">
-        <p className="eyebrow">GOOGLE DRIVE OWNER MIGRATOR</p>
-        <h1 id="page-title">Move ownership with an auditable plan.</h1>
-        <p className="lead">This workspace is for your personal Gmail accounts only. It is ready for the account registry and mock-driven migration engine; no Google account is connected and no Drive data can be changed yet.</p>
-      </section>
-      <section className="overview" aria-label="Migration workspace status">
-        <article className="panel primary-panel">
-          <div className="panel-heading"><span>Account registry</span><span className="badge">0 connected</span></div>
-          <p>OAuth credentials remain in the operating-system keychain. Account roles are selected per job, never stored on an account.</p>
-          <button type="button" disabled>Connect account</button>
-        </article>
-        <article className="panel">
-          <div className="panel-heading"><span>Migration jobs</span><span className="badge">0 drafts</span></div>
-          <p>Each job has one immutable source and target after scanning begins. Only one mutation job will run at a time.</p>
-        </article>
-      </section>
-      <section className="next-steps" aria-labelledby="next-steps-title">
-        <p className="eyebrow">IMPLEMENTATION PATH</p>
-        <h2 id="next-steps-title">What comes next</h2>
-        <ol>{nextSteps.map((step, index) => <li key={step}><span>{index + 1}</span>{step}</li>)}</ol>
-      </section>
-    </main>
+
+      <div className="live-region" aria-live="polite" aria-atomic="true" role="status">
+        {announcement}
+      </div>
+
+      <main className="workspace">
+        <AccountRegistry
+          backend={backend}
+          accounts={accounts}
+          loading={loading}
+          loadError={loadError}
+          onRefresh={refreshAccounts}
+          onAnnounce={announce}
+          onOpenLegal={setLegal}
+        />
+        <MigrationWizard backend={backend} accounts={accounts} onAnnounce={announce} />
+      </main>
+
+      <LegalDialogs open={legal} onClose={() => setLegal(null)} />
+    </div>
   );
 }
