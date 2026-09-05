@@ -26,7 +26,7 @@ jobs:
       - run: pnpm build
       - run: cargo fmt --check
         working-directory: src-tauri
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
         working-directory: src-tauri
-      - run: cargo test --all-features
+      - run: cargo test --workspace --all-features
         working-directory: src-tauri

@@ -6,8 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::application::account_token_provider::AccountTokenProvider;
+use crate::application::backoff::{JitterSource, Sleeper, SystemJitter, TokioSleeper};
 use crate::application::connect_account::AccountStorePort;
 use crate::application::drive_folder::{DriveFolderLookupError, DriveFolderMetadata};
+use crate::application::drive_transfer::DriveTransferPort;
 use crate::application::drive_tree::{DEFAULT_SCAN_CONCURRENCY, DrivePort};
 use crate::application::entity_id::next_entity_id;
 use crate::application::item_store::{ItemPage, ItemStoreError, ItemStorePort};
@@ -16,6 +18,9 @@ use crate::application::preflight::PreflightSummary;
 use crate::application::root_parser::{RootParseError, parse_root_input};
 use crate::application::scanner::{ScanError, ScanOutcome, ScanRun, run_scan};
 use crate::application::time::iso_now;
+use crate::application::transfer::{
+    TransferError, TransferHalt, TransferRun, execute_bulk, execute_canary,
+};
 use crate::domain::job::{
     AccountSnapshot, JobError, JobId, JobStatus, MigrationJob, MigrationRoot, RootId,
     RootValidationStatus,
@@ -47,6 +52,11 @@ pub enum JobServiceError {
     RateLimited,
     ExportFailed(String),
     ScanInProgress,
+    ConfirmationMismatch,
+    TransferInProgress,
+    SharingRateLimited,
+    WaitingForQuota,
+    AuthRequired,
 }
 
 impl fmt::Display for JobServiceError {
@@ -89,6 +99,17 @@ impl fmt::Display for JobServiceError {
             Self::RateLimited => write!(f, "Google Drive rate limit reached"),
             Self::ExportFailed(e) => write!(f, "failed to export dry-run report: {e}"),
             Self::ScanInProgress => write!(f, "a scan is already running for this job"),
+            Self::ConfirmationMismatch => {
+                write!(f, "target email confirmation does not match the job target")
+            }
+            Self::TransferInProgress => {
+                write!(f, "another migration job is already mutating ownership")
+            }
+            Self::SharingRateLimited => {
+                write!(f, "Google Drive sharing rate limit reached")
+            }
+            Self::WaitingForQuota => write!(f, "Google Drive storage quota exceeded"),
+            Self::AuthRequired => write!(f, "an account needs to be re-authenticated"),
         }
     }
 }
@@ -129,6 +150,33 @@ impl From<ScanError> for JobServiceError {
     }
 }
 
+impl From<TransferError> for JobServiceError {
+    fn from(err: TransferError) -> Self {
+        match err {
+            TransferError::Drive(drive_err) => match drive_err {
+                crate::application::drive_transfer::DriveTransferError::SharingRateLimitExceeded => {
+                    Self::SharingRateLimited
+                }
+                crate::application::drive_transfer::DriveTransferError::StorageQuotaExceeded => {
+                    Self::WaitingForQuota
+                }
+                crate::application::drive_transfer::DriveTransferError::Unauthorized => {
+                    Self::AuthRequired
+                }
+                crate::application::drive_transfer::DriveTransferError::RateLimited => {
+                    Self::RateLimited
+                }
+                other => Self::DriveError(other.to_string()),
+            },
+            TransferError::Store(err) => Self::StoreError(err.to_string()),
+            TransferError::Job(err) => err.into(),
+            TransferError::InvalidItemState => {
+                Self::StoreError("illegal item state transition during transfer".to_string())
+            }
+        }
+    }
+}
+
 impl From<JobStorePortError> for JobServiceError {
     fn from(err: JobStorePortError) -> Self {
         match err {
@@ -162,6 +210,23 @@ impl Drop for ScanInFlightGuard {
     }
 }
 
+struct TransferLeaseGuard {
+    slot: Arc<std::sync::Mutex<Option<JobId>>>,
+    job_id: JobId,
+}
+
+impl Drop for TransferLeaseGuard {
+    fn drop(&mut self) {
+        let mut lease = self
+            .slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *lease == Some(self.job_id) {
+            *lease = None;
+        }
+    }
+}
+
 pub struct JobService<A, J>
 where
     A: AccountStorePort + Send + Sync + 'static,
@@ -173,6 +238,9 @@ where
     token_provider: Arc<AccountTokenProvider<A>>,
     scan_pause_flags: tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>,
     scan_in_flight: Arc<std::sync::Mutex<HashSet<JobId>>>,
+    transfer_lease: Arc<std::sync::Mutex<Option<JobId>>>,
+    sleeper: Arc<dyn Sleeper>,
+    jitter: Arc<dyn JitterSource>,
 }
 
 impl<A, J> JobService<A, J>
@@ -193,6 +261,9 @@ where
             token_provider,
             scan_pause_flags: tokio::sync::Mutex::new(HashMap::new()),
             scan_in_flight: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            transfer_lease: Arc::new(std::sync::Mutex::new(None)),
+            sleeper: Arc::new(TokioSleeper),
+            jitter: Arc::new(SystemJitter),
         }
     }
 
@@ -216,6 +287,64 @@ where
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains(&job_id)
+    }
+
+    fn try_acquire_transfer(&self, job_id: JobId) -> Result<TransferLeaseGuard, JobServiceError> {
+        let mut lease = self
+            .transfer_lease
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(active) = *lease
+            && active != job_id
+        {
+            return Err(JobServiceError::TransferInProgress);
+        }
+        *lease = Some(job_id);
+        drop(lease);
+        Ok(TransferLeaseGuard {
+            slot: Arc::clone(&self.transfer_lease),
+            job_id,
+        })
+    }
+
+    fn emails_match(left: &str, right: &str) -> bool {
+        left.trim().eq_ignore_ascii_case(right.trim()) && !left.trim().is_empty()
+    }
+
+    async fn run_transfer(
+        &self,
+        job: &mut crate::domain::job::MigrationJob,
+        canary: bool,
+    ) -> Result<TransferHalt, JobServiceError> {
+        let source_token = self
+            .token_provider
+            .get_access_token(job.source_account_id())
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
+        let target_token = self
+            .token_provider
+            .get_access_token(job.target_account_id())
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
+        let source_perm = job.snapshots().source.permission_id.clone();
+        let target_perm = job.snapshots().target.permission_id.clone();
+        let target_email = job.snapshots().target.email.clone();
+        let run = TransferRun {
+            drive: self.drive.as_ref() as &dyn DriveTransferPort,
+            store: &*self.job_store,
+            sleeper: self.sleeper.as_ref(),
+            jitter: self.jitter.as_ref(),
+            source_token: &source_token,
+            target_token: &target_token,
+            source_permission_id: &source_perm,
+            target_permission_id: &target_perm,
+            target_email: &target_email,
+        };
+        if canary {
+            Ok(execute_canary(&run, job).await?)
+        } else {
+            Ok(execute_bulk(&run, job).await?)
+        }
     }
 
     async fn persist_paused(
@@ -611,6 +740,47 @@ where
                 )))
             }
             Err(err) => Err(err),
+        }
+    }
+
+    pub async fn start_canary(
+        &self,
+        job_id: JobId,
+        confirmation_email: &str,
+    ) -> Result<MigrationJob, JobServiceError> {
+        let mut job = self.get_job(job_id).await?;
+        if !Self::emails_match(confirmation_email, &job.snapshots().target.email) {
+            return Err(JobServiceError::ConfirmationMismatch);
+        }
+        let _lease = self.try_acquire_transfer(job_id)?;
+        job.start_canary()?;
+        self.job_store.update_job(&job).await?;
+        match self.run_transfer(&mut job, true).await {
+            Ok(_) => {
+                self.job_store.update_job(&job).await?;
+                self.get_job(job_id).await
+            }
+            Err(err) => {
+                let _ = self.job_store.update_job(&job).await;
+                Err(err)
+            }
+        }
+    }
+
+    pub async fn continue_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let mut job = self.get_job(job_id).await?;
+        let _lease = self.try_acquire_transfer(job_id)?;
+        job.start_bulk()?;
+        self.job_store.update_job(&job).await?;
+        match self.run_transfer(&mut job, false).await {
+            Ok(_) => {
+                self.job_store.update_job(&job).await?;
+                self.get_job(job_id).await
+            }
+            Err(err) => {
+                let _ = self.job_store.update_job(&job).await;
+                Err(err)
+            }
         }
     }
 }

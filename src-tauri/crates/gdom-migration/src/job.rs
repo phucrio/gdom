@@ -539,6 +539,189 @@ impl MigrationJob {
         }
     }
 
+    pub fn start_canary(&mut self) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::ReadyForReview => {
+                self.status = JobStatus::RunningCanary;
+                Ok(())
+            }
+            JobStatus::RunningCanary => Ok(()),
+            JobStatus::Draft
+            | JobStatus::Scanning
+            | JobStatus::CanaryReview
+            | JobStatus::Queued
+            | JobStatus::Running
+            | JobStatus::Pausing
+            | JobStatus::Paused
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed
+            | JobStatus::AuthRequired
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn complete_canary(&mut self) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::RunningCanary => {
+                self.status = JobStatus::CanaryReview;
+                Ok(())
+            }
+            JobStatus::CanaryReview => Ok(()),
+            JobStatus::Draft
+            | JobStatus::Scanning
+            | JobStatus::ReadyForReview
+            | JobStatus::Queued
+            | JobStatus::Running
+            | JobStatus::Pausing
+            | JobStatus::Paused
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed
+            | JobStatus::AuthRequired
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn start_bulk(&mut self) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::CanaryReview => {
+                self.status = JobStatus::Running;
+                Ok(())
+            }
+            JobStatus::Running => Ok(()),
+            JobStatus::Draft
+            | JobStatus::Scanning
+            | JobStatus::ReadyForReview
+            | JobStatus::RunningCanary
+            | JobStatus::Queued
+            | JobStatus::Pausing
+            | JobStatus::Paused
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed
+            | JobStatus::AuthRequired
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn complete_transfer(
+        &mut self,
+        completed_at: String,
+        had_errors: bool,
+    ) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::Running => {
+                self.status = if had_errors {
+                    JobStatus::CompletedWithErrors
+                } else {
+                    JobStatus::Completed
+                };
+                self.completed_at = Some(completed_at);
+                Ok(())
+            }
+            JobStatus::Completed | JobStatus::CompletedWithErrors => Ok(()),
+            JobStatus::Draft
+            | JobStatus::Scanning
+            | JobStatus::ReadyForReview
+            | JobStatus::RunningCanary
+            | JobStatus::CanaryReview
+            | JobStatus::Queued
+            | JobStatus::Pausing
+            | JobStatus::Paused
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Failed
+            | JobStatus::AuthRequired
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn pause_sharing_rate_limit(&mut self, error: String) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::RunningCanary | JobStatus::Running => {
+                self.status = JobStatus::SourceRateLimited;
+                self.last_error = Some(error);
+                Ok(())
+            }
+            JobStatus::SourceRateLimited => Ok(()),
+            JobStatus::Draft
+            | JobStatus::Scanning
+            | JobStatus::ReadyForReview
+            | JobStatus::CanaryReview
+            | JobStatus::Queued
+            | JobStatus::Pausing
+            | JobStatus::Paused
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed
+            | JobStatus::AuthRequired
+            | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn wait_for_quota(&mut self, error: String) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::RunningCanary | JobStatus::Running => {
+                self.status = JobStatus::WaitingForQuota;
+                self.last_error = Some(error);
+                Ok(())
+            }
+            JobStatus::WaitingForQuota => Ok(()),
+            JobStatus::Draft
+            | JobStatus::Scanning
+            | JobStatus::ReadyForReview
+            | JobStatus::CanaryReview
+            | JobStatus::Queued
+            | JobStatus::Pausing
+            | JobStatus::Paused
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed
+            | JobStatus::AuthRequired
+            | JobStatus::SourceRateLimited => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn require_auth(&mut self, error: String) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::RunningCanary | JobStatus::Running => {
+                self.status = JobStatus::AuthRequired;
+                self.last_error = Some(error);
+                Ok(())
+            }
+            JobStatus::AuthRequired => Ok(()),
+            JobStatus::Draft
+            | JobStatus::Scanning
+            | JobStatus::ReadyForReview
+            | JobStatus::CanaryReview
+            | JobStatus::Queued
+            | JobStatus::Pausing
+            | JobStatus::Paused
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+        }
+    }
+
     pub fn set_last_error(&mut self, error: impl Into<String>) {
         self.last_error = Some(error.into());
     }
@@ -800,6 +983,41 @@ mod tests {
             .expect("paused scan resumes");
         job.complete_scanning().expect("scan completes");
         assert_eq!(job.status(), JobStatus::ReadyForReview);
+    }
+
+    #[test]
+    fn canary_and_bulk_follow_legal_transitions_and_reject_skipping_review() {
+        let source = sample_snapshot(1, "source@gmail.com", "perm_1");
+        let target = sample_snapshot(2, "target@gmail.com", "perm_2");
+        let mut job = MigrationJob::new(
+            JobId::new(100),
+            source,
+            target,
+            "2026-09-05T00:00:00Z".to_string(),
+        )
+        .expect("valid job");
+        job.add_root(MigrationRoot {
+            id: RootId::new(501),
+            job_id: job.id(),
+            root_file_id: "folder_abc".to_string(),
+            root_name: "My Folder".to_string(),
+            validation_status: RootValidationStatus::Validated,
+            created_at: "2026-09-05T00:00:00Z".to_string(),
+        })
+        .expect("root added");
+        job.start_scanning("2026-09-05T01:00:00Z".to_string())
+            .expect("scan starts");
+        job.complete_scanning().expect("scan completes");
+
+        assert_eq!(job.start_bulk(), Err(JobError::IllegalTransition));
+        job.start_canary().expect("canary starts");
+        assert_eq!(job.status(), JobStatus::RunningCanary);
+        job.complete_canary().expect("canary completes");
+        assert_eq!(job.status(), JobStatus::CanaryReview);
+        job.start_bulk().expect("bulk starts after review");
+        job.complete_transfer("2026-09-05T02:00:00Z".to_string(), false)
+            .expect("bulk completes");
+        assert_eq!(job.status(), JobStatus::Completed);
     }
 
     #[test]

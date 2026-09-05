@@ -375,6 +375,70 @@ impl ItemStorePort for SqliteJobStore {
             })
         })
     }
+
+    fn list_items_for_transfer<'a>(
+        &'a self,
+        job_id: JobId,
+    ) -> ItemStoreFuture<'a, Vec<MigrationItem>> {
+        Box::pin(async move {
+            let rows = sqlx::query(
+                "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
+                        original_owner_permission_id, quota_bytes_used, target_permission_id,
+                        state, created_at, updated_at
+                 FROM migration_items
+                 WHERE job_id = ?1 AND state IN (
+                    'ELIGIBLE',
+                    'PENDING_OWNER_REQUIRED',
+                    'PENDING_OWNER_CREATED',
+                    'ACCEPT_REQUIRED',
+                    'ACCEPTING',
+                    'TRANSFERRED',
+                    'VERIFYING',
+                    'RETRYABLE_FAILED'
+                 )
+                 ORDER BY depth DESC, name COLLATE NOCASE ASC",
+            )
+            .bind(job_id.value().to_string())
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+
+            let mut items = Vec::with_capacity(rows.len());
+            for row in rows {
+                items.push(item_from_row(row)?);
+            }
+            Ok(items)
+        })
+    }
+
+    fn save_item<'a>(&'a self, item: &'a MigrationItem) -> ItemStoreFuture<'a, ()> {
+        Box::pin(async move {
+            let result = sqlx::query(
+                "UPDATE migration_items
+                 SET state = ?1, target_permission_id = ?2, updated_at = ?3
+                 WHERE id = ?4 AND job_id = ?5",
+            )
+            .bind(item.state.as_str())
+            .bind(
+                item.target_permission_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_string()),
+            )
+            .bind(&item.updated_at)
+            .bind(item.id.value().to_string())
+            .bind(item.job_id.value().to_string())
+            .execute(self.pool())
+            .await
+            .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+            if result.rows_affected() == 0 {
+                return Err(ItemStoreError::Database(format!(
+                    "migration item {} was not found",
+                    item.id
+                )));
+            }
+            Ok(())
+        })
+    }
 }
 
 async fn count_state(

@@ -95,6 +95,102 @@ impl ItemState {
     pub const fn is_eligible(self) -> bool {
         matches!(self, Self::Eligible)
     }
+
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Verified
+                | Self::SkippedAlreadyOwnedByTarget
+                | Self::SkippedNotOwnedBySource
+                | Self::SkippedSharedDrive
+                | Self::SkippedShortcutTarget
+                | Self::SkippedTrashed
+                | Self::SkippedIneligible
+                | Self::PermanentFailed
+                | Self::Cancelled
+        )
+    }
+
+    pub const fn is_transfer_active(self) -> bool {
+        matches!(
+            self,
+            Self::Eligible
+                | Self::PendingOwnerRequired
+                | Self::PendingOwnerCreated
+                | Self::AcceptRequired
+                | Self::Accepting
+                | Self::Transferred
+                | Self::Verifying
+                | Self::RetryableFailed
+        )
+    }
+
+    pub fn can_transition_to(self, next: Self) -> bool {
+        match (self, next) {
+            (Self::Discovered, Self::Eligible) => true,
+            (Self::Eligible, Self::PendingOwnerRequired)
+            | (Self::Eligible, Self::Verifying)
+            | (Self::Eligible, Self::SkippedAlreadyOwnedByTarget)
+            | (Self::Eligible, Self::SkippedNotOwnedBySource)
+            | (Self::Eligible, Self::SkippedSharedDrive)
+            | (Self::Eligible, Self::SkippedTrashed)
+            | (Self::Eligible, Self::SkippedIneligible)
+            | (Self::Eligible, Self::PermanentFailed)
+            | (Self::Eligible, Self::RetryableFailed)
+            | (Self::Eligible, Self::Cancelled) => true,
+            (Self::PendingOwnerRequired, Self::PendingOwnerCreated)
+            | (Self::PendingOwnerRequired, Self::Verifying)
+            | (Self::PendingOwnerRequired, Self::RetryableFailed)
+            | (Self::PendingOwnerRequired, Self::PermanentFailed)
+            | (Self::PendingOwnerRequired, Self::Cancelled)
+            | (Self::PendingOwnerRequired, Self::SkippedTrashed)
+            | (Self::PendingOwnerRequired, Self::SkippedSharedDrive)
+            | (Self::PendingOwnerRequired, Self::SkippedNotOwnedBySource) => true,
+            (Self::PendingOwnerCreated, Self::AcceptRequired)
+            | (Self::PendingOwnerCreated, Self::Verifying)
+            | (Self::PendingOwnerCreated, Self::RetryableFailed)
+            | (Self::PendingOwnerCreated, Self::PermanentFailed)
+            | (Self::PendingOwnerCreated, Self::Cancelled)
+            | (Self::PendingOwnerCreated, Self::SkippedTrashed)
+            | (Self::PendingOwnerCreated, Self::SkippedSharedDrive) => true,
+            (Self::AcceptRequired, Self::Accepting)
+            | (Self::AcceptRequired, Self::Verifying)
+            | (Self::AcceptRequired, Self::RetryableFailed)
+            | (Self::AcceptRequired, Self::PermanentFailed)
+            | (Self::AcceptRequired, Self::Cancelled)
+            | (Self::AcceptRequired, Self::SkippedTrashed) => true,
+            (Self::Accepting, Self::Transferred)
+            | (Self::Accepting, Self::Verifying)
+            | (Self::Accepting, Self::RetryableFailed)
+            | (Self::Accepting, Self::PermanentFailed)
+            | (Self::Accepting, Self::Cancelled)
+            | (Self::Accepting, Self::SkippedTrashed) => true,
+            (Self::Transferred, Self::Verifying)
+            | (Self::Transferred, Self::RetryableFailed)
+            | (Self::Transferred, Self::PermanentFailed)
+            | (Self::Transferred, Self::Cancelled)
+            | (Self::Transferred, Self::SkippedTrashed) => true,
+            (Self::Verifying, Self::Verified)
+            | (Self::Verifying, Self::RetryableFailed)
+            | (Self::Verifying, Self::PermanentFailed)
+            | (Self::Verifying, Self::Cancelled)
+            | (Self::Verifying, Self::SkippedTrashed) => true,
+            (Self::RetryableFailed, Self::PendingOwnerRequired)
+            | (Self::RetryableFailed, Self::Verifying)
+            | (Self::RetryableFailed, Self::PermanentFailed)
+            | (Self::RetryableFailed, Self::Cancelled) => true,
+            (from, to) if from == to => true,
+            _ => false,
+        }
+    }
+
+    pub fn transition_to(self, next: Self) -> Result<Self, ItemError> {
+        if self.can_transition_to(next) {
+            Ok(next)
+        } else {
+            Err(ItemError::IllegalTransition)
+        }
+    }
 }
 
 impl fmt::Display for ItemState {
@@ -134,12 +230,14 @@ impl FromStr for ItemState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ItemError {
     InvalidItemState,
+    IllegalTransition,
 }
 
 impl fmt::Display for ItemError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidItemState => write!(f, "Invalid item state string"),
+            Self::IllegalTransition => write!(f, "Illegal item state transition"),
         }
     }
 }
@@ -178,12 +276,22 @@ mod tests {
     #[test]
     fn item_state_roundtrips_known_values() {
         for state in [
+            ItemState::Discovered,
             ItemState::Eligible,
+            ItemState::PendingOwnerRequired,
+            ItemState::PendingOwnerCreated,
+            ItemState::AcceptRequired,
+            ItemState::Accepting,
+            ItemState::Transferred,
+            ItemState::Verifying,
+            ItemState::Verified,
             ItemState::SkippedAlreadyOwnedByTarget,
             ItemState::SkippedNotOwnedBySource,
             ItemState::SkippedSharedDrive,
             ItemState::SkippedIneligible,
             ItemState::SkippedTrashed,
+            ItemState::RetryableFailed,
+            ItemState::PermanentFailed,
         ] {
             assert_eq!(ItemState::from_str(state.as_str()), Ok(state));
         }
@@ -195,5 +303,28 @@ mod tests {
             ItemState::from_str("NOT_A_STATE"),
             Err(ItemError::InvalidItemState)
         );
+    }
+
+    #[test]
+    fn transfer_chain_allows_accept_required_and_rejects_skips() {
+        let chain = [
+            ItemState::Eligible,
+            ItemState::PendingOwnerRequired,
+            ItemState::PendingOwnerCreated,
+            ItemState::AcceptRequired,
+            ItemState::Accepting,
+            ItemState::Transferred,
+            ItemState::Verifying,
+            ItemState::Verified,
+        ];
+        for window in chain.windows(2) {
+            assert_eq!(window[0].transition_to(window[1]), Ok(window[1]));
+        }
+        assert_eq!(
+            ItemState::Verified.transition_to(ItemState::Eligible),
+            Err(ItemError::IllegalTransition)
+        );
+        assert!(ItemState::Verified.is_terminal());
+        assert!(ItemState::Eligible.is_transfer_active());
     }
 }

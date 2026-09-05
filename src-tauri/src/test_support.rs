@@ -41,7 +41,7 @@ where
                     Ok(0) => break,
                     Ok(read) => {
                         request.extend_from_slice(&chunk[..read]);
-                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        if http_request_complete(&request) {
                             break;
                         }
                     }
@@ -65,6 +65,38 @@ where
         .recv_timeout(Duration::from_secs(2))
         .expect("http mock thread starts");
     (format!("http://{address}"), captured)
+}
+
+fn http_request_complete(request: &[u8]) -> bool {
+    let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let Some(length) = headers.lines().find_map(|line| {
+        line.split_once(':').and_then(|(name, value)| {
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+    }) else {
+        return true;
+    };
+    request.len().saturating_sub(header_end + 4) >= length
+}
+
+pub fn request_method(request: &str) -> Option<&str> {
+    request.lines().next()?.split_whitespace().next()
+}
+
+pub fn request_path(request: &str) -> Option<&str> {
+    request.lines().next()?.split_whitespace().nth(1)
+}
+
+pub fn request_body(request: &str) -> &str {
+    match request.split_once("\r\n\r\n") {
+        Some((_, body)) => body,
+        None => "",
+    }
 }
 
 pub fn authorization_bearer(request: &str) -> Option<String> {

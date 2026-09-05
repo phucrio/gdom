@@ -83,4 +83,11 @@ pub trait ItemStorePort: Send + Sync {
     ) -> ItemStoreFuture<'a, ItemPage>;
 
     fn item_aggregates<'a>(&'a self, job_id: JobId) -> ItemStoreFuture<'a, ItemAggregates>;
+
+    fn list_items_for_transfer<'a>(
+        &'a self,
+        job_id: JobId,
+    ) -> ItemStoreFuture<'a, Vec<MigrationItem>>;
+
+    fn save_item<'a>(&'a self, item: &'a MigrationItem) -> ItemStoreFuture<'a, ()>;
 }

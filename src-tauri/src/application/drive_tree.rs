@@ -5,6 +5,7 @@ use crate::application::AccessToken;
 use crate::application::drive_folder::{
     DriveFolderLookupError, DriveFolderLookupPort, DriveFolderOwner,
 };
+use crate::application::drive_transfer::DriveTransferPort;
 
 pub const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 pub const SHORTCUT_MIME_TYPE: &str = "application/vnd.google-apps.shortcut";
@@ -58,6 +59,12 @@ pub trait DriveQuotaPort: Send + Sync {
     fn get_storage_quota<'a>(&'a self, token: &'a AccessToken) -> DriveQuotaFuture<'a>;
 }
 
-pub trait DrivePort: DriveFolderLookupPort + DriveTreePort + DriveQuotaPort {}
+pub trait DrivePort:
+    DriveFolderLookupPort + DriveTreePort + DriveQuotaPort + DriveTransferPort
+{
+}
 
-impl<T> DrivePort for T where T: DriveFolderLookupPort + DriveTreePort + DriveQuotaPort {}
+impl<T> DrivePort for T where
+    T: DriveFolderLookupPort + DriveTreePort + DriveQuotaPort + DriveTransferPort
+{
+}

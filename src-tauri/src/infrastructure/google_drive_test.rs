@@ -348,3 +348,68 @@ async fn storage_quota_uses_caller_bearer_and_parses_limit() {
         })
     }));
 }
+
+#[tokio::test]
+async fn create_pending_owner_posts_source_body_without_parent_rewrite() {
+    let body = r#"{"id":"perm-created","type":"user","role":"writer","emailAddress":"target@gmail.com","pendingOwner":true}"#;
+    let (base_url, request) = serve_once("200 OK", body);
+    let client = GoogleDriveClient::for_test(base_url).expect("test client");
+    let token = AccessToken::new(SECRET.to_owned());
+    let permission = timeout(
+        Duration::from_secs(2),
+        client.create_pending_owner(&token, "file-1", "target@gmail.com"),
+    )
+    .await
+    .expect("completes")
+    .expect("pending owner created");
+    assert_eq!(permission.id, "perm-created");
+    assert!(permission.pending_owner);
+
+    let request = request
+        .recv_timeout(Duration::from_secs(2))
+        .expect("captured")
+        .expect("utf8");
+    assert!(request.starts_with("POST /drive/v3/files/file-1/permissions?"));
+    assert!(request.contains("sendNotificationEmail=true"));
+    assert!(!request.contains("sendNotificationEmail=false"));
+    assert!(!request.contains("moveToNewOwnersRoot"));
+    assert!(request.contains("Bearer"));
+}
+
+#[tokio::test]
+async fn accept_ownership_patches_with_transfer_flag() {
+    let body = r#"{"id":"perm-created","role":"owner","pendingOwner":false}"#;
+    let (base_url, request) = serve_once("200 OK", body);
+    let client = GoogleDriveClient::for_test(base_url).expect("test client");
+    let token = AccessToken::new(SECRET.to_owned());
+    timeout(
+        Duration::from_secs(2),
+        client.accept_ownership(&token, "file-1", "perm-created"),
+    )
+    .await
+    .expect("completes")
+    .expect("accepted");
+    let request = request
+        .recv_timeout(Duration::from_secs(2))
+        .expect("captured")
+        .expect("utf8");
+    assert!(request.starts_with("PATCH /drive/v3/files/file-1/permissions/perm-created?"));
+    assert!(request.contains("transferOwnership=true"));
+    assert!(!request.contains("moveToNewOwnersRoot=true"));
+}
+
+#[tokio::test]
+async fn sharing_rate_limit_reason_is_distinct_from_generic_forbidden() {
+    let body = r#"{"error":{"errors":[{"reason":"sharingRateLimitExceeded"}]}}"#;
+    let (base_url, _) = serve_once("403 Forbidden", body);
+    let client = GoogleDriveClient::for_test(base_url).expect("test client");
+    let token = AccessToken::new(SECRET.to_owned());
+    let error = timeout(
+        Duration::from_secs(2),
+        client.create_pending_owner(&token, "file-1", "target@gmail.com"),
+    )
+    .await
+    .expect("completes")
+    .expect_err("sharing rate limit");
+    assert_eq!(error, GoogleDriveError::SharingRateLimitExceeded);
+}

@@ -312,6 +312,13 @@ pub struct ExportDryRunInput {
     pub destination: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartCanaryInput {
+    pub job_id: String,
+    pub confirmation: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
