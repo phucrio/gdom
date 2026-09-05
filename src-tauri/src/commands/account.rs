@@ -1,14 +1,9 @@
-use std::sync::Arc;
-
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    application::ConnectAccountService,
+    application::OAuthGrant,
     domain::AccountId,
-    infrastructure::{
-        google_drive::GoogleDriveClient, google_oauth::DesktopOAuthSession,
-        google_token::GoogleTokenClient,
-    },
+    infrastructure::google_oauth::DesktopOAuthSession,
     state::{AppState, OAuthConfig},
 };
 
@@ -46,7 +41,25 @@ async fn configure_oauth_inner(
         .filter(|s| !s.is_empty());
 
     let mut guard = state.oauth_config.write().await;
-    *guard = Some(OAuthConfig::new(client_id.to_owned(), client_secret));
+    *guard = Some(OAuthConfig::new(
+        client_id.to_owned(),
+        client_secret.clone(),
+    ));
+
+    state
+        .account_store
+        .set_setting("oauth.client_id", client_id)
+        .await
+        .map_err(|e| CommandError::Database(e.to_string()))?;
+
+    if let Some(secret) = client_secret {
+        state
+            .account_store
+            .set_setting("oauth.client_secret", &secret)
+            .await
+            .map_err(|e| CommandError::Database(e.to_string()))?;
+    }
+
     Ok(())
 }
 
@@ -119,29 +132,21 @@ pub async fn connect_account(
         .await
         .map_err(|e| CommandError::OAuth(e.to_string()))?;
 
-    let token_client =
-        GoogleTokenClient::new(config.client_id.clone(), config.client_secret.clone())
-            .map_err(|e| CommandError::Internal(e.to_string()))?;
-
-    let drive_client =
-        GoogleDriveClient::new().map_err(|e| CommandError::Internal(e.to_string()))?;
+    let grant = OAuthGrant::new(
+        grant.authorization_code().to_owned(),
+        grant.pkce_verifier().to_owned(),
+        grant.redirect_uri().to_owned(),
+    );
 
     let duration_since_epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| CommandError::Internal(e.to_string()))?;
     let fallback_id = duration_since_epoch.as_nanos();
 
-    let service = ConnectAccountService::new(
-        token_client,
-        drive_client,
-        Arc::clone(&state.account_store),
-        Arc::clone(&state.credential_store),
-    );
-
-    let connected_account = service
+    let connected_account = state
+        .connect_account_use_case
         .connect_account(grant, AccountId::new(fallback_id))
-        .await
-        .map_err(|e| CommandError::OAuth(e.to_string()))?;
+        .await?;
 
     let _ = app.emit("account-registry-changed", ());
 
@@ -162,6 +167,28 @@ mod tests {
 
     use super::{configure_oauth_inner, get_oauth_config_inner, list_accounts_inner};
 
+    struct DummyConnectAccountUseCase;
+
+    impl crate::application::ConnectAccountUseCase for DummyConnectAccountUseCase {
+        fn connect_account(
+            &self,
+            _grant: crate::application::OAuthGrant,
+            _fallback_account_id: crate::domain::AccountId,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::domain::ConnectedAccount,
+                            crate::application::ConnectAccountError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { unimplemented!() })
+        }
+    }
+
     /// Build a minimal `AppState` with an in-memory SQLite store and mock
     /// credential store for command-level tests.
     async fn test_state(oauth: Option<OAuthConfig>) -> AppState {
@@ -169,7 +196,9 @@ mod tests {
             .await
             .expect("in-memory account store");
         let cred_store = WindowsCredentialStore::new_mock();
-        AppState::new(Arc::new(store), Arc::new(cred_store), oauth)
+        let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
+            Arc::new(DummyConnectAccountUseCase);
+        AppState::new(Arc::new(store), Arc::new(cred_store), oauth, use_case)
     }
 
     // -- list_accounts -------------------------------------------------------
@@ -236,6 +265,23 @@ mod tests {
         let config = guard.as_ref().expect("config is set");
         assert_eq!(config.client_id, "test-client-id");
         assert_eq!(config.client_secret.as_deref(), Some("test-secret"));
+
+        assert_eq!(
+            state
+                .account_store
+                .get_setting("oauth.client_id")
+                .await
+                .unwrap(),
+            Some("test-client-id".into())
+        );
+        assert_eq!(
+            state
+                .account_store
+                .get_setting("oauth.client_secret")
+                .await
+                .unwrap(),
+            Some("test-secret".into())
+        );
     }
 
     #[tokio::test]

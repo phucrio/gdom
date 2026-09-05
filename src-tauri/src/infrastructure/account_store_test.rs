@@ -217,3 +217,40 @@ async fn list_all_returns_accounts_in_order() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn app_settings_persist_and_update() {
+    complete(async {
+        // Given
+        let store = SqliteAccountStore::open_in_memory()
+            .await
+            .expect("in-memory database opens");
+
+        assert_eq!(store.get_setting("test_key").await.unwrap(), None);
+
+        // When
+        store
+            .set_setting("test_key", "value_1")
+            .await
+            .expect("set_setting succeeds");
+
+        // Then
+        assert_eq!(
+            store.get_setting("test_key").await.unwrap(),
+            Some("value_1".to_owned())
+        );
+
+        // When
+        store
+            .set_setting("test_key", "value_2")
+            .await
+            .expect("update succeeds");
+
+        // Then
+        assert_eq!(
+            store.get_setting("test_key").await.unwrap(),
+            Some("value_2".to_owned())
+        );
+    })
+    .await;
+}

@@ -75,6 +75,8 @@ pub struct AppState {
     pub oauth_config: RwLock<Option<OAuthConfig>>,
 
     pub connect_account_lock: tokio::sync::Mutex<()>,
+
+    pub connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
 }
 
 impl AppState {
@@ -83,12 +85,14 @@ impl AppState {
         account_store: Arc<SqliteAccountStore>,
         credential_store: Arc<WindowsCredentialStore>,
         oauth_config: Option<OAuthConfig>,
+        connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
     ) -> Self {
         Self {
             account_store,
             credential_store,
             oauth_config: RwLock::new(oauth_config),
             connect_account_lock: tokio::sync::Mutex::new(()),
+            connect_account_use_case,
         }
     }
 
@@ -97,12 +101,14 @@ impl AppState {
         account_store: Arc<SqliteAccountStore>,
         credential_store: Arc<dyn RefreshTokenStore + Send + Sync>,
         oauth_config: Option<OAuthConfig>,
+        connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
     ) -> Self {
         Self {
             account_store,
             credential_store,
             oauth_config: RwLock::new(oauth_config),
             connect_account_lock: tokio::sync::Mutex::new(()),
+            connect_account_use_case,
         }
     }
 }
@@ -178,6 +184,28 @@ mod tests {
 
     // -- AppState -----------------------------------------------------------
 
+    struct DummyConnectAccountUseCase;
+
+    impl crate::application::ConnectAccountUseCase for DummyConnectAccountUseCase {
+        fn connect_account(
+            &self,
+            _grant: crate::application::OAuthGrant,
+            _fallback_account_id: crate::domain::AccountId,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::domain::ConnectedAccount,
+                            crate::application::ConnectAccountError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { unimplemented!() })
+        }
+    }
+
     #[tokio::test]
     async fn app_state_new_holds_oauth_config() {
         let store = SqliteAccountStore::open_in_memory()
@@ -186,8 +214,10 @@ mod tests {
         let account_store = Arc::new(store);
         let cred_store = crate::infrastructure::secrets::WindowsCredentialStore::new_mock();
         let oauth = OAuthConfig::new("test-id", None);
+        let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
+            Arc::new(DummyConnectAccountUseCase);
 
-        let state = AppState::new(account_store, Arc::new(cred_store), Some(oauth));
+        let state = AppState::new(account_store, Arc::new(cred_store), Some(oauth), use_case);
 
         let guard = state.oauth_config.read().await;
         let config = guard.as_ref().expect("should have config");
@@ -201,8 +231,10 @@ mod tests {
             .expect("in-memory store");
         let account_store = Arc::new(store);
         let cred_store = crate::infrastructure::secrets::WindowsCredentialStore::new_mock();
+        let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
+            Arc::new(DummyConnectAccountUseCase);
 
-        let state = AppState::new(account_store, Arc::new(cred_store), None);
+        let state = AppState::new(account_store, Arc::new(cred_store), None, use_case);
 
         let guard = state.oauth_config.read().await;
         assert!(guard.is_none());

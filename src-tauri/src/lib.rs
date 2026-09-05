@@ -9,11 +9,37 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
-use infrastructure::account_store::SqliteAccountStore;
+use application::{
+    ConnectAccountService, ConnectAccountUseCase, OAuthGrant, TokenExchangePort, TokenResponse,
+};
+use infrastructure::{
+    account_store::SqliteAccountStore, google_drive::GoogleDriveClient,
+    google_token::GoogleTokenClient,
+};
 use state::{AppState, OAuthConfig};
 
 #[cfg(target_os = "windows")]
 use infrastructure::secrets::WindowsCredentialStore;
+
+struct DynamicTokenExchange {
+    oauth_config: Arc<tokio::sync::RwLock<Option<OAuthConfig>>>,
+}
+
+impl TokenExchangePort for DynamicTokenExchange {
+    async fn exchange_code(
+        &self,
+        grant: OAuthGrant,
+    ) -> Result<TokenResponse, application::TokenExchangeError> {
+        let config = {
+            let guard = self.oauth_config.read().await;
+            guard.clone()
+        };
+        let config = config.ok_or(application::TokenExchangeError::InvalidClient)?;
+        let client = GoogleTokenClient::new(config.client_id, config.client_secret)
+            .map_err(|_| application::TokenExchangeError::Transport)?;
+        TokenExchangePort::exchange_code(&client, grant).await
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -49,13 +75,48 @@ pub fn run() {
             #[cfg(not(target_os = "windows"))]
             return Err("GDOM requires Windows — credential store adapters for other platforms are not yet available".into());
 
-            let oauth_config = OAuthConfig::from_env();
+            let db_client_id = tauri::async_runtime::block_on(
+                account_store.get_setting("oauth.client_id"),
+            )
+            .map_err(|e| format!("failed to read oauth.client_id: {e}"))?;
+
+            let db_client_secret = tauri::async_runtime::block_on(
+                account_store.get_setting("oauth.client_secret"),
+            )
+            .map_err(|e| format!("failed to read oauth.client_secret: {e}"))?;
+
+            let oauth_config = match (db_client_id, db_client_secret) {
+                (Some(id), secret) if !id.trim().is_empty() => {
+                    Some(OAuthConfig::new(id.trim(), secret))
+                }
+                _ => OAuthConfig::from_env(),
+            };
+
+            let account_store = Arc::new(account_store);
+            let shared_oauth_config = Arc::new(tokio::sync::RwLock::new(oauth_config.clone()));
+
+            let token_exchange = DynamicTokenExchange {
+                oauth_config: Arc::clone(&shared_oauth_config),
+            };
+
+            let drive_client = GoogleDriveClient::new()
+                .map_err(|e| format!("failed to initialize Google Drive client: {e}"))?;
+
+            let service = ConnectAccountService::new(
+                token_exchange,
+                drive_client,
+                Arc::clone(&account_store),
+                Arc::clone(&credential_store),
+            );
+
+            let connect_account_use_case: Arc<dyn ConnectAccountUseCase> = Arc::new(service);
 
             #[allow(unreachable_code)]
             let state = AppState::new(
-                Arc::new(account_store),
+                account_store,
                 credential_store,
                 oauth_config,
+                connect_account_use_case,
             );
 
             app.manage(state);

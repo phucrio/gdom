@@ -160,6 +160,29 @@ impl SqliteAccountStore {
 
         rows.into_iter().map(parse_account).collect()
     }
+
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>, AccountStoreError> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM app_settings WHERE key = ?1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+
+        Ok(row.map(|(val,)| val))
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), AccountStoreError> {
+        sqlx::query(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
 }
 
 fn parse_account(stored: StoredAccountRow) -> Result<ConnectedAccount, AccountStoreError> {

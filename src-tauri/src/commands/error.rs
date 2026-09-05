@@ -14,8 +14,12 @@ pub enum CommandError {
     /// An error occurred during the OAuth flow.
     #[serde(rename = "oauth")]
     OAuth(String),
+    /// Account validation failed (e.g. non-personal Google account).
+    UnsupportedAccount(String),
     /// A database operation failed.
     Database(String),
+    /// OS Keychain/Credential store operation failed.
+    Keychain(String),
     /// The system browser could not be launched.
     BrowserLaunchFailed(String),
     /// Catch-all for unexpected internal errors.
@@ -27,7 +31,9 @@ impl fmt::Display for CommandError {
         match self {
             Self::NotConfigured(msg) => write!(f, "not configured: {msg}"),
             Self::OAuth(msg) => write!(f, "oauth error: {msg}"),
+            Self::UnsupportedAccount(msg) => write!(f, "unsupported account: {msg}"),
             Self::Database(msg) => write!(f, "database error: {msg}"),
+            Self::Keychain(msg) => write!(f, "keychain error: {msg}"),
             Self::BrowserLaunchFailed(msg) => write!(f, "browser launch failed: {msg}"),
             Self::Internal(msg) => write!(f, "internal error: {msg}"),
         }
@@ -35,6 +41,28 @@ impl fmt::Display for CommandError {
 }
 
 impl std::error::Error for CommandError {}
+
+impl From<crate::application::ConnectAccountError> for CommandError {
+    fn from(err: crate::application::ConnectAccountError) -> Self {
+        use crate::application::ConnectAccountError;
+        match err {
+            ConnectAccountError::TokenExchange(e) => Self::OAuth(e.to_string()),
+            ConnectAccountError::IdentityLookup(e) => Self::OAuth(e.to_string()),
+            ConnectAccountError::MissingRefreshToken => {
+                Self::OAuth("Google did not return a refresh token".into())
+            }
+            ConnectAccountError::Account(e) => Self::UnsupportedAccount(e.to_string()),
+            ConnectAccountError::Database(e) => Self::Database(e.to_string()),
+            ConnectAccountError::Keychain(e) => Self::Keychain(e.to_string()),
+            ConnectAccountError::RollbackFailed {
+                primary_error,
+                rollback_error,
+            } => Self::Internal(format!(
+                "connection failed ({primary_error}) and rollback also failed: {rollback_error}"
+            )),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -52,8 +80,16 @@ mod tests {
                 "oauth error: token exchange failed",
             ),
             (
+                CommandError::UnsupportedAccount("workspace account".into()),
+                "unsupported account: workspace account",
+            ),
+            (
                 CommandError::Database("connection lost".into()),
                 "database error: connection lost",
+            ),
+            (
+                CommandError::Keychain("locked".into()),
+                "keychain error: locked",
             ),
             (
                 CommandError::BrowserLaunchFailed("no default browser".into()),
@@ -94,6 +130,24 @@ mod tests {
 
         assert_eq!(json["kind"], "database");
         assert_eq!(json["message"], "migration failed");
+    }
+
+    #[test]
+    fn serialize_keychain_variant() {
+        let error = CommandError::Keychain("access denied".into());
+        let json = serde_json::to_value(&error).expect("serializes");
+
+        assert_eq!(json["kind"], "keychain");
+        assert_eq!(json["message"], "access denied");
+    }
+
+    #[test]
+    fn serialize_unsupported_account_variant() {
+        let error = CommandError::UnsupportedAccount("only personal accounts".into());
+        let json = serde_json::to_value(&error).expect("serializes");
+
+        assert_eq!(json["kind"], "unsupportedAccount");
+        assert_eq!(json["message"], "only personal accounts");
     }
 
     #[test]
