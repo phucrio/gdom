@@ -110,6 +110,13 @@ impl AccountStorePort for MockAccountStore {
         guard.retain(|_, acc| acc.id() != id);
         Ok(())
     }
+
+    async fn list_all(&self) -> Result<Vec<ConnectedAccount>, AccountStorePortError> {
+        let guard = self.accounts.lock().unwrap();
+        let mut accounts: Vec<ConnectedAccount> = guard.values().cloned().collect();
+        accounts.sort_by(|a, b| a.email().cmp(b.email()));
+        Ok(accounts)
+    }
 }
 
 #[derive(Clone, Default)]
@@ -648,4 +655,47 @@ async fn concurrent_connects_for_same_identity_do_not_delete_successful_account(
         "successful account must not be deleted by the failing concurrent request"
     );
     assert_eq!(stored.unwrap().email(), "shared@gmail.com");
+}
+
+#[tokio::test]
+async fn connect_account_rejects_non_personal_workspace_email() {
+    // Given
+    let token_client = MockTokenClient {
+        response: Ok((
+            "access-workspace".to_owned(),
+            Some("refresh-workspace".to_owned()),
+        )),
+    };
+    let identity_client = MockIdentityClient {
+        response: Ok((
+            "perm-workspace".to_owned(),
+            "employee@corporate-domain.com".to_owned(),
+            "Corporate User".to_owned(),
+        )),
+    };
+    let account_store = MockAccountStore::default();
+    let keyring = MockKeyring::default();
+
+    let service = ConnectAccountService::new(
+        token_client,
+        identity_client,
+        account_store.clone(),
+        keyring.clone(),
+    );
+
+    // When
+    let result = service.connect_account(grant(), AccountId::new(200)).await;
+
+    // Then
+    assert!(matches!(
+        result.unwrap_err(),
+        ConnectAccountError::Account(crate::domain::AccountError::UnsupportedAccountType)
+    ));
+
+    let stored = account_store
+        .find_by_permission_id(&GooglePermissionId::new("perm-workspace"))
+        .await
+        .unwrap();
+    assert!(stored.is_none());
+    assert!(keyring.load(AccountId::new(200)).unwrap().is_none());
 }

@@ -1,4 +1,27 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, error::Error, fmt};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccountError {
+    UnsupportedAccountType,
+}
+
+impl fmt::Display for AccountError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedAccountType => write!(
+                f,
+                "only personal Google accounts (@gmail.com / @googlemail.com) are supported"
+            ),
+        }
+    }
+}
+
+impl Error for AccountError {}
+
+fn is_personal_google_email(email: &str) -> bool {
+    let lower = email.trim().to_ascii_lowercase();
+    lower.ends_with("@gmail.com") || lower.ends_with("@googlemail.com")
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct AccountId(pub(super) u128);
@@ -39,6 +62,20 @@ impl AccountProfile {
             display_name: display_name.into(),
         }
     }
+
+    pub fn new_personal(
+        email: impl Into<String>,
+        display_name: impl Into<String>,
+    ) -> Result<Self, AccountError> {
+        let email = email.into();
+        if !is_personal_google_email(&email) {
+            return Err(AccountError::UnsupportedAccountType);
+        }
+        Ok(Self {
+            email,
+            display_name: display_name.into(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,6 +96,16 @@ impl ConnectedAccount {
             google_permission_id,
             profile,
         }
+    }
+
+    pub fn new_personal(
+        id: AccountId,
+        google_permission_id: GooglePermissionId,
+        email: impl Into<String>,
+        display_name: impl Into<String>,
+    ) -> Result<Self, AccountError> {
+        let profile = AccountProfile::new_personal(email, display_name)?;
+        Ok(Self::new(id, google_permission_id, profile))
     }
 
     pub const fn id(&self) -> AccountId {
@@ -146,5 +193,33 @@ mod tests {
         // Then
         assert_eq!(reconnected_id, original_id);
         assert_eq!(registry.account_count(), 1);
+    }
+
+    #[test]
+    fn personal_email_validation_accepts_gmail_and_googlemail() {
+        assert!(AccountProfile::new_personal("user@gmail.com", "User").is_ok());
+        assert!(AccountProfile::new_personal("user@googlemail.com", "User").is_ok());
+        assert!(AccountProfile::new_personal("User.Name+Tag@GMAIL.COM", "User").is_ok());
+        assert!(AccountProfile::new_personal("User@GoogleMail.Com", "User").is_ok());
+    }
+
+    #[test]
+    fn personal_email_validation_rejects_workspace_and_other_domains() {
+        assert_eq!(
+            AccountProfile::new_personal("admin@company.com", "Workspace User"),
+            Err(AccountError::UnsupportedAccountType)
+        );
+        assert_eq!(
+            AccountProfile::new_personal("user@notgmail.com", "Impostor"),
+            Err(AccountError::UnsupportedAccountType)
+        );
+        assert_eq!(
+            AccountProfile::new_personal("gmail.com", "Malformed"),
+            Err(AccountError::UnsupportedAccountType)
+        );
+        assert_eq!(
+            AccountProfile::new_personal("", "Empty"),
+            Err(AccountError::UnsupportedAccountType)
+        );
     }
 }

@@ -73,7 +73,7 @@ impl SqliteAccountStore {
     }
 
     #[cfg(test)]
-    async fn open_in_memory() -> Result<Self, AccountStoreError> {
+    pub(crate) async fn open_in_memory() -> Result<Self, AccountStoreError> {
         Self::from_options(
             SqliteConnectOptions::new()
                 .in_memory(true)
@@ -145,6 +145,57 @@ impl SqliteAccountStore {
             .await?;
         Ok(())
     }
+
+    #[cfg(test)]
+    pub(crate) async fn close(&self) {
+        self.pool.close().await;
+    }
+
+    pub async fn list_all(&self) -> Result<Vec<ConnectedAccount>, AccountStoreError> {
+        let rows = sqlx::query_as::<_, StoredAccountRow>(
+            "SELECT id, google_permission_id, email, display_name FROM accounts ORDER BY email ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(parse_account).collect()
+    }
+
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>, AccountStoreError> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM app_settings WHERE key = ?1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+
+        Ok(row.map(|(val,)| val))
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), AccountStoreError> {
+        sqlx::query(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn delete_setting(&self, key: &str) -> Result<(), AccountStoreError> {
+        sqlx::query("DELETE FROM app_settings WHERE key = ?1")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn save_oauth_client_id(&self, client_id: &str) -> Result<(), AccountStoreError> {
+        self.set_setting("oauth.client_id", client_id).await
+    }
 }
 
 fn parse_account(stored: StoredAccountRow) -> Result<ConnectedAccount, AccountStoreError> {
@@ -179,188 +230,14 @@ impl AccountStorePort for SqliteAccountStore {
             .await
             .map_err(AccountStorePortError::from)
     }
+
+    async fn list_all(&self) -> Result<Vec<ConnectedAccount>, AccountStorePortError> {
+        self.list_all().await.map_err(AccountStorePortError::from)
+    }
 }
 
 impl From<AccountStoreError> for AccountStorePortError {
     fn from(error: AccountStoreError) -> Self {
         Self::Storage(error.to_string())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::future::Future;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
-
-    use tokio::time::timeout;
-
-    use super::SqliteAccountStore;
-    use crate::domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId};
-
-    async fn complete<F: Future<Output = ()>>(scenario: F) {
-        timeout(Duration::from_secs(5), scenario)
-            .await
-            .expect("database scenario completes before timeout");
-    }
-
-    fn account(id: u128, permission_id: &str, profile: AccountProfile) -> ConnectedAccount {
-        ConnectedAccount::new(
-            AccountId::new(id),
-            GooglePermissionId::new(permission_id),
-            profile,
-        )
-    }
-
-    #[tokio::test]
-    async fn store_accepts_more_than_two_accounts() {
-        complete(async {
-            // Given
-            let store = SqliteAccountStore::open_in_memory()
-                .await
-                .expect("in-memory database opens");
-
-            // When
-            for account in [
-                account(
-                    1,
-                    "permission-a",
-                    AccountProfile::new("a@example.com", "Account A"),
-                ),
-                account(
-                    2,
-                    "permission-b",
-                    AccountProfile::new("b@example.com", "Account B"),
-                ),
-                account(
-                    3,
-                    "permission-c",
-                    AccountProfile::new("c@example.com", "Account C"),
-                ),
-            ] {
-                store.connect(&account).await.expect("account persists");
-            }
-
-            // Then
-            assert_eq!(store.account_count().await.expect("account count loads"), 3);
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn reconnect_preserves_id_and_updates_profile() {
-        complete(async {
-            // Given
-            let store = SqliteAccountStore::open_in_memory()
-                .await
-                .expect("in-memory database opens");
-            store
-                .connect(&account(
-                    1,
-                    "permission-a",
-                    AccountProfile::new("old@example.com", "Old Name"),
-                ))
-                .await
-                .expect("original account persists");
-
-            // When
-            let reconnected = store
-                .connect(&account(
-                    99,
-                    "permission-a",
-                    AccountProfile::new("new@example.com", "New Name"),
-                ))
-                .await
-                .expect("account reconnects");
-
-            // Then
-            assert_eq!(reconnected.id(), AccountId::new(1));
-            assert_eq!(reconnected.email(), "new@example.com");
-            assert_eq!(reconnected.display_name(), "New Name");
-            assert_eq!(store.account_count().await.expect("account count loads"), 1);
-            assert_eq!(
-                store
-                    .find_by_permission_id(&GooglePermissionId::new("permission-a"))
-                    .await
-                    .expect("account lookup succeeds"),
-                Some(reconnected)
-            );
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn account_survives_database_reopen() {
-        complete(async {
-            // Given
-            static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
-            let sequence = NEXT_DATABASE.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "gdom-account-store-{}-{sequence}.sqlite",
-                std::process::id()
-            ));
-            let store = SqliteAccountStore::open(&path)
-                .await
-                .expect("database opens");
-            store
-                .connect(&account(
-                    1,
-                    "permission-a",
-                    AccountProfile::new("a@example.com", "Account A"),
-                ))
-                .await
-                .expect("account persists");
-            store.pool.close().await;
-
-            // When
-            let reopened = SqliteAccountStore::open(&path)
-                .await
-                .expect("database reopens");
-
-            // Then
-            assert_eq!(
-                reopened.account_count().await.expect("account count loads"),
-                1
-            );
-            reopened.pool.close().await;
-            std::fs::remove_file(path).expect("test database is removed");
-        })
-        .await;
-    }
-
-    #[tokio::test]
-    async fn remove_deletes_specified_account() {
-        complete(async {
-            // Given
-            let store = SqliteAccountStore::open_in_memory()
-                .await
-                .expect("in-memory database opens");
-            store
-                .connect(&account(
-                    1,
-                    "permission-a",
-                    AccountProfile::new("a@example.com", "Account A"),
-                ))
-                .await
-                .expect("account persists");
-            assert_eq!(store.account_count().await.expect("account count"), 1);
-
-            // When
-            store
-                .remove(AccountId::new(1))
-                .await
-                .expect("account removal succeeds");
-
-            // Then
-            assert_eq!(store.account_count().await.expect("account count"), 0);
-            assert_eq!(
-                store
-                    .find_by_permission_id(&GooglePermissionId::new("permission-a"))
-                    .await
-                    .expect("lookup succeeds"),
-                None
-            );
-        })
-        .await;
     }
 }

@@ -5,6 +5,12 @@ use crate::domain::AccountId;
 const SERVICE: &str = "gdom.google.oauth.refresh-token";
 
 #[cfg(any(target_os = "windows", test))]
+const OAUTH_CLIENT_SERVICE: &str = "gdom.google.oauth.client-secret";
+
+#[cfg(any(target_os = "windows", test))]
+const OAUTH_CLIENT_ACCOUNT: &str = "client-secret";
+
+#[cfg(any(target_os = "windows", test))]
 fn credential_username(account_id: AccountId) -> String {
     format!("account-{}", account_id.value())
 }
@@ -21,6 +27,15 @@ impl WindowsCredentialStore {
         let store = windows_native_keyring_store::Store::new()
             .map_err(|_| RefreshTokenStoreError::Unavailable)?;
         Ok(Self { store })
+    }
+
+    /// Create a `WindowsCredentialStore` backed by an in-memory mock.
+    /// Available only in test builds.
+    #[cfg(test)]
+    pub fn new_mock() -> Self {
+        let store: std::sync::Arc<keyring_core::CredentialStore> =
+            keyring_core::mock::Store::new().expect("mock credential store initializes");
+        Self { store }
     }
 
     fn entry(&self, account_id: AccountId) -> Result<keyring_core::Entry, RefreshTokenStoreError> {
@@ -55,6 +70,39 @@ impl RefreshTokenStore for WindowsCredentialStore {
 
     fn delete(&self, account_id: AccountId) -> Result<(), RefreshTokenStoreError> {
         match self.entry(account_id)?.delete_credential() {
+            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+            Err(_) => Err(RefreshTokenStoreError::Unavailable),
+        }
+    }
+
+    fn save_oauth_secret(&self, secret: &str) -> Result<(), RefreshTokenStoreError> {
+        self.store
+            .build(OAUTH_CLIENT_SERVICE, OAUTH_CLIENT_ACCOUNT, None)
+            .map_err(|_| RefreshTokenStoreError::Unavailable)?
+            .set_password(secret)
+            .map_err(|_| RefreshTokenStoreError::Unavailable)
+    }
+
+    fn load_oauth_secret(&self) -> Result<Option<String>, RefreshTokenStoreError> {
+        match self
+            .store
+            .build(OAUTH_CLIENT_SERVICE, OAUTH_CLIENT_ACCOUNT, None)
+            .map_err(|_| RefreshTokenStoreError::Unavailable)?
+            .get_password()
+        {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
+            Err(_) => Err(RefreshTokenStoreError::Unavailable),
+        }
+    }
+
+    fn delete_oauth_secret(&self) -> Result<(), RefreshTokenStoreError> {
+        match self
+            .store
+            .build(OAUTH_CLIENT_SERVICE, OAUTH_CLIENT_ACCOUNT, None)
+            .map_err(|_| RefreshTokenStoreError::Unavailable)?
+            .delete_credential()
+        {
             Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
             Err(_) => Err(RefreshTokenStoreError::Unavailable),
         }
@@ -172,5 +220,22 @@ mod tests {
                 .expose_secret(),
             "secret-b"
         );
+    }
+
+    #[test]
+    fn oauth_secret_lifecycle_persists_and_deletes() {
+        let store = store();
+        assert_eq!(store.load_oauth_secret().expect("load succeeds"), None);
+
+        store
+            .save_oauth_secret("my-client-secret")
+            .expect("save succeeds");
+        assert_eq!(
+            store.load_oauth_secret().expect("load succeeds"),
+            Some("my-client-secret".to_owned())
+        );
+
+        store.delete_oauth_secret().expect("delete succeeds");
+        assert_eq!(store.load_oauth_secret().expect("load succeeds"), None);
     }
 }

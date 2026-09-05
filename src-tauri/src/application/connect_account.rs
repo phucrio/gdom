@@ -2,7 +2,7 @@ use std::{error::Error, fmt, sync::Arc};
 
 use crate::{
     application::{AccessToken, RefreshToken, RefreshTokenStore, RefreshTokenStoreError},
-    domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId},
+    domain::{AccountError, AccountId, ConnectedAccount, GooglePermissionId},
 };
 
 pub struct OAuthGrant {
@@ -201,6 +201,100 @@ pub trait AccountStorePort {
         &self,
         account_id: AccountId,
     ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send;
+
+    fn list_all(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<ConnectedAccount>, AccountStorePortError>> + Send;
+}
+
+pub trait ConnectAccountUseCase: Send + Sync {
+    fn connect_account(
+        &self,
+        oauth_grant: OAuthGrant,
+        fallback_account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<ConnectedAccount, ConnectAccountError>>
+                + Send
+                + '_,
+        >,
+    >;
+}
+
+impl<TokenExchange, IdentityLookup, AccountPersistence, CredentialPersistence> ConnectAccountUseCase
+    for ConnectAccountService<
+        TokenExchange,
+        IdentityLookup,
+        AccountPersistence,
+        CredentialPersistence,
+    >
+where
+    TokenExchange: TokenExchangePort + Send + Sync + 'static,
+    IdentityLookup: IdentityLookupPort + Send + Sync + 'static,
+    AccountPersistence: AccountStorePort + Send + Sync + 'static,
+    CredentialPersistence: RefreshTokenStore + Send + Sync + 'static,
+{
+    fn connect_account(
+        &self,
+        oauth_grant: OAuthGrant,
+        fallback_account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<ConnectedAccount, ConnectAccountError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(self.connect_account(oauth_grant, fallback_account_id))
+    }
+}
+
+impl<T: ConnectAccountUseCase + ?Sized> ConnectAccountUseCase for Arc<T> {
+    fn connect_account(
+        &self,
+        oauth_grant: OAuthGrant,
+        fallback_account_id: AccountId,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<ConnectedAccount, ConnectAccountError>>
+                + Send
+                + '_,
+        >,
+    > {
+        (**self).connect_account(oauth_grant, fallback_account_id)
+    }
+}
+
+impl<T: AccountStorePort + Send + Sync> AccountStorePort for Arc<T> {
+    fn find_by_permission_id(
+        &self,
+        permission_id: &GooglePermissionId,
+    ) -> impl std::future::Future<Output = Result<Option<ConnectedAccount>, AccountStorePortError>> + Send
+    {
+        (**self).find_by_permission_id(permission_id)
+    }
+
+    fn connect(
+        &self,
+        account: &ConnectedAccount,
+    ) -> impl std::future::Future<Output = Result<ConnectedAccount, AccountStorePortError>> + Send
+    {
+        (**self).connect(account)
+    }
+
+    fn remove(
+        &self,
+        account_id: AccountId,
+    ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send {
+        (**self).remove(account_id)
+    }
+
+    fn list_all(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<ConnectedAccount>, AccountStorePortError>> + Send
+    {
+        (**self).list_all()
+    }
 }
 
 #[derive(Clone)]
@@ -221,6 +315,7 @@ pub struct ConnectAccountService<
 pub enum ConnectAccountError {
     TokenExchange(TokenExchangeError),
     IdentityLookup(IdentityLookupError),
+    Account(AccountError),
     Database(AccountStorePortError),
     MissingRefreshToken,
     Keychain(RefreshTokenStoreError),
@@ -239,6 +334,7 @@ impl fmt::Display for ConnectAccountError {
             Self::IdentityLookup(error) => {
                 write!(formatter, "failed to fetch account identity: {error}")
             }
+            Self::Account(error) => write!(formatter, "account validation failed: {error}"),
             Self::Database(error) => {
                 write!(formatter, "database error while storing account: {error}")
             }
@@ -265,6 +361,7 @@ impl Error for ConnectAccountError {
         match self {
             Self::TokenExchange(error) => Some(error),
             Self::IdentityLookup(error) => Some(error),
+            Self::Account(error) => Some(error),
             Self::Database(error) => Some(error),
             Self::MissingRefreshToken => None,
             Self::Keychain(error) => Some(error),
@@ -326,11 +423,13 @@ where
             .map(ConnectedAccount::id)
             .unwrap_or(fallback_account_id);
 
-        let candidate_account = ConnectedAccount::new(
+        let candidate_account = ConnectedAccount::new_personal(
             target_account_id,
             identity.permission_id().clone(),
-            AccountProfile::new(identity.email(), identity.display_name()),
-        );
+            identity.email(),
+            identity.display_name(),
+        )
+        .map_err(ConnectAccountError::Account)?;
 
         let persisted_account = self
             .account_persistence

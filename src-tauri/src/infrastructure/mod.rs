@@ -8,6 +8,8 @@ mod oauth_listener;
 pub mod secrets;
 
 #[cfg(test)]
+mod account_store_test;
+#[cfg(test)]
 mod google_drive_test;
 #[cfg(test)]
 mod google_oauth_test;
