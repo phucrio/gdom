@@ -551,4 +551,316 @@ mod tests {
         assert!(ids.contains(&"only-first"));
         assert!(!ids.contains(&"should-not"));
     }
+
+    async fn seed_job_ready_to_scan(
+        state: &AppState,
+        with_tokens: bool,
+    ) -> (String, crate::domain::job::JobId) {
+        create_dummy_account(
+            &state.account_store,
+            1,
+            "source@gmail.com",
+            "Source User",
+            SOURCE_PERM,
+        )
+        .await;
+        create_dummy_account(
+            &state.account_store,
+            2,
+            "target@gmail.com",
+            "Target User",
+            TARGET_PERM,
+        )
+        .await;
+        if with_tokens {
+            state
+                .token_provider
+                .insert_cached_token_for_test(
+                    AccountId::new(1),
+                    AccessToken::new(SOURCE_TOKEN.into()),
+                )
+                .await;
+            state
+                .token_provider
+                .insert_cached_token_for_test(
+                    AccountId::new(2),
+                    AccessToken::new(TARGET_TOKEN.into()),
+                )
+                .await;
+        }
+        let job = create_job_inner(
+            state,
+            CreateJobInput {
+                source_account_id: "1".into(),
+                target_account_id: "2".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let job_id: crate::domain::job::JobId = job.id.parse().unwrap();
+        state
+            .job_store
+            .add_root(&MigrationRoot {
+                id: RootId::new(77),
+                job_id,
+                root_file_id: "root-1".into(),
+                root_name: "Root".into(),
+                validation_status: RootValidationStatus::Validated,
+                created_at: "2026-09-05T00:00:00Z".into(),
+            })
+            .await
+            .unwrap();
+        (job.id, job_id)
+    }
+
+    #[tokio::test]
+    async fn second_start_scan_is_rejected_while_walker_is_in_flight() {
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started_handler = std::sync::Arc::clone(&started);
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = std::sync::Mutex::new(Some(go_rx));
+        let (base_url, _) = spawn_http_handler(move |request| {
+            if request_is_quota(request) {
+                return (
+                    "200 OK".into(),
+                    r#"{"storageQuota":{"limit":"10000","usage":"1"}}"#.into(),
+                );
+            }
+            if request_is_list(request) {
+                started_handler.store(true, std::sync::atomic::Ordering::SeqCst);
+                if let Some(rx) = go_rx.lock().unwrap().take() {
+                    let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+                }
+                return (
+                    "200 OK".into(),
+                    format!(r#"{{"files":[{}]}}"#, source_file("one", "One", 1)),
+                );
+            }
+            ("404 Not Found".into(), "{}".into())
+        });
+
+        let state = std::sync::Arc::new(
+            build_state_with_drive(GoogleDriveClient::for_test(base_url).unwrap()).await,
+        );
+        let (job_id_str, _) = seed_job_ready_to_scan(&state, true).await;
+
+        let state_scan = std::sync::Arc::clone(&state);
+        let job_for_scan = job_id_str.clone();
+        let handle = tokio::spawn(async move {
+            start_scan_inner(
+                &state_scan,
+                JobIdInput {
+                    job_id: job_for_scan,
+                },
+            )
+            .await
+        });
+
+        let wait_started = std::time::Instant::now();
+        while !started.load(std::sync::atomic::Ordering::SeqCst) {
+            if wait_started.elapsed() > std::time::Duration::from_secs(2) {
+                panic!("scan did not list first page");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let overlap = start_scan_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id_str.clone(),
+            },
+        )
+        .await;
+        assert!(matches!(overlap, Err(CommandError::ScanInProgress(_))));
+
+        let _ = go_tx.send(());
+        let finished = handle.await.unwrap().unwrap();
+        assert_eq!(finished.status, "READY_FOR_REVIEW");
+    }
+
+    #[tokio::test]
+    async fn token_error_on_draft_does_not_leave_scanning() {
+        let (base_url, _) = spawn_http_handler(|_| ("200 OK".into(), r#"{"files":[]}"#.into()));
+        let state = build_state_with_drive(GoogleDriveClient::for_test(base_url).unwrap()).await;
+        let (job_id_str, _) = seed_job_ready_to_scan(&state, false).await;
+
+        let err = start_scan_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id_str.clone(),
+            },
+        )
+        .await
+        .expect_err("missing token fails");
+        assert!(matches!(err, CommandError::OAuth(_)));
+
+        let job = get_job_inner(&state, JobIdInput { job_id: job_id_str })
+            .await
+            .unwrap();
+        assert_eq!(job.status, "DRAFT");
+    }
+
+    #[tokio::test]
+    async fn token_error_on_crash_scanning_persists_paused() {
+        let (base_url, _) = spawn_http_handler(|_| ("200 OK".into(), r#"{"files":[]}"#.into()));
+        let state = build_state_with_drive(GoogleDriveClient::for_test(base_url).unwrap()).await;
+        let (job_id_str, _) = seed_job_ready_to_scan(&state, false).await;
+        sqlx::query("UPDATE migration_jobs SET status = 'SCANNING' WHERE id = ?1")
+            .bind(&job_id_str)
+            .execute(state.account_store.pool())
+            .await
+            .unwrap();
+
+        let err = start_scan_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id_str.clone(),
+            },
+        )
+        .await
+        .expect_err("missing token fails");
+        assert!(matches!(err, CommandError::OAuth(_)));
+
+        let job = get_job_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id_str.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(job.status, "PAUSED");
+
+        let paused = pause_scan_inner(&state, JobIdInput { job_id: job_id_str })
+            .await
+            .unwrap();
+        assert_eq!(paused.status, "PAUSED");
+    }
+
+    #[tokio::test]
+    async fn pause_scan_persists_paused_when_no_walker_is_running() {
+        let (base_url, _) = spawn_http_handler(|_| ("200 OK".into(), r#"{"files":[]}"#.into()));
+        let state = build_state_with_drive(GoogleDriveClient::for_test(base_url).unwrap()).await;
+        let (job_id_str, _) = seed_job_ready_to_scan(&state, true).await;
+        sqlx::query("UPDATE migration_jobs SET status = 'SCANNING' WHERE id = ?1")
+            .bind(&job_id_str)
+            .execute(state.account_store.pool())
+            .await
+            .unwrap();
+
+        let paused = pause_scan_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id_str.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(paused.status, "PAUSED");
+    }
+
+    #[tokio::test]
+    async fn rate_limit_persists_paused_and_start_scan_can_resume() {
+        let lists = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let lists_handler = std::sync::Arc::clone(&lists);
+        let (base_url, _) = spawn_http_handler(move |request| {
+            if request_is_quota(request) {
+                return (
+                    "200 OK".into(),
+                    r#"{"storageQuota":{"limit":"10000","usage":"1"}}"#.into(),
+                );
+            }
+            if request_is_list(request) {
+                let n = lists_handler.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if n == 1 {
+                    return (
+                        "429 Too Many Requests".into(),
+                        r#"{"error":{"code":429}}"#.into(),
+                    );
+                }
+                return (
+                    "200 OK".into(),
+                    format!(r#"{{"files":[{}]}}"#, source_file("resumed", "Resumed", 2)),
+                );
+            }
+            ("404 Not Found".into(), "{}".into())
+        });
+
+        let state = build_state_with_drive(GoogleDriveClient::for_test(base_url).unwrap()).await;
+        let (job_id_str, _) = seed_job_ready_to_scan(&state, true).await;
+
+        let err = start_scan_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id_str.clone(),
+            },
+        )
+        .await
+        .expect_err("429 is retryable");
+        assert!(matches!(err, CommandError::RateLimited(_)));
+
+        let after_429 = get_job_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id_str.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(after_429.status, "PAUSED");
+        assert_ne!(after_429.status, "FAILED");
+        assert_ne!(after_429.status, "SCANNING");
+
+        let resumed = start_scan_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id_str.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.status, "READY_FOR_REVIEW");
+        let items = list_job_items_inner(
+            &state,
+            ListJobItemsInput {
+                job_id: job_id_str,
+                filter: Some("eligible".into()),
+                page: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(items.items.iter().any(|item| item.file_id == "resumed"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_list_error_persists_paused_not_failed() {
+        let (base_url, _) = spawn_http_handler(move |request| {
+            if request_is_list(request) {
+                return ("503 Service Unavailable".into(), "{}".into());
+            }
+            (
+                "200 OK".into(),
+                r#"{"storageQuota":{"limit":"1","usage":"0"}}"#.into(),
+            )
+        });
+        let state = build_state_with_drive(GoogleDriveClient::for_test(base_url).unwrap()).await;
+        let (job_id_str, _) = seed_job_ready_to_scan(&state, true).await;
+
+        let err = start_scan_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id_str.clone(),
+            },
+        )
+        .await
+        .expect_err("503 is retryable");
+        assert!(matches!(err, CommandError::Internal(_)));
+
+        let job = get_job_inner(&state, JobIdInput { job_id: job_id_str })
+            .await
+            .unwrap();
+        assert_eq!(job.status, "PAUSED");
+        assert_ne!(job.status, "FAILED");
+    }
 }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
@@ -46,6 +46,7 @@ pub enum JobServiceError {
     IllegalTransition,
     RateLimited,
     ExportFailed(String),
+    ScanInProgress,
 }
 
 impl fmt::Display for JobServiceError {
@@ -87,6 +88,7 @@ impl fmt::Display for JobServiceError {
             Self::IllegalTransition => write!(f, "illegal job status transition"),
             Self::RateLimited => write!(f, "Google Drive rate limit reached"),
             Self::ExportFailed(e) => write!(f, "failed to export dry-run report: {e}"),
+            Self::ScanInProgress => write!(f, "a scan is already running for this job"),
         }
     }
 }
@@ -145,6 +147,21 @@ impl From<JobStorePortError> for JobServiceError {
     }
 }
 
+struct ScanInFlightGuard {
+    slots: Arc<std::sync::Mutex<HashSet<JobId>>>,
+    job_id: JobId,
+}
+
+impl Drop for ScanInFlightGuard {
+    fn drop(&mut self) {
+        let mut slots = self
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slots.remove(&self.job_id);
+    }
+}
+
 pub struct JobService<A, J>
 where
     A: AccountStorePort + Send + Sync + 'static,
@@ -155,6 +172,7 @@ where
     drive: Arc<dyn DrivePort>,
     token_provider: Arc<AccountTokenProvider<A>>,
     scan_pause_flags: tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>,
+    scan_in_flight: Arc<std::sync::Mutex<HashSet<JobId>>>,
 }
 
 impl<A, J> JobService<A, J>
@@ -174,7 +192,44 @@ where
             drive,
             token_provider,
             scan_pause_flags: tokio::sync::Mutex::new(HashMap::new()),
+            scan_in_flight: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
+    }
+
+    fn try_acquire_scan(&self, job_id: JobId) -> Result<ScanInFlightGuard, JobServiceError> {
+        let mut slots = self
+            .scan_in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !slots.insert(job_id) {
+            return Err(JobServiceError::ScanInProgress);
+        }
+        drop(slots);
+        Ok(ScanInFlightGuard {
+            slots: Arc::clone(&self.scan_in_flight),
+            job_id,
+        })
+    }
+
+    fn scan_is_in_flight(&self, job_id: JobId) -> bool {
+        self.scan_in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&job_id)
+    }
+
+    async fn persist_paused(
+        &self,
+        job_id: JobId,
+        error: impl Into<String>,
+    ) -> Result<(), JobServiceError> {
+        let mut job = self.get_job(job_id).await?;
+        job.set_last_error(error);
+        if job.status() == JobStatus::Scanning {
+            job.pause_scanning()?;
+        }
+        self.job_store.update_job(&job).await?;
+        Ok(())
     }
 
     async fn get_account_snapshot(
@@ -361,29 +416,32 @@ where
 
     pub async fn start_scan(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
         let mut job = self.get_job(job_id).await?;
+        let _lease = self.try_acquire_scan(job_id)?;
+
         let pause = {
             let mut flags = self.scan_pause_flags.lock().await;
             let flag = flags
                 .entry(job_id)
                 .or_insert_with(|| Arc::new(AtomicBool::new(false)));
-            if job.status() == JobStatus::Paused {
-                flag.store(false, Ordering::SeqCst);
-            }
+            flag.store(false, Ordering::SeqCst);
             Arc::clone(flag)
         };
+
+        let source_id = job.source_account_id();
+        let target_id = job.target_account_id();
+        let source_token = match self.token_provider.get_access_token(source_id).await {
+            Ok(token) => token,
+            Err(err) => {
+                if job.status() == JobStatus::Scanning {
+                    self.persist_paused(job_id, format!("failed to obtain OAuth token: {err}"))
+                        .await?;
+                }
+                return Err(JobServiceError::TokenError(err.to_string()));
+            }
+        };
+
         job.start_scanning(iso_now())?;
         self.job_store.update_job(&job).await?;
-
-        let source_token = self
-            .token_provider
-            .get_access_token(job.source_account_id())
-            .await
-            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
-        let target_token = self
-            .token_provider
-            .get_access_token(job.target_account_id())
-            .await
-            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
 
         let source_perm = job.snapshots().source.permission_id.clone();
         let target_perm = job.snapshots().target.permission_id.clone();
@@ -405,19 +463,26 @@ where
         let mut job = self.get_job(job_id).await?;
         match outcome {
             Ok(ScanOutcome::Completed) => {
-                if let Err(err) = self.drive.get_storage_quota(&target_token).await {
-                    job.set_last_error(format!("quota lookup failed: {err}"));
+                match self.token_provider.get_access_token(target_id).await {
+                    Ok(target_token) => {
+                        if let Err(err) = self.drive.get_storage_quota(&target_token).await {
+                            job.set_last_error(format!("quota lookup failed: {err}"));
+                        }
+                    }
+                    Err(err) => {
+                        job.set_last_error(format!("quota lookup token failed: {err}"));
+                    }
                 }
                 job.complete_scanning()?;
             }
             Ok(ScanOutcome::Paused) => {
                 job.pause_scanning()?;
             }
-            Err(ScanError::RateLimited) => {
-                job.set_last_error("Google Drive rate limit reached during scan");
-                self.job_store.update_job(&job).await?;
+            Err(err) if err.is_retryable() => {
+                let mapped: JobServiceError = err.into();
+                self.persist_paused(job_id, mapped.to_string()).await?;
                 self.scan_pause_flags.lock().await.remove(&job_id);
-                return Err(JobServiceError::RateLimited);
+                return Err(mapped);
             }
             Err(err) => {
                 let message = err.to_string();
@@ -439,16 +504,15 @@ where
             return Err(JobServiceError::IllegalTransition);
         }
 
-        let running = {
+        {
             let mut flags = self.scan_pause_flags.lock().await;
             let flag = flags
                 .entry(job_id)
                 .or_insert_with(|| Arc::new(AtomicBool::new(true)));
             flag.store(true, Ordering::SeqCst);
-            job.status() == JobStatus::Scanning
-        };
+        }
 
-        if !running {
+        if !self.scan_is_in_flight(job_id) {
             let mut job = job;
             job.pause_scanning()?;
             self.job_store.update_job(&job).await?;

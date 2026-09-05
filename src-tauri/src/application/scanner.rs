@@ -54,6 +54,26 @@ impl From<ItemStoreError> for ScanError {
     }
 }
 
+impl ScanError {
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::RateLimited | Self::Store(_) => true,
+            Self::Drive(
+                DriveTreeError::RateLimited
+                | DriveTreeError::Forbidden
+                | DriveTreeError::Unavailable
+                | DriveTreeError::Transport,
+            ) => true,
+            Self::Drive(
+                DriveTreeError::Unauthorized
+                | DriveTreeError::NotFound
+                | DriveTreeError::InvalidResponse
+                | DriveTreeError::UnexpectedStatus(_),
+            ) => false,
+        }
+    }
+}
+
 struct WorkItem {
     folder_id: String,
     page_token: Option<String>,

@@ -91,6 +91,9 @@ fn map_job_service_error(err: JobServiceError) -> CommandError {
             "Google Drive rate limit reached. Scan paused without mutating files.".to_owned(),
         ),
         JobServiceError::ExportFailed(e) => CommandError::ExportFailed(e),
+        JobServiceError::ScanInProgress => {
+            CommandError::ScanInProgress("A scan is already running for this job".to_owned())
+        }
     }
 }
 
