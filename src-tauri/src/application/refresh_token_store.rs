@@ -45,6 +45,19 @@ pub trait RefreshTokenStore: Send + Sync {
     fn load(&self, account_id: AccountId) -> Result<Option<RefreshToken>, RefreshTokenStoreError>;
 
     fn delete(&self, account_id: AccountId) -> Result<(), RefreshTokenStoreError>;
+
+    fn save_oauth_secret(&self, secret: &str) -> Result<(), RefreshTokenStoreError> {
+        let _ = secret;
+        Ok(())
+    }
+
+    fn load_oauth_secret(&self) -> Result<Option<String>, RefreshTokenStoreError> {
+        Ok(None)
+    }
+
+    fn delete_oauth_secret(&self) -> Result<(), RefreshTokenStoreError> {
+        Ok(())
+    }
 }
 
 impl<T: RefreshTokenStore> RefreshTokenStore for Arc<T> {
@@ -62,6 +75,18 @@ impl<T: RefreshTokenStore> RefreshTokenStore for Arc<T> {
 
     fn delete(&self, account_id: AccountId) -> Result<(), RefreshTokenStoreError> {
         (**self).delete(account_id)
+    }
+
+    fn save_oauth_secret(&self, secret: &str) -> Result<(), RefreshTokenStoreError> {
+        (**self).save_oauth_secret(secret)
+    }
+
+    fn load_oauth_secret(&self) -> Result<Option<String>, RefreshTokenStoreError> {
+        (**self).load_oauth_secret()
+    }
+
+    fn delete_oauth_secret(&self) -> Result<(), RefreshTokenStoreError> {
+        (**self).delete_oauth_secret()
     }
 }
 

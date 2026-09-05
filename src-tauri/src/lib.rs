@@ -10,7 +10,8 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use application::{
-    ConnectAccountService, ConnectAccountUseCase, OAuthGrant, TokenExchangePort, TokenResponse,
+    ConnectAccountService, ConnectAccountUseCase, OAuthGrant, RefreshTokenStore, TokenExchangePort,
+    TokenResponse,
 };
 use infrastructure::{
     account_store::SqliteAccountStore, google_drive::GoogleDriveClient,
@@ -80,12 +81,11 @@ pub fn run() {
             )
             .map_err(|e| format!("failed to read oauth.client_id: {e}"))?;
 
-            let db_client_secret = tauri::async_runtime::block_on(
-                account_store.get_setting("oauth.client_secret"),
-            )
-            .map_err(|e| format!("failed to read oauth.client_secret: {e}"))?;
+            let keychain_client_secret = credential_store
+                .load_oauth_secret()
+                .map_err(|e| format!("failed to read oauth secret from credential store: {e}"))?;
 
-            let oauth_config = match (db_client_id, db_client_secret) {
+            let oauth_config = match (db_client_id, keychain_client_secret) {
                 (Some(id), secret) if !id.trim().is_empty() => {
                     Some(OAuthConfig::new(id.trim(), secret))
                 }

@@ -1,7 +1,7 @@
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    application::OAuthGrant,
+    application::{OAuthGrant, RefreshTokenStore},
     domain::AccountId,
     infrastructure::google_oauth::DesktopOAuthSession,
     state::{AppState, OAuthConfig},
@@ -41,6 +41,23 @@ async fn configure_oauth_inner(
         ));
     }
 
+    let existing_accounts_count = state
+        .account_store
+        .account_count()
+        .await
+        .map_err(|e| CommandError::Database(e.to_string()))?;
+
+    if existing_accounts_count > 0 {
+        let guard = state.oauth_config.read().await;
+        if let Some(existing_config) = guard.as_ref()
+            && existing_config.client_id != client_id
+        {
+            return Err(CommandError::OAuth(
+                "Cannot change OAuth client ID while connected accounts exist. Disconnect all accounts first.".into(),
+            ));
+        }
+    }
+
     let client_secret = input
         .client_secret
         .map(|s| s.trim().to_owned())
@@ -48,9 +65,21 @@ async fn configure_oauth_inner(
 
     state
         .account_store
-        .save_oauth_config(client_id, client_secret.as_deref())
+        .save_oauth_client_id(client_id)
         .await
         .map_err(|e| CommandError::Database(e.to_string()))?;
+
+    if let Some(ref secret) = client_secret {
+        state
+            .credential_store
+            .save_oauth_secret(secret)
+            .map_err(|e| CommandError::Keychain(e.to_string()))?;
+    } else {
+        state
+            .credential_store
+            .delete_oauth_secret()
+            .map_err(|e| CommandError::Keychain(e.to_string()))?;
+    }
 
     let mut guard = state.oauth_config.write().await;
     *guard = Some(OAuthConfig::new(client_id.to_owned(), client_secret));
@@ -153,6 +182,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
+        application::RefreshTokenStore,
         commands::dto::ConfigureOAuthInput,
         commands::error::CommandError,
         domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId},
@@ -271,11 +301,7 @@ mod tests {
             Some("test-client-id".into())
         );
         assert_eq!(
-            state
-                .account_store
-                .get_setting("oauth.client_secret")
-                .await
-                .unwrap(),
+            state.credential_store.load_oauth_secret().unwrap(),
             Some("test-secret".into())
         );
     }
@@ -320,14 +346,7 @@ mod tests {
                 .unwrap(),
             Some("new-id".into())
         );
-        assert_eq!(
-            state
-                .account_store
-                .get_setting("oauth.client_secret")
-                .await
-                .unwrap(),
-            None
-        );
+        assert_eq!(state.credential_store.load_oauth_secret().unwrap(), None);
     }
 
     #[tokio::test]
@@ -348,6 +367,34 @@ mod tests {
                 .to_string()
                 .contains("account connection is in progress")
         );
+    }
+
+    #[tokio::test]
+    async fn configure_oauth_rejects_client_id_change_when_accounts_exist() {
+        let initial = OAuthConfig::new("client-a", None);
+        let state = test_state(Some(initial)).await;
+
+        let acc = ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-1"),
+            AccountProfile::new("user@gmail.com", "User"),
+        );
+        state.account_store.connect(&acc).await.unwrap();
+
+        let input = ConfigureOAuthInput {
+            client_id: "client-b".into(),
+            client_secret: None,
+        };
+        let result = configure_oauth_inner(input, &state).await;
+        let error = result.expect_err("rejected due to existing accounts");
+        assert!(matches!(error, CommandError::OAuth(_)));
+        assert!(error.to_string().contains("connected accounts exist"));
+
+        let input_same = ConfigureOAuthInput {
+            client_id: "client-a".into(),
+            client_secret: Some("new-secret".into()),
+        };
+        assert!(configure_oauth_inner(input_same, &state).await.is_ok());
     }
 
     // -- get_oauth_config ----------------------------------------------------
