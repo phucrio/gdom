@@ -5,6 +5,9 @@ pub mod infrastructure;
 mod runtime;
 pub mod state;
 
+#[cfg(test)]
+pub mod test_support;
+
 use std::sync::Arc;
 
 use tauri::Manager;
@@ -41,6 +44,10 @@ pub fn run() {
             commands::job::validate_root,
             commands::job::add_root,
             commands::job::remove_root,
+            commands::job::start_scan,
+            commands::job::pause_scan,
+            commands::job::list_job_items,
+            commands::job::export_dry_run,
         ])
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
@@ -126,7 +133,7 @@ pub fn run() {
             let job_service = Arc::new(application::JobService::new(
                 Arc::clone(&account_store),
                 Arc::clone(&job_store),
-                Arc::new(drive_client) as Arc<dyn application::DriveFolderLookupPort>,
+                Arc::new(drive_client) as Arc<dyn application::DrivePort>,
                 Arc::clone(&token_provider),
             ));
 

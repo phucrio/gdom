@@ -144,6 +144,30 @@ pub struct JobDto {
     pub completed_at: Option<String>,
     pub last_error: Option<String>,
     pub roots: Vec<RootDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scan: Option<ScanSummaryDto>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanSummaryDto {
+    pub files: u64,
+    pub folders: u64,
+    pub skipped: u64,
+    pub ineligible: u64,
+    pub quota_warning: bool,
+}
+
+impl From<&crate::application::PreflightSummary> for ScanSummaryDto {
+    fn from(summary: &crate::application::PreflightSummary) -> Self {
+        Self {
+            files: summary.eligible_files,
+            folders: summary.eligible_folders,
+            skipped: summary.skipped_total(),
+            ineligible: summary.skipped_total(),
+            quota_warning: summary.quota_warning,
+        }
+    }
 }
 
 impl From<&crate::domain::job::MigrationJob> for JobDto {
@@ -173,8 +197,56 @@ impl From<&crate::domain::job::MigrationJob> for JobDto {
             completed_at: job.completed_at().map(ToOwned::to_owned),
             last_error: job.last_error().map(ToOwned::to_owned),
             roots: job.roots().iter().map(RootDto::from).collect(),
+            scan: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobItemDto {
+    pub id: String,
+    pub job_id: String,
+    pub file_id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub depth: i64,
+    pub original_parent_ids: Vec<String>,
+    pub state: String,
+    pub quota_bytes_used: Option<i64>,
+}
+
+impl From<&crate::domain::MigrationItem> for JobItemDto {
+    fn from(item: &crate::domain::MigrationItem) -> Self {
+        Self {
+            id: item.id.value().to_string(),
+            job_id: item.job_id.value().to_string(),
+            file_id: item.file_id.clone(),
+            name: item.name.clone(),
+            mime_type: item.mime_type.clone(),
+            depth: item.depth,
+            original_parent_ids: item.original_parent_ids.clone(),
+            state: item.state.as_str().to_string(),
+            quota_bytes_used: item.quota_bytes_used,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobItemsPageDto {
+    pub items: Vec<JobItemDto>,
+    pub page: u32,
+    pub page_size: u32,
+    pub total: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DryRunExportDto {
+    pub path: String,
+    pub eligible_items: u64,
+    pub quota_warning: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -223,6 +295,21 @@ pub struct JobIdInput {
 #[serde(rename_all = "camelCase")]
 pub struct ListJobsFilter {
     pub status: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListJobItemsInput {
+    pub job_id: String,
+    pub filter: Option<String>,
+    pub page: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportDryRunInput {
+    pub job_id: String,
+    pub destination: String,
 }
 
 #[cfg(test)]

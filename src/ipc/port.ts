@@ -28,6 +28,7 @@ export type BackendPort = {
   addRoot(jobId: string, input: string): Promise<JobDto>;
   removeRoot(jobId: string, rootId: string): Promise<JobDto>;
   startScan(jobId: string): Promise<JobDto>;
+  pauseScan(jobId: string): Promise<JobDto>;
   startCanary(jobId: string, confirmationEmail: string): Promise<JobDto>;
   continueMigration(jobId: string): Promise<JobDto>;
   pauseMigration(jobId: string): Promise<JobDto>;

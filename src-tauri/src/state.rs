@@ -371,7 +371,7 @@ mod tests {
         let job_store = Arc::new(crate::infrastructure::SqliteJobStore::new(
             account_store.pool().clone(),
         ));
-        let drive_client: Arc<dyn crate::application::DriveFolderLookupPort> =
+        let drive_client: Arc<dyn crate::application::DrivePort> =
             Arc::new(crate::infrastructure::google_drive::GoogleDriveClient::new().unwrap());
         let job_service = Arc::new(crate::application::JobService::new(
             account_store.clone(),
@@ -424,7 +424,7 @@ mod tests {
         let job_store = Arc::new(crate::infrastructure::SqliteJobStore::new(
             account_store.pool().clone(),
         ));
-        let drive_client: Arc<dyn crate::application::DriveFolderLookupPort> =
+        let drive_client: Arc<dyn crate::application::DrivePort> =
             Arc::new(crate::infrastructure::google_drive::GoogleDriveClient::new().unwrap());
         let job_service = Arc::new(crate::application::JobService::new(
             account_store.clone(),

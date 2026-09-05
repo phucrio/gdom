@@ -5,9 +5,10 @@ use serde::Deserialize;
 
 use crate::{
     application::{
-        AccessToken, AccountIdentity, DriveFolderLookupError, DriveFolderLookupPort,
-        DriveFolderMetadata as AppFolderMetadata, DriveFolderOwner, IdentityLookupError,
-        IdentityLookupPort,
+        AccessToken, AccountIdentity, DriveChild, DriveChildPage, DriveFolderLookupError,
+        DriveFolderLookupPort, DriveFolderMetadata as AppFolderMetadata, DriveFolderOwner,
+        DriveListFuture, DriveQuotaFuture, DriveQuotaPort, DriveTreePort, IdentityLookupError,
+        IdentityLookupPort, StorageQuota,
     },
     domain::GooglePermissionId,
 };
@@ -15,8 +16,11 @@ use crate::{
 const API_BASE_URL: &str = "https://www.googleapis.com";
 const ABOUT_PATH: &str =
     "/drive/v3/about?fields=user%28permissionId%2CemailAddress%2CdisplayName%29";
+const ABOUT_QUOTA_PATH: &str = "/drive/v3/about?fields=storageQuota";
+const LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress),driveId,size,quotaBytesUsed,trashed,shortcutDetails,capabilities)";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const USER_AGENT: &str = concat!("gdom/", env!("CARGO_PKG_VERSION"));
+const LIST_PAGE_SIZE: &str = "1000";
 
 #[derive(Clone)]
 pub struct GoogleDriveClient {
@@ -30,7 +34,7 @@ impl GoogleDriveClient {
     }
 
     #[cfg(test)]
-    pub(super) fn for_test(base_url: String) -> Result<Self, GoogleDriveError> {
+    pub(crate) fn for_test(base_url: String) -> Result<Self, GoogleDriveError> {
         Self::build(base_url, false)
     }
 
@@ -124,6 +128,121 @@ impl GoogleDriveClient {
             owners,
         })
     }
+
+    pub async fn list_children(
+        &self,
+        token: &AccessToken,
+        folder_id: &str,
+        page_token: Option<&str>,
+    ) -> Result<DriveChildPage, GoogleDriveError> {
+        let query = children_query(folder_id);
+        let query_string = {
+            let mut encoded = url::form_urlencoded::Serializer::new(String::new());
+            encoded.append_pair("q", &query);
+            encoded.append_pair("spaces", "drive");
+            encoded.append_pair("pageSize", LIST_PAGE_SIZE);
+            encoded.append_pair("supportsAllDrives", "true");
+            encoded.append_pair("fields", LIST_FIELDS);
+            if let Some(page_token) = page_token.filter(|token| !token.is_empty()) {
+                encoded.append_pair("pageToken", page_token);
+            }
+            encoded.finish()
+        };
+        let url = format!("{}/drive/v3/files?{query_string}", self.base_url);
+
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(token.expose_secret())
+            .send()
+            .await
+            .map_err(|_| GoogleDriveError::Transport)?;
+
+        if !response.status().is_success() {
+            return Err(GoogleDriveError::from_status(response.status()));
+        }
+
+        let raw = response
+            .json::<RawFileListResponse>()
+            .await
+            .map_err(|_| GoogleDriveError::InvalidResponse)?;
+
+        Ok(DriveChildPage {
+            files: raw
+                .files
+                .unwrap_or_default()
+                .into_iter()
+                .map(drive_child_from_raw)
+                .collect(),
+            next_page_token: raw.next_page_token,
+        })
+    }
+
+    pub async fn storage_quota(
+        &self,
+        token: &AccessToken,
+    ) -> Result<StorageQuota, GoogleDriveError> {
+        let response = self
+            .client
+            .get(format!("{}{ABOUT_QUOTA_PATH}", self.base_url))
+            .bearer_auth(token.expose_secret())
+            .send()
+            .await
+            .map_err(|_| GoogleDriveError::Transport)?;
+
+        if !response.status().is_success() {
+            return Err(GoogleDriveError::from_status(response.status()));
+        }
+
+        let raw = response
+            .json::<AboutQuotaResponse>()
+            .await
+            .map_err(|_| GoogleDriveError::InvalidResponse)?;
+
+        let quota = raw.storage_quota.unwrap_or(RawStorageQuota {
+            limit: None,
+            usage: None,
+        });
+        Ok(StorageQuota {
+            limit_bytes: parse_u64_string(quota.limit),
+            usage_bytes: parse_u64_string(quota.usage).unwrap_or(0),
+        })
+    }
+}
+
+fn children_query(folder_id: &str) -> String {
+    let escaped = folder_id.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{escaped}' in parents and trashed=false")
+}
+
+fn parse_i64_string(value: Option<String>) -> Option<i64> {
+    value.and_then(|raw| raw.parse().ok())
+}
+
+fn parse_u64_string(value: Option<String>) -> Option<u64> {
+    value.and_then(|raw| raw.parse().ok())
+}
+
+fn drive_child_from_raw(raw: RawFileResponse) -> DriveChild {
+    DriveChild {
+        id: raw.id,
+        name: raw.name,
+        mime_type: raw.mime_type,
+        parents: raw.parents.unwrap_or_default(),
+        owners: raw
+            .owners
+            .unwrap_or_default()
+            .into_iter()
+            .map(|owner| DriveFolderOwner {
+                permission_id: GooglePermissionId::new(owner.permission_id),
+                email_address: owner.email_address,
+            })
+            .collect(),
+        drive_id: raw.drive_id,
+        quota_bytes_used: parse_i64_string(raw.quota_bytes_used.or(raw.size)),
+        trashed: raw.trashed.unwrap_or(false),
+        shortcut_target_id: raw.shortcut_details.and_then(|details| details.target_id),
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -157,6 +276,44 @@ struct RawFileResponse {
     parents: Option<Vec<String>>,
     #[serde(default)]
     owners: Option<Vec<RawOwner>>,
+    #[serde(default)]
+    size: Option<String>,
+    #[serde(default)]
+    quota_bytes_used: Option<String>,
+    #[serde(default)]
+    shortcut_details: Option<RawShortcutDetails>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawShortcutDetails {
+    #[serde(default)]
+    target_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawFileListResponse {
+    #[serde(default)]
+    next_page_token: Option<String>,
+    #[serde(default)]
+    files: Option<Vec<RawFileResponse>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AboutQuotaResponse {
+    #[serde(default)]
+    storage_quota: Option<RawStorageQuota>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawStorageQuota {
+    #[serde(default)]
+    limit: Option<String>,
+    #[serde(default)]
+    usage: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -260,6 +417,23 @@ fn encode_path_segment(value: &str) -> String {
         }
     }
     encoded
+}
+
+impl DriveTreePort for GoogleDriveClient {
+    fn list_children<'a>(
+        &'a self,
+        token: &'a AccessToken,
+        folder_id: &'a str,
+        page_token: Option<&'a str>,
+    ) -> DriveListFuture<'a> {
+        Box::pin(async move { Ok(self.list_children(token, folder_id, page_token).await?) })
+    }
+}
+
+impl DriveQuotaPort for GoogleDriveClient {
+    fn get_storage_quota<'a>(&'a self, token: &'a AccessToken) -> DriveQuotaFuture<'a> {
+        Box::pin(async move { Ok(self.storage_quota(token).await?) })
+    }
 }
 
 impl DriveFolderLookupPort for GoogleDriveClient {

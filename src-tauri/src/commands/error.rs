@@ -36,6 +36,11 @@ pub enum CommandError {
     NotOwnedBySource(String),
     DuplicateRoot(String),
     ActiveJobsPreventRemoval(String),
+    RateLimited(String),
+    NoValidatedRoots(String),
+    IllegalJobTransition(String),
+    ExportFailed(String),
+    ScanInProgress(String),
 }
 
 impl fmt::Display for CommandError {
@@ -62,6 +67,11 @@ impl fmt::Display for CommandError {
             Self::ActiveJobsPreventRemoval(msg) => {
                 write!(f, "active jobs prevent removal: {msg}")
             }
+            Self::RateLimited(msg) => write!(f, "rate limited: {msg}"),
+            Self::NoValidatedRoots(msg) => write!(f, "no validated roots: {msg}"),
+            Self::IllegalJobTransition(msg) => write!(f, "illegal job transition: {msg}"),
+            Self::ExportFailed(msg) => write!(f, "export failed: {msg}"),
+            Self::ScanInProgress(msg) => write!(f, "scan in progress: {msg}"),
         }
     }
 }

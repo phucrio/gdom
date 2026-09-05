@@ -263,6 +263,18 @@ where
         tokens.remove(&account_id);
     }
 
+    #[cfg(test)]
+    pub async fn insert_cached_token_for_test(&self, account_id: AccountId, token: AccessToken) {
+        let mut tokens = self.tokens.write().await;
+        tokens.insert(
+            account_id,
+            CachedToken {
+                access_token: token,
+                expires_at: Instant::now() + Duration::from_secs(3600),
+            },
+        );
+    }
+
     pub async fn remove_account_lifecycle(&self, account_id: AccountId) {
         self.invalidate_cache(account_id).await;
         let mut locks = self.locks.write().await;
