@@ -2,6 +2,7 @@ pub mod account_store;
 pub mod google_drive;
 pub mod google_oauth;
 pub mod google_token;
+pub mod item_store;
 pub mod job_store;
 mod oauth_callback;
 mod oauth_connection;

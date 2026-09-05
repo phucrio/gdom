@@ -1,16 +1,24 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::application::account_token_provider::AccountTokenProvider;
 use crate::application::connect_account::AccountStorePort;
-use crate::application::drive_folder::{
-    DriveFolderLookupError, DriveFolderLookupPort, DriveFolderMetadata,
-};
+use crate::application::drive_folder::{DriveFolderLookupError, DriveFolderMetadata};
+use crate::application::drive_tree::{DEFAULT_SCAN_CONCURRENCY, DrivePort};
+use crate::application::entity_id::next_entity_id;
+use crate::application::item_store::{ItemPage, ItemStoreError, ItemStorePort};
 use crate::application::job_store::{JobStorePort, JobStorePortError};
+use crate::application::preflight::PreflightSummary;
 use crate::application::root_parser::{RootParseError, parse_root_input};
+use crate::application::scanner::{ScanError, ScanOutcome, ScanRun, run_scan};
+use crate::application::time::iso_now;
 use crate::domain::job::{
-    AccountSnapshot, JobError, JobId, MigrationJob, MigrationRoot, RootId, RootValidationStatus,
+    AccountSnapshot, JobError, JobId, JobStatus, MigrationJob, MigrationRoot, RootId,
+    RootValidationStatus,
 };
 use crate::domain::{AccountId, AuthStatus};
 
@@ -34,6 +42,10 @@ pub enum JobServiceError {
     SharedDriveNotSupported,
     NotOwnedBySourceAccount,
     StoreError(String),
+    NoValidatedRoots,
+    IllegalTransition,
+    RateLimited,
+    ExportFailed(String),
 }
 
 impl fmt::Display for JobServiceError {
@@ -71,6 +83,10 @@ impl fmt::Display for JobServiceError {
                 write!(f, "folder is not owned by the selected source account")
             }
             Self::StoreError(e) => write!(f, "persistence error: {e}"),
+            Self::NoValidatedRoots => write!(f, "scan requires at least one validated root"),
+            Self::IllegalTransition => write!(f, "illegal job status transition"),
+            Self::RateLimited => write!(f, "Google Drive rate limit reached"),
+            Self::ExportFailed(e) => write!(f, "failed to export dry-run report: {e}"),
         }
     }
 }
@@ -89,12 +105,24 @@ impl From<JobError> for JobServiceError {
             JobError::InvalidRootValidationStatus => {
                 Self::StoreError("invalid root validation status".to_string())
             }
-            JobError::IllegalTransition => {
-                Self::StoreError("illegal job status transition".to_string())
-            }
-            JobError::NoValidatedRoots => {
-                Self::StoreError("scan requires at least one root".to_string())
-            }
+            JobError::IllegalTransition => Self::IllegalTransition,
+            JobError::NoValidatedRoots => Self::NoValidatedRoots,
+        }
+    }
+}
+
+impl From<ItemStoreError> for JobServiceError {
+    fn from(err: ItemStoreError) -> Self {
+        Self::StoreError(err.to_string())
+    }
+}
+
+impl From<ScanError> for JobServiceError {
+    fn from(err: ScanError) -> Self {
+        match err {
+            ScanError::RateLimited => Self::RateLimited,
+            ScanError::Drive(e) => Self::DriveError(e.to_string()),
+            ScanError::Store(e) => Self::StoreError(e.to_string()),
         }
     }
 }
@@ -120,23 +148,24 @@ impl From<JobStorePortError> for JobServiceError {
 pub struct JobService<A, J>
 where
     A: AccountStorePort + Send + Sync + 'static,
-    J: JobStorePort + 'static,
+    J: JobStorePort + ItemStorePort + 'static,
 {
     account_store: Arc<A>,
     job_store: Arc<J>,
-    drive: Arc<dyn DriveFolderLookupPort>,
+    drive: Arc<dyn DrivePort>,
     token_provider: Arc<AccountTokenProvider<A>>,
+    scan_pause_flags: tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>,
 }
 
 impl<A, J> JobService<A, J>
 where
     A: AccountStorePort + Send + Sync + 'static,
-    J: JobStorePort + 'static,
+    J: JobStorePort + ItemStorePort + 'static,
 {
     pub fn new(
         account_store: Arc<A>,
         job_store: Arc<J>,
-        drive: Arc<dyn DriveFolderLookupPort>,
+        drive: Arc<dyn DrivePort>,
         token_provider: Arc<AccountTokenProvider<A>>,
     ) -> Self {
         Self {
@@ -144,6 +173,7 @@ where
             job_store,
             drive,
             token_provider,
+            scan_pause_flags: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -191,7 +221,7 @@ where
             })?;
 
         let job_id = JobId::new(next_entity_id());
-        let created_at = chrono_iso_now();
+        let created_at = iso_now();
 
         let job = MigrationJob::new(job_id, source, target, created_at)?;
         self.job_store.create_job(&job).await?;
@@ -310,7 +340,7 @@ where
             root_file_id: metadata.id,
             root_name: metadata.name,
             validation_status: RootValidationStatus::Validated,
-            created_at: chrono_iso_now(),
+            created_at: iso_now(),
         };
 
         job.add_root(root.clone())?;
@@ -328,52 +358,195 @@ where
         self.job_store.remove_root(job_id, root_id).await?;
         self.get_job(job_id).await
     }
-}
 
-fn next_entity_id() -> u128 {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    pub async fn start_scan(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let mut job = self.get_job(job_id).await?;
+        let pause = {
+            let mut flags = self.scan_pause_flags.lock().await;
+            let flag = flags
+                .entry(job_id)
+                .or_insert_with(|| Arc::new(AtomicBool::new(false)));
+            if job.status() == JobStatus::Paused {
+                flag.store(false, Ordering::SeqCst);
+            }
+            Arc::clone(flag)
+        };
+        job.start_scanning(iso_now())?;
+        self.job_store.update_job(&job).await?;
 
-    static SEQ: AtomicU64 = AtomicU64::new(1);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(1);
-    let seq = u128::from(SEQ.fetch_add(1, Ordering::Relaxed));
-    (nanos << 16) | (seq & 0xFFFF)
-}
+        let source_token = self
+            .token_provider
+            .get_access_token(job.source_account_id())
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
+        let target_token = self
+            .token_provider
+            .get_access_token(job.target_account_id())
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
 
-fn chrono_iso_now() -> String {
-    use std::time::SystemTime;
-    let now = SystemTime::now();
-    let duration = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    let millis = duration.subsec_millis();
+        let source_perm = job.snapshots().source.permission_id.clone();
+        let target_perm = job.snapshots().target.permission_id.clone();
+        let roots = job.roots().to_vec();
 
-    let days = (secs / 86400) as i64;
-    let rem_secs = secs % 86400;
-    let hours = rem_secs / 3600;
-    let minutes = (rem_secs % 3600) / 60;
-    let seconds = rem_secs % 60;
+        let outcome = run_scan(&ScanRun {
+            drive: Arc::clone(&self.drive),
+            store: &*self.job_store,
+            job_id,
+            roots: &roots,
+            source_token: &source_token,
+            source_permission_id: &source_perm,
+            target_permission_id: &target_perm,
+            pause: &pause,
+            concurrency: DEFAULT_SCAN_CONCURRENCY,
+        })
+        .await;
 
-    let (year, month, day) = days_to_ymd(days);
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        year, month, day, hours, minutes, seconds, millis
-    )
-}
+        let mut job = self.get_job(job_id).await?;
+        match outcome {
+            Ok(ScanOutcome::Completed) => {
+                if let Err(err) = self.drive.get_storage_quota(&target_token).await {
+                    job.set_last_error(format!("quota lookup failed: {err}"));
+                }
+                job.complete_scanning()?;
+            }
+            Ok(ScanOutcome::Paused) => {
+                job.pause_scanning()?;
+            }
+            Err(ScanError::RateLimited) => {
+                job.set_last_error("Google Drive rate limit reached during scan");
+                self.job_store.update_job(&job).await?;
+                self.scan_pause_flags.lock().await.remove(&job_id);
+                return Err(JobServiceError::RateLimited);
+            }
+            Err(err) => {
+                let message = err.to_string();
+                let _ = job.fail_scanning(message.clone());
+                self.job_store.update_job(&job).await?;
+                self.scan_pause_flags.lock().await.remove(&job_id);
+                return Err(err.into());
+            }
+        }
 
-fn days_to_ymd(days: i64) -> (i64, i64, i64) {
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = mp + if mp < 10 { 3 } else { -9 };
-    let y = y + if m <= 2 { 1 } else { 0 };
-    (y, m, d)
+        self.job_store.update_job(&job).await?;
+        self.scan_pause_flags.lock().await.remove(&job_id);
+        self.get_job(job_id).await
+    }
+
+    pub async fn pause_scan(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let job = self.get_job(job_id).await?;
+        if job.status() != JobStatus::Scanning && job.status() != JobStatus::Paused {
+            return Err(JobServiceError::IllegalTransition);
+        }
+
+        let running = {
+            let mut flags = self.scan_pause_flags.lock().await;
+            let flag = flags
+                .entry(job_id)
+                .or_insert_with(|| Arc::new(AtomicBool::new(true)));
+            flag.store(true, Ordering::SeqCst);
+            job.status() == JobStatus::Scanning
+        };
+
+        if !running {
+            let mut job = job;
+            job.pause_scanning()?;
+            self.job_store.update_job(&job).await?;
+        }
+
+        self.get_job(job_id).await
+    }
+
+    pub async fn list_job_items(
+        &self,
+        job_id: JobId,
+        filter: Option<&str>,
+        page: u32,
+    ) -> Result<ItemPage, JobServiceError> {
+        let _job = self.get_job(job_id).await?;
+        self.job_store
+            .list_items_page(job_id, filter, page, 50)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn preflight(&self, job_id: JobId) -> Result<PreflightSummary, JobServiceError> {
+        let job = self.get_job(job_id).await?;
+        let target_token = self
+            .token_provider
+            .get_access_token(job.target_account_id())
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
+        let quota = self
+            .drive
+            .get_storage_quota(&target_token)
+            .await
+            .map_err(|e| JobServiceError::DriveError(e.to_string()))?;
+        let aggregates = self.job_store.item_aggregates(job_id).await?;
+        Ok(PreflightSummary::from_aggregates(&aggregates, &quota))
+    }
+
+    pub async fn export_dry_run(
+        &self,
+        job_id: JobId,
+        destination: &str,
+    ) -> Result<String, JobServiceError> {
+        let path = Path::new(destination);
+        if destination.trim().is_empty() {
+            return Err(JobServiceError::ExportFailed(
+                "destination path is required".to_string(),
+            ));
+        }
+
+        let job = self.get_job(job_id).await?;
+        let summary = self.preflight(job_id).await?;
+        let roots: Vec<String> = job
+            .roots()
+            .iter()
+            .map(|root| root.root_name.clone())
+            .collect();
+        let report = summary.render_report(
+            &job.id().to_string(),
+            &job.snapshots().source.email,
+            &job.snapshots().target.email,
+            &roots,
+        );
+
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                JobServiceError::ExportFailed(format!(
+                    "could not create destination directory: {e}"
+                ))
+            })?;
+        }
+
+        std::fs::write(path, report.as_bytes())
+            .map_err(|e| JobServiceError::ExportFailed(e.to_string()))?;
+        Ok(destination.to_string())
+    }
+
+    pub async fn scan_summary(
+        &self,
+        job_id: JobId,
+    ) -> Result<Option<PreflightSummary>, JobServiceError> {
+        let aggregates = self.job_store.item_aggregates(job_id).await?;
+        if aggregates.total == 0 {
+            return Ok(None);
+        }
+        match self.preflight(job_id).await {
+            Ok(summary) => Ok(Some(summary)),
+            Err(JobServiceError::TokenError(_)) | Err(JobServiceError::DriveError(_)) => {
+                Ok(Some(PreflightSummary::from_aggregates(
+                    &aggregates,
+                    &crate::application::StorageQuota {
+                        limit_bytes: None,
+                        usage_bytes: 0,
+                    },
+                )))
+            }
+            Err(err) => Err(err),
+        }
+    }
 }

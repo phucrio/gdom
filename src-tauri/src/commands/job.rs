@@ -2,8 +2,9 @@ use tauri::State;
 
 use crate::application::job_service::JobServiceError;
 use crate::commands::dto::{
-    CreateJobInput, JobDto, JobIdInput, ListJobsFilter, RemoveRootInput, RootFolderInput,
-    UpdateDraftJobAccountsInput, ValidateRootResultDto,
+    CreateJobInput, DryRunExportDto, ExportDryRunInput, JobDto, JobIdInput, JobItemDto,
+    JobItemsPageDto, ListJobItemsInput, ListJobsFilter, RemoveRootInput, RootFolderInput,
+    ScanSummaryDto, UpdateDraftJobAccountsInput, ValidateRootResultDto,
 };
 use crate::commands::error::CommandError;
 use crate::domain::AccountId;
@@ -80,7 +81,28 @@ fn map_job_service_error(err: JobServiceError) -> CommandError {
             "Folder is not owned by the selected source account".to_owned(),
         ),
         JobServiceError::StoreError(e) => CommandError::Database(e),
+        JobServiceError::NoValidatedRoots => CommandError::NoValidatedRoots(
+            "Scan requires at least one validated root folder".to_owned(),
+        ),
+        JobServiceError::IllegalTransition => CommandError::IllegalJobTransition(
+            "This action is not allowed in the current job state".to_owned(),
+        ),
+        JobServiceError::RateLimited => CommandError::RateLimited(
+            "Google Drive rate limit reached. Scan paused without mutating files.".to_owned(),
+        ),
+        JobServiceError::ExportFailed(e) => CommandError::ExportFailed(e),
     }
+}
+
+async fn job_dto_with_scan(
+    state: &AppState,
+    job: crate::domain::job::MigrationJob,
+) -> Result<JobDto, CommandError> {
+    let mut dto = JobDto::from(&job);
+    if let Ok(Some(summary)) = state.job_service.scan_summary(job.id()).await {
+        dto.scan = Some(ScanSummaryDto::from(&summary));
+    }
+    Ok(dto)
 }
 
 pub(crate) async fn create_job_inner(
@@ -205,6 +227,72 @@ pub(crate) async fn remove_root_inner(
     Ok(JobDto::from(&job))
 }
 
+pub(crate) async fn start_scan_inner(
+    state: &AppState,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    let job = state
+        .job_service
+        .start_scan(job_id)
+        .await
+        .map_err(map_job_service_error)?;
+    job_dto_with_scan(state, job).await
+}
+
+pub(crate) async fn pause_scan_inner(
+    state: &AppState,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    let job = state
+        .job_service
+        .pause_scan(job_id)
+        .await
+        .map_err(map_job_service_error)?;
+    job_dto_with_scan(state, job).await
+}
+
+pub(crate) async fn list_job_items_inner(
+    state: &AppState,
+    input: ListJobItemsInput,
+) -> Result<JobItemsPageDto, CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    let page = state
+        .job_service
+        .list_job_items(job_id, input.filter.as_deref(), input.page.unwrap_or(1))
+        .await
+        .map_err(map_job_service_error)?;
+    Ok(JobItemsPageDto {
+        items: page.items.iter().map(JobItemDto::from).collect(),
+        page: page.page,
+        page_size: page.page_size,
+        total: page.total,
+    })
+}
+
+pub(crate) async fn export_dry_run_inner(
+    state: &AppState,
+    input: ExportDryRunInput,
+) -> Result<DryRunExportDto, CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    let path = state
+        .job_service
+        .export_dry_run(job_id, &input.destination)
+        .await
+        .map_err(map_job_service_error)?;
+    let summary = state
+        .job_service
+        .scan_summary(job_id)
+        .await
+        .map_err(map_job_service_error)?;
+    Ok(DryRunExportDto {
+        path,
+        eligible_items: summary.as_ref().map(|s| s.eligible_items).unwrap_or(0),
+        quota_warning: summary.as_ref().is_some_and(|s| s.quota_warning),
+    })
+}
+
 #[tauri::command]
 pub async fn create_job(
     state: State<'_, AppState>,
@@ -259,4 +347,36 @@ pub async fn remove_root(
     input: RemoveRootInput,
 ) -> Result<JobDto, CommandError> {
     remove_root_inner(&state, input).await
+}
+
+#[tauri::command]
+pub async fn start_scan(
+    state: State<'_, AppState>,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    start_scan_inner(&state, input).await
+}
+
+#[tauri::command]
+pub async fn pause_scan(
+    state: State<'_, AppState>,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    pause_scan_inner(&state, input).await
+}
+
+#[tauri::command]
+pub async fn list_job_items(
+    state: State<'_, AppState>,
+    input: ListJobItemsInput,
+) -> Result<JobItemsPageDto, CommandError> {
+    list_job_items_inner(&state, input).await
+}
+
+#[tauri::command]
+pub async fn export_dry_run(
+    state: State<'_, AppState>,
+    input: ExportDryRunInput,
+) -> Result<DryRunExportDto, CommandError> {
+    export_dry_run_inner(&state, input).await
 }

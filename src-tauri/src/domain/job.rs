@@ -424,18 +424,79 @@ impl MigrationJob {
         Ok(())
     }
 
+    fn has_validated_root(&self) -> bool {
+        self.roots
+            .iter()
+            .any(|root| root.validation_status == RootValidationStatus::Validated)
+    }
+
     pub fn start_scanning(&mut self, started_at: String) -> Result<(), JobError> {
         match self.status {
             JobStatus::Draft => {
-                if self.roots.is_empty() {
+                if !self.has_validated_root() {
                     return Err(JobError::NoValidatedRoots);
                 }
                 self.status = JobStatus::Scanning;
-                self.started_at = Some(started_at);
+                if self.started_at.is_none() {
+                    self.started_at = Some(started_at);
+                }
                 Ok(())
             }
-            JobStatus::Scanning
+            JobStatus::Paused => {
+                self.status = JobStatus::Scanning;
+                Ok(())
+            }
+            JobStatus::Scanning => Ok(()),
+            JobStatus::ReadyForReview
+            | JobStatus::RunningCanary
+            | JobStatus::CanaryReview
+            | JobStatus::Queued
+            | JobStatus::Running
+            | JobStatus::Pausing
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed
+            | JobStatus::AuthRequired
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn pause_scanning(&mut self) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::Scanning => {
+                self.status = JobStatus::Paused;
+                Ok(())
+            }
+            JobStatus::Paused => Ok(()),
+            JobStatus::Draft
             | JobStatus::ReadyForReview
+            | JobStatus::RunningCanary
+            | JobStatus::CanaryReview
+            | JobStatus::Queued
+            | JobStatus::Running
+            | JobStatus::Pausing
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed
+            | JobStatus::AuthRequired
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn complete_scanning(&mut self) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::Scanning => {
+                self.status = JobStatus::ReadyForReview;
+                Ok(())
+            }
+            JobStatus::ReadyForReview => Ok(()),
+            JobStatus::Draft
             | JobStatus::RunningCanary
             | JobStatus::CanaryReview
             | JobStatus::Queued
@@ -451,6 +512,35 @@ impl MigrationJob {
             | JobStatus::SourceRateLimited
             | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
         }
+    }
+
+    pub fn fail_scanning(&mut self, error: String) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::Scanning | JobStatus::Paused => {
+                self.status = JobStatus::Failed;
+                self.last_error = Some(error);
+                Ok(())
+            }
+            JobStatus::Draft
+            | JobStatus::ReadyForReview
+            | JobStatus::RunningCanary
+            | JobStatus::CanaryReview
+            | JobStatus::Queued
+            | JobStatus::Running
+            | JobStatus::Pausing
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed
+            | JobStatus::AuthRequired
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn set_last_error(&mut self, error: impl Into<String>) {
+        self.last_error = Some(error.into());
     }
 
     pub const fn id(&self) -> JobId {
@@ -677,10 +767,39 @@ mod tests {
         .expect("root added");
         job.start_scanning("2026-09-05T01:00:00Z".to_string())
             .expect("scan starts");
-        assert_eq!(
-            job.start_scanning("2026-09-05T01:01:00Z".to_string()),
-            Err(JobError::IllegalTransition)
-        );
+        job.start_scanning("2026-09-05T01:01:00Z".to_string())
+            .expect("in-progress scan can be resumed after a crash");
+        assert_eq!(job.status(), JobStatus::Scanning);
+    }
+
+    #[test]
+    fn pause_and_complete_scanning_follow_legal_transitions() {
+        let source = sample_snapshot(1, "source@gmail.com", "perm_1");
+        let target = sample_snapshot(2, "target@gmail.com", "perm_2");
+        let mut job = MigrationJob::new(
+            JobId::new(100),
+            source,
+            target,
+            "2026-09-05T00:00:00Z".to_string(),
+        )
+        .expect("valid job");
+        job.add_root(MigrationRoot {
+            id: RootId::new(501),
+            job_id: job.id(),
+            root_file_id: "folder_abc".to_string(),
+            root_name: "My Folder".to_string(),
+            validation_status: RootValidationStatus::Validated,
+            created_at: "2026-09-05T00:00:00Z".to_string(),
+        })
+        .expect("root added");
+        job.start_scanning("2026-09-05T01:00:00Z".to_string())
+            .expect("scan starts");
+        job.pause_scanning().expect("scan pauses");
+        assert_eq!(job.status(), JobStatus::Paused);
+        job.start_scanning("2026-09-05T01:02:00Z".to_string())
+            .expect("paused scan resumes");
+        job.complete_scanning().expect("scan completes");
+        assert_eq!(job.status(), JobStatus::ReadyForReview);
     }
 
     #[test]

@@ -221,3 +221,130 @@ async fn get_folder_metadata_maps_not_found() {
 
     assert_eq!(err, GoogleDriveError::NotFound);
 }
+
+fn serve_sequence(
+    responses: Vec<(String, String)>,
+) -> (String, Receiver<Result<Vec<String>, String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server binds an ephemeral port");
+    let address = listener.local_addr().expect("test server has an address");
+    let (sender, receiver) = mpsc::channel();
+
+    thread::spawn(move || {
+        let mut captured = Vec::new();
+        for (status, body) in responses {
+            let request = (|| -> std::io::Result<String> {
+                let (mut stream, _) = listener.accept()?;
+                stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+                stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 2048];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk)?;
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes())?;
+                String::from_utf8(request)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            })()
+            .map_err(|error| error.to_string());
+            match request {
+                Ok(value) => captured.push(value),
+                Err(error) => {
+                    drop(sender.send(Err(error)));
+                    return;
+                }
+            }
+        }
+        drop(sender.send(Ok(captured)));
+    });
+
+    (format!("http://{address}"), receiver)
+}
+
+#[tokio::test]
+async fn list_children_paginates_and_sends_source_bearer() {
+    let page_one = r#"{"nextPageToken":"token-2","files":[{"id":"a","name":"A","mimeType":"text/plain","owners":[{"permissionId":"p1"}]}]}"#;
+    let page_two = r#"{"files":[{"id":"b","name":"B","mimeType":"application/vnd.google-apps.shortcut","shortcutDetails":{"targetId":"target-z"},"owners":[{"permissionId":"p1"}]}]}"#;
+    let (base_url, requests) = serve_sequence(vec![
+        ("200 OK".into(), page_one.into()),
+        ("200 OK".into(), page_two.into()),
+    ]);
+    let client = GoogleDriveClient::for_test(base_url).unwrap();
+    let token = AccessToken::new(SECRET.to_owned());
+
+    let first = client
+        .list_children(&token, "folder-root", None)
+        .await
+        .unwrap();
+    assert_eq!(first.next_page_token.as_deref(), Some("token-2"));
+    assert_eq!(first.files[0].id, "a");
+
+    let second = client
+        .list_children(&token, "folder-root", Some("token-2"))
+        .await
+        .unwrap();
+    assert!(second.next_page_token.is_none());
+    assert_eq!(
+        second.files[0].shortcut_target_id.as_deref(),
+        Some("target-z")
+    );
+
+    let captured = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("captured")
+        .expect("utf8");
+    assert!(captured[0].contains("pageSize=1000"));
+    assert!(captured[0].contains("spaces=drive"));
+    assert!(captured[0].contains("supportsAllDrives=true"));
+    assert!(captured[0].contains("trashed%3Dfalse") || captured[0].contains("trashed=false"));
+    assert!(captured[1].contains("pageToken=token-2"));
+    for request in &captured {
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("authorization")
+                    && value.trim() == format!("Bearer {SECRET}")
+            })
+        }));
+    }
+}
+
+#[tokio::test]
+async fn list_children_maps_rate_limit() {
+    let (base_url, _) = serve_once("429 Too Many Requests", "{}");
+    let client = GoogleDriveClient::for_test(base_url).unwrap();
+    let token = AccessToken::new(SECRET.to_owned());
+    let err = client
+        .list_children(&token, "folder", None)
+        .await
+        .expect_err("429");
+    assert_eq!(err, GoogleDriveError::RateLimited);
+}
+
+#[tokio::test]
+async fn storage_quota_uses_caller_bearer_and_parses_limit() {
+    let body = r#"{"storageQuota":{"limit":"5000","usage":"120"}}"#;
+    let (base_url, request) = serve_once("200 OK", body);
+    let client = GoogleDriveClient::for_test(base_url).unwrap();
+    let token = AccessToken::new("target-secret-token".into());
+    let quota = client.storage_quota(&token).await.unwrap();
+    assert_eq!(quota.limit_bytes, Some(5000));
+    assert_eq!(quota.usage_bytes, 120);
+    let request = request
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    assert!(request.contains("GET /drive/v3/about?fields=storageQuota"));
+    assert!(request.lines().any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("authorization")
+                && value.trim() == "Bearer target-secret-token"
+        })
+    }));
+}

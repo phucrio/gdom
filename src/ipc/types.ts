@@ -172,6 +172,8 @@ export const JOB_COMMANDS = {
   removeRoot: "remove_root",
   startScan: "start_scan",
   pauseScan: "pause_scan",
+  listJobItems: "list_job_items",
+  exportDryRun: "export_dry_run",
   startCanary: "start_canary",
   continueMigration: "continue_migration",
   pauseMigration: "pause_migration",

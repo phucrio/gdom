@@ -84,6 +84,8 @@ export function createTauriBackend(): BackendPort {
       invokeCommand<JobDto>(JOB_COMMANDS.removeRoot, { input: { jobId, rootId } }),
     startScan: (jobId) =>
       invokeCommand<JobDto>(JOB_COMMANDS.startScan, { input: { jobId } }),
+    pauseScan: (jobId) =>
+      invokeCommand<JobDto>(JOB_COMMANDS.pauseScan, { input: { jobId } }),
     startCanary: (jobId, confirmationEmail) =>
       invokeCommand<JobDto>(JOB_COMMANDS.startCanary, {
         input: { jobId, confirmation: confirmationEmail },

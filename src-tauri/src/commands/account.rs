@@ -419,7 +419,7 @@ mod tests {
         let job_service = Arc::new(crate::application::JobService::new(
             account_store.clone(),
             job_store.clone(),
-            Arc::new(drive_client),
+            Arc::new(drive_client) as Arc<dyn crate::application::DrivePort>,
             token_provider.clone(),
         ));
 
