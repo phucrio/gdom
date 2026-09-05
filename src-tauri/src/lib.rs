@@ -1,5 +1,5 @@
 pub mod application;
-mod commands;
+pub mod commands;
 pub mod domain;
 pub mod infrastructure;
 mod runtime;
@@ -34,6 +34,13 @@ pub fn run() {
             commands::account::reauthenticate_account,
             commands::account::remove_account,
             commands::account::delete_local_account_data,
+            commands::job::create_job,
+            commands::job::update_draft_job_accounts,
+            commands::job::get_job,
+            commands::job::list_jobs,
+            commands::job::validate_root,
+            commands::job::add_root,
+            commands::job::remove_root,
         ])
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
@@ -95,12 +102,18 @@ pub fn run() {
             let connect_account_use_case: Arc<dyn ConnectAccountUseCase> =
                 Arc::new(connect_service);
 
+            let job_store = Arc::new(infrastructure::SqliteJobStore::new(
+                account_store.pool().clone(),
+            ));
+
             let lifecycle_service = application::AccountLifecycleService::new(
                 token_service.clone(),
-                drive_client,
+                drive_client.clone(),
                 Arc::clone(&account_store),
                 Arc::clone(&credential_store),
-            );
+            )
+            .with_job_store(Arc::clone(&job_store) as Arc<dyn application::job_store::JobStorePort>);
+
             let account_lifecycle_use_case: Arc<dyn AccountLifecycleUseCase> =
                 Arc::new(lifecycle_service);
 
@@ -108,6 +121,13 @@ pub fn run() {
                 token_service,
                 Arc::clone(&credential_store) as Arc<dyn RefreshTokenStore + Send + Sync>,
                 Arc::clone(&account_store),
+            ));
+
+            let job_service = Arc::new(application::JobService::new(
+                Arc::clone(&account_store),
+                Arc::clone(&job_store),
+                Arc::new(drive_client) as Arc<dyn application::DriveFolderLookupPort>,
+                Arc::clone(&token_provider),
             ));
 
             #[allow(unreachable_code)]
@@ -118,6 +138,8 @@ pub fn run() {
                 connect_account_use_case,
                 account_lifecycle_use_case,
                 token_provider,
+                job_store,
+                job_service,
             );
 
             app.manage(state);

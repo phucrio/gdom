@@ -95,6 +95,136 @@ pub struct OAuthConfigDto {
     pub client_id: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSnapshotDto {
+    pub account_id: String,
+    pub email: String,
+    pub display_name: String,
+    pub permission_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RootDto {
+    pub id: String,
+    pub job_id: String,
+    pub root_file_id: String,
+    pub root_name: String,
+    pub validation_status: String,
+    pub created_at: String,
+}
+
+impl From<&crate::domain::job::MigrationRoot> for RootDto {
+    fn from(root: &crate::domain::job::MigrationRoot) -> Self {
+        Self {
+            id: root.id.value().to_string(),
+            job_id: root.job_id.value().to_string(),
+            root_file_id: root.root_file_id.clone(),
+            root_name: root.root_name.clone(),
+            validation_status: root.validation_status.as_str().to_string(),
+            created_at: root.created_at.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobDto {
+    pub id: String,
+    pub source_account_id: String,
+    pub target_account_id: String,
+    pub source_snapshot: AccountSnapshotDto,
+    pub target_snapshot: AccountSnapshotDto,
+    pub status: String,
+    pub queue_position: Option<i64>,
+    pub canary_size: usize,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub last_error: Option<String>,
+    pub roots: Vec<RootDto>,
+}
+
+impl From<&crate::domain::job::MigrationJob> for JobDto {
+    fn from(job: &crate::domain::job::MigrationJob) -> Self {
+        let snapshots = job.snapshots();
+        Self {
+            id: job.id().value().to_string(),
+            source_account_id: job.source_account_id().value().to_string(),
+            target_account_id: job.target_account_id().value().to_string(),
+            source_snapshot: AccountSnapshotDto {
+                account_id: snapshots.source.account_id.value().to_string(),
+                email: snapshots.source.email.clone(),
+                display_name: snapshots.source.display_name.clone(),
+                permission_id: snapshots.source.permission_id.as_str().to_string(),
+            },
+            target_snapshot: AccountSnapshotDto {
+                account_id: snapshots.target.account_id.value().to_string(),
+                email: snapshots.target.email.clone(),
+                display_name: snapshots.target.display_name.clone(),
+                permission_id: snapshots.target.permission_id.as_str().to_string(),
+            },
+            status: job.status().as_str().to_string(),
+            queue_position: job.queue_position(),
+            canary_size: job.canary_size(),
+            created_at: job.created_at().to_string(),
+            started_at: job.started_at().map(ToOwned::to_owned),
+            completed_at: job.completed_at().map(ToOwned::to_owned),
+            last_error: job.last_error().map(ToOwned::to_owned),
+            roots: job.roots().iter().map(RootDto::from).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidateRootResultDto {
+    pub folder_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateJobInput {
+    pub source_account_id: String,
+    pub target_account_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateDraftJobAccountsInput {
+    pub job_id: String,
+    pub source_account_id: String,
+    pub target_account_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RootFolderInput {
+    pub job_id: String,
+    pub input: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveRootInput {
+    pub job_id: String,
+    pub root_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobIdInput {
+    pub job_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListJobsFilter {
+    pub status: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

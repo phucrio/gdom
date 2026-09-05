@@ -7,9 +7,10 @@ use crate::{
     application::{
         AccessToken, AccountIdentity, AccountLifecycleError, AccountLifecycleService,
         AccountStorePort, AccountStorePortError, IdentityLookupError, IdentityLookupPort,
-        OAuthGrant, RefreshToken, RefreshTokenStore, RefreshTokenStoreError, TokenExchangeError,
-        TokenExchangePort, TokenResponse,
+        JobStoreFuture, JobStorePort, OAuthGrant, RefreshToken, RefreshTokenStore,
+        RefreshTokenStoreError, TokenExchangeError, TokenExchangePort, TokenResponse,
     },
+    domain::job::{JobId, MigrationJob, MigrationRoot, RootId},
     domain::{
         AccountId, AccountLabel, AccountProfile, AuthStatus, ConnectedAccount, GooglePermissionId,
     },
@@ -194,6 +195,53 @@ impl RefreshTokenStore for MockKeyring {
     }
 }
 
+struct EmptyJobStore;
+
+impl JobStorePort for EmptyJobStore {
+    fn create_job<'a>(&'a self, _job: &'a MigrationJob) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn update_job<'a>(&'a self, _job: &'a MigrationJob) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn update_draft_job<'a>(&'a self, _job: &'a MigrationJob) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn find_job_by_id<'a>(&'a self, _job_id: JobId) -> JobStoreFuture<'a, Option<MigrationJob>> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn list_jobs<'a>(&'a self) -> JobStoreFuture<'a, Vec<MigrationJob>> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn add_root<'a>(&'a self, _root: &'a MigrationRoot) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn remove_root<'a>(&'a self, _job_id: JobId, _root_id: RootId) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn list_roots_for_job<'a>(&'a self, _job_id: JobId) -> JobStoreFuture<'a, Vec<MigrationRoot>> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn has_active_jobs_for_account<'a>(
+        &'a self,
+        _account_id: AccountId,
+    ) -> JobStoreFuture<'a, bool> {
+        Box::pin(async { Ok(false) })
+    }
+
+    fn has_jobs_for_account<'a>(&'a self, _account_id: AccountId) -> JobStoreFuture<'a, bool> {
+        Box::pin(async { Ok(false) })
+    }
+}
+
 fn build_service(
     token_client: MockTokenClient,
     identity_client: MockIdentityClient,
@@ -201,6 +249,7 @@ fn build_service(
     keyring: MockKeyring,
 ) -> AccountLifecycleService<MockTokenClient, MockIdentityClient, MockAccountStore, MockKeyring> {
     AccountLifecycleService::new(token_client, identity_client, account_store, keyring)
+        .with_job_store(Arc::new(EmptyJobStore))
 }
 
 #[tokio::test]
