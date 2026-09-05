@@ -9,6 +9,9 @@ use crate::application::AccessToken;
 use crate::application::drive_folder::{
     DriveFolderLookupError, DriveFolderLookupFuture, DriveFolderLookupPort, DriveFolderMetadata,
 };
+use crate::application::drive_transfer::{
+    DriveFileFuture, DrivePermissionFuture, DriveTransferError, DriveTransferPort,
+};
 use crate::application::drive_tree::{
     DriveChildPage, DriveListFuture, DrivePort, DriveQuotaFuture, DriveQuotaPort, DriveTreePort,
     FOLDER_MIME_TYPE, SCAN_CHECKPOINT_BATCH_SIZE, SHORTCUT_MIME_TYPE, StorageQuota,
@@ -125,6 +128,39 @@ impl DriveTreePort for MockDrive {
     }
 }
 
+impl DriveTransferPort for MockDrive {
+    fn get_file<'a>(&'a self, _token: &'a AccessToken, _file_id: &'a str) -> DriveFileFuture<'a> {
+        Box::pin(async { Err(DriveTransferError::UnexpectedStatus(501)) })
+    }
+
+    fn create_pending_owner<'a>(
+        &'a self,
+        _token: &'a AccessToken,
+        _file_id: &'a str,
+        _email: &'a str,
+    ) -> DrivePermissionFuture<'a> {
+        Box::pin(async { Err(DriveTransferError::UnexpectedStatus(501)) })
+    }
+
+    fn update_pending_owner<'a>(
+        &'a self,
+        _token: &'a AccessToken,
+        _file_id: &'a str,
+        _permission_id: &'a str,
+    ) -> DrivePermissionFuture<'a> {
+        Box::pin(async { Err(DriveTransferError::UnexpectedStatus(501)) })
+    }
+
+    fn accept_ownership<'a>(
+        &'a self,
+        _token: &'a AccessToken,
+        _file_id: &'a str,
+        _permission_id: &'a str,
+    ) -> DrivePermissionFuture<'a> {
+        Box::pin(async { Err(DriveTransferError::UnexpectedStatus(501)) })
+    }
+}
+
 impl DriveQuotaPort for MockDrive {
     fn get_storage_quota<'a>(&'a self, token: &'a AccessToken) -> DriveQuotaFuture<'a> {
         Box::pin(async move {
@@ -182,6 +218,27 @@ impl ItemStorePort for CountingStore {
         job_id: crate::domain::job::JobId,
     ) -> ItemStoreFuture<'a, ItemAggregates> {
         self.inner.item_aggregates(job_id)
+    }
+
+    fn list_items_for_transfer<'a>(
+        &'a self,
+        job_id: crate::domain::job::JobId,
+    ) -> ItemStoreFuture<'a, Vec<crate::domain::item::MigrationItem>> {
+        self.inner.list_items_for_transfer(job_id)
+    }
+
+    fn list_canary_cohort<'a>(
+        &'a self,
+        job_id: crate::domain::job::JobId,
+    ) -> ItemStoreFuture<'a, Vec<crate::domain::item::MigrationItem>> {
+        self.inner.list_canary_cohort(job_id)
+    }
+
+    fn save_item<'a>(
+        &'a self,
+        item: &'a crate::domain::item::MigrationItem,
+    ) -> ItemStoreFuture<'a, ()> {
+        self.inner.save_item(item)
     }
 }
 

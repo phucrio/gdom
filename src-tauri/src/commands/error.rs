@@ -41,6 +41,7 @@ pub enum CommandError {
     IllegalJobTransition(String),
     ExportFailed(String),
     ScanInProgress(String),
+    TransferInProgress(String),
 }
 
 impl fmt::Display for CommandError {
@@ -72,6 +73,7 @@ impl fmt::Display for CommandError {
             Self::IllegalJobTransition(msg) => write!(f, "illegal job transition: {msg}"),
             Self::ExportFailed(msg) => write!(f, "export failed: {msg}"),
             Self::ScanInProgress(msg) => write!(f, "scan in progress: {msg}"),
+            Self::TransferInProgress(msg) => write!(f, "transfer in progress: {msg}"),
         }
     }
 }

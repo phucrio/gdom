@@ -212,6 +212,7 @@ async fn seed_roots(
             quota_bytes_used: None,
             target_permission_id: None,
             state: ItemState::Eligible,
+            canary_selected: false,
             created_at: now.clone(),
             updated_at: now.clone(),
         });
@@ -274,6 +275,7 @@ async fn apply_page(
             quota_bytes_used: child.quota_bytes_used,
             target_permission_id: None,
             state: disposition.item_state(),
+            canary_selected: false,
             created_at: now.clone(),
             updated_at: now.clone(),
         });

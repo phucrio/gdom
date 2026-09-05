@@ -1168,6 +1168,7 @@ dependencies = [
 name = "gdom"
 version = "0.1.0"
 dependencies = [
+ "gdom-migration",
  "keyring-core",
  "oauth2",
  "open",
@@ -1180,6 +1181,13 @@ dependencies = [
  "tokio",
  "url",
  "windows-native-keyring-store",
+]
+
+[[package]]
+name = "gdom-migration"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

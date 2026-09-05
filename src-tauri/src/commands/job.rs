@@ -4,7 +4,7 @@ use crate::application::job_service::JobServiceError;
 use crate::commands::dto::{
     CreateJobInput, DryRunExportDto, ExportDryRunInput, JobDto, JobIdInput, JobItemDto,
     JobItemsPageDto, ListJobItemsInput, ListJobsFilter, RemoveRootInput, RootFolderInput,
-    ScanSummaryDto, UpdateDraftJobAccountsInput, ValidateRootResultDto,
+    ScanSummaryDto, StartCanaryInput, UpdateDraftJobAccountsInput, ValidateRootResultDto,
 };
 use crate::commands::error::CommandError;
 use crate::domain::AccountId;
@@ -93,6 +93,23 @@ fn map_job_service_error(err: JobServiceError) -> CommandError {
         JobServiceError::ExportFailed(e) => CommandError::ExportFailed(e),
         JobServiceError::ScanInProgress => {
             CommandError::ScanInProgress("A scan is already running for this job".to_owned())
+        }
+        JobServiceError::ConfirmationMismatch => CommandError::ConfirmationRequired(
+            "Target email confirmation does not match the job target account".to_owned(),
+        ),
+        JobServiceError::TransferInProgress => CommandError::TransferInProgress(
+            "A transfer is already running for this job".to_owned(),
+        ),
+        JobServiceError::SharingRateLimited => CommandError::RateLimited(
+            "Google Drive sharing rate limit reached. Migration paused without fast retry."
+                .to_owned(),
+        ),
+        JobServiceError::WaitingForQuota => CommandError::RateLimited(
+            "Google Drive storage quota exceeded. Migration paused until quota is resolved."
+                .to_owned(),
+        ),
+        JobServiceError::AuthRequired => {
+            CommandError::OAuth("An account needs to be re-authenticated".to_owned())
         }
     }
 }
@@ -382,4 +399,46 @@ pub async fn export_dry_run(
     input: ExportDryRunInput,
 ) -> Result<DryRunExportDto, CommandError> {
     export_dry_run_inner(&state, input).await
+}
+
+pub(crate) async fn start_canary_inner(
+    state: &AppState,
+    input: StartCanaryInput,
+) -> Result<JobDto, CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    let job = state
+        .job_service
+        .start_canary(job_id, &input.confirmation)
+        .await
+        .map_err(map_job_service_error)?;
+    job_dto_with_scan(state, job).await
+}
+
+pub(crate) async fn continue_migration_inner(
+    state: &AppState,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    let job = state
+        .job_service
+        .continue_migration(job_id)
+        .await
+        .map_err(map_job_service_error)?;
+    job_dto_with_scan(state, job).await
+}
+
+#[tauri::command]
+pub async fn start_canary(
+    state: State<'_, AppState>,
+    input: StartCanaryInput,
+) -> Result<JobDto, CommandError> {
+    start_canary_inner(&state, input).await
+}
+
+#[tauri::command]
+pub async fn continue_migration(
+    state: State<'_, AppState>,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    continue_migration_inner(&state, input).await
 }

@@ -1,0 +1,10 @@
+[package]
+name = "gdom-migration"
+version = "0.1.0"
+description = "Migration job, item, and account-pair model (no I/O)"
+authors = ["phucrio"]
+license = "GPL-3.0-or-later"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }

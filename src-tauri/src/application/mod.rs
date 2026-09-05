@@ -1,8 +1,10 @@
 pub mod access_token;
 pub mod account_lifecycle;
 pub mod account_token_provider;
+pub mod backoff;
 pub mod connect_account;
 pub mod drive_folder;
+pub mod drive_transfer;
 pub mod drive_tree;
 pub mod entity_id;
 pub mod item_classifier;
@@ -14,6 +16,7 @@ mod refresh_token_store;
 pub mod root_parser;
 pub mod scanner;
 pub mod time;
+pub mod transfer;
 
 pub use access_token::AccessToken;
 pub use account_lifecycle::{
@@ -48,3 +51,5 @@ mod account_lifecycle_test;
 mod connect_account_test;
 #[cfg(test)]
 mod scanner_test;
+#[cfg(test)]
+mod transfer_test;

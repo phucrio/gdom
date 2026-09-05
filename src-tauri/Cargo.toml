@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/gdom-migration"]
+resolver = "2"
+
 [package]
 name = "gdom"
 version = "0.1.0"
@@ -19,6 +23,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+gdom-migration = { path = "crates/gdom-migration" }
 oauth2 = { version = "5.0.0", default-features = false, features = ["timing-resistant-secret-traits"] }
 open = "5"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }

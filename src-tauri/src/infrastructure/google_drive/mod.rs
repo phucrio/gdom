@@ -3,6 +3,8 @@ use std::{error::Error, fmt, time::Duration};
 use reqwest::StatusCode;
 use serde::Deserialize;
 
+mod permissions;
+
 use crate::{
     application::{
         AccessToken, AccountIdentity, DriveChild, DriveChildPage, DriveFolderLookupError,
@@ -63,7 +65,7 @@ impl GoogleDriveClient {
             .map_err(|_| GoogleDriveError::Transport)?;
 
         if !response.status().is_success() {
-            return Err(GoogleDriveError::from_status(response.status()));
+            return Err(Self::error_from_response(response).await);
         }
 
         let response = response
@@ -100,7 +102,7 @@ impl GoogleDriveClient {
             .map_err(|_| GoogleDriveError::Transport)?;
 
         if !response.status().is_success() {
-            return Err(GoogleDriveError::from_status(response.status()));
+            return Err(Self::error_from_response(response).await);
         }
 
         let raw = response
@@ -159,7 +161,7 @@ impl GoogleDriveClient {
             .map_err(|_| GoogleDriveError::Transport)?;
 
         if !response.status().is_success() {
-            return Err(GoogleDriveError::from_status(response.status()));
+            return Err(Self::error_from_response(response).await);
         }
 
         let raw = response
@@ -191,7 +193,7 @@ impl GoogleDriveClient {
             .map_err(|_| GoogleDriveError::Transport)?;
 
         if !response.status().is_success() {
-            return Err(GoogleDriveError::from_status(response.status()));
+            return Err(Self::error_from_response(response).await);
         }
 
         let raw = response
@@ -208,6 +210,12 @@ impl GoogleDriveClient {
             usage_bytes: parse_u64_string(quota.usage).unwrap_or(0),
         })
     }
+
+    async fn error_from_response(response: reqwest::Response) -> GoogleDriveError {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        GoogleDriveError::from_status_and_body(status, &body)
+    }
 }
 
 fn children_query(folder_id: &str) -> String {
@@ -221,6 +229,16 @@ fn parse_i64_string(value: Option<String>) -> Option<i64> {
 
 fn parse_u64_string(value: Option<String>) -> Option<u64> {
     value.and_then(|raw| raw.parse().ok())
+}
+
+fn google_error_reason(body: &str) -> Option<String> {
+    let parsed: RawGoogleErrorBody = serde_json::from_str(body).ok()?;
+    parsed.error.and_then(|error| {
+        error
+            .errors
+            .into_iter()
+            .find_map(|item| item.reason.filter(|reason| !reason.is_empty()))
+    })
 }
 
 fn drive_child_from_raw(raw: RawFileResponse) -> DriveChild {
@@ -282,6 +300,8 @@ struct RawFileResponse {
     quota_bytes_used: Option<String>,
     #[serde(default)]
     shortcut_details: Option<RawShortcutDetails>,
+    #[serde(default)]
+    pub(super) permissions: Option<Vec<RawPermission>>,
 }
 
 #[derive(Deserialize)]
@@ -324,6 +344,38 @@ struct RawOwner {
     email_address: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPermission {
+    id: String,
+    #[serde(default, rename = "type")]
+    type_: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    email_address: Option<String>,
+    #[serde(default)]
+    pending_owner: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct RawGoogleErrorBody {
+    #[serde(default)]
+    error: Option<RawGoogleErrorInner>,
+}
+
+#[derive(Deserialize)]
+struct RawGoogleErrorInner {
+    #[serde(default)]
+    errors: Vec<RawGoogleErrorItem>,
+}
+
+#[derive(Deserialize)]
+struct RawGoogleErrorItem {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct DriveAccountIdentity {
     permission_id: GooglePermissionId,
@@ -363,6 +415,8 @@ pub enum GoogleDriveError {
     Forbidden,
     NotFound,
     RateLimited,
+    SharingRateLimitExceeded,
+    StorageQuotaExceeded,
     ServerUnavailable,
     UnexpectedStatus(u16),
     Transport,
@@ -380,6 +434,18 @@ impl GoogleDriveError {
             code => Self::UnexpectedStatus(code),
         }
     }
+
+    fn from_status_and_body(status: StatusCode, body: &str) -> Self {
+        if let Some(reason) = google_error_reason(body) {
+            match reason.as_str() {
+                "sharingRateLimitExceeded" => return Self::SharingRateLimitExceeded,
+                "storageQuotaExceeded" => return Self::StorageQuotaExceeded,
+                "rateLimitExceeded" | "userRateLimitExceeded" => return Self::RateLimited,
+                _ => {}
+            }
+        }
+        Self::from_status(status)
+    }
 }
 
 impl fmt::Display for GoogleDriveError {
@@ -389,6 +455,12 @@ impl fmt::Display for GoogleDriveError {
             Self::Forbidden => formatter.write_str("Google Drive denied this request"),
             Self::NotFound => formatter.write_str("Google Drive file or folder not found"),
             Self::RateLimited => formatter.write_str("Google Drive rate limit reached"),
+            Self::SharingRateLimitExceeded => {
+                formatter.write_str("Google Drive sharing rate limit exceeded")
+            }
+            Self::StorageQuotaExceeded => {
+                formatter.write_str("Google Drive storage quota exceeded")
+            }
             Self::ServerUnavailable => formatter.write_str("Google Drive is unavailable"),
             Self::UnexpectedStatus(status) => {
                 write!(
@@ -469,7 +541,10 @@ impl From<GoogleDriveError> for DriveFolderLookupError {
             GoogleDriveError::Unauthorized => Self::Unauthorized,
             GoogleDriveError::Forbidden => Self::Forbidden,
             GoogleDriveError::NotFound => Self::NotFound,
-            GoogleDriveError::RateLimited => Self::RateLimited,
+            GoogleDriveError::RateLimited | GoogleDriveError::SharingRateLimitExceeded => {
+                Self::RateLimited
+            }
+            GoogleDriveError::StorageQuotaExceeded => Self::Forbidden,
             GoogleDriveError::ServerUnavailable => Self::Unavailable,
             GoogleDriveError::Transport => Self::Transport,
             GoogleDriveError::InvalidResponse => Self::InvalidResponse,
@@ -511,7 +586,10 @@ impl From<GoogleDriveError> for IdentityLookupError {
             GoogleDriveError::Unauthorized => Self::Unauthorized,
             GoogleDriveError::Forbidden => Self::Forbidden,
             GoogleDriveError::NotFound => Self::UnexpectedStatus(404),
-            GoogleDriveError::RateLimited => Self::RateLimited,
+            GoogleDriveError::RateLimited | GoogleDriveError::SharingRateLimitExceeded => {
+                Self::RateLimited
+            }
+            GoogleDriveError::StorageQuotaExceeded => Self::Forbidden,
             GoogleDriveError::ServerUnavailable => Self::Unavailable,
             GoogleDriveError::Transport => Self::Transport,
             GoogleDriveError::InvalidResponse => Self::InvalidResponse,

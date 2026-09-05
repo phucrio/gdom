@@ -169,7 +169,7 @@ impl ItemStorePort for SqliteJobStore {
                     let rows = sqlx::query(
                         "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                                 original_owner_permission_id, quota_bytes_used, target_permission_id,
-                                state, created_at, updated_at
+                                state, created_at, updated_at, canary_selected
                          FROM migration_items
                          WHERE job_id = ?1
                          ORDER BY depth DESC, name COLLATE NOCASE ASC
@@ -194,7 +194,7 @@ impl ItemStorePort for SqliteJobStore {
                     let rows = sqlx::query(
                         "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                                 original_owner_permission_id, quota_bytes_used, target_permission_id,
-                                state, created_at, updated_at
+                                state, created_at, updated_at, canary_selected
                          FROM migration_items
                          WHERE job_id = ?1 AND state = 'ELIGIBLE'
                          ORDER BY depth DESC, name COLLATE NOCASE ASC
@@ -220,7 +220,7 @@ impl ItemStorePort for SqliteJobStore {
                     let rows = sqlx::query(
                         "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                                 original_owner_permission_id, quota_bytes_used, target_permission_id,
-                                state, created_at, updated_at
+                                state, created_at, updated_at, canary_selected
                          FROM migration_items
                          WHERE job_id = ?1 AND state LIKE 'SKIPPED_%'
                          ORDER BY depth DESC, name COLLATE NOCASE ASC
@@ -246,7 +246,7 @@ impl ItemStorePort for SqliteJobStore {
                     let rows = sqlx::query(
                         "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                                 original_owner_permission_id, quota_bytes_used, target_permission_id,
-                                state, created_at, updated_at
+                                state, created_at, updated_at, canary_selected
                          FROM migration_items
                          WHERE job_id = ?1 AND mime_type = ?2
                          ORDER BY depth DESC, name COLLATE NOCASE ASC
@@ -273,7 +273,7 @@ impl ItemStorePort for SqliteJobStore {
                     let rows = sqlx::query(
                         "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                                 original_owner_permission_id, quota_bytes_used, target_permission_id,
-                                state, created_at, updated_at
+                                state, created_at, updated_at, canary_selected
                          FROM migration_items
                          WHERE job_id = ?1 AND state = ?2
                          ORDER BY depth DESC, name COLLATE NOCASE ASC
@@ -375,6 +375,94 @@ impl ItemStorePort for SqliteJobStore {
             })
         })
     }
+
+    fn list_items_for_transfer<'a>(
+        &'a self,
+        job_id: JobId,
+    ) -> ItemStoreFuture<'a, Vec<MigrationItem>> {
+        Box::pin(async move {
+            let rows = sqlx::query(
+                "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
+                        original_owner_permission_id, quota_bytes_used, target_permission_id,
+                        state, created_at, updated_at, canary_selected
+                 FROM migration_items
+                 WHERE job_id = ?1 AND state IN (
+                    'ELIGIBLE',
+                    'PENDING_OWNER_REQUIRED',
+                    'PENDING_OWNER_CREATED',
+                    'ACCEPT_REQUIRED',
+                    'ACCEPTING',
+                    'TRANSFERRED',
+                    'VERIFYING',
+                    'RETRYABLE_FAILED'
+                 )
+                 ORDER BY depth DESC, name COLLATE NOCASE ASC",
+            )
+            .bind(job_id.value().to_string())
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+
+            let mut items = Vec::with_capacity(rows.len());
+            for row in rows {
+                items.push(item_from_row(row)?);
+            }
+            Ok(items)
+        })
+    }
+
+    fn list_canary_cohort<'a>(&'a self, job_id: JobId) -> ItemStoreFuture<'a, Vec<MigrationItem>> {
+        Box::pin(async move {
+            let rows = sqlx::query(
+                "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
+                        original_owner_permission_id, quota_bytes_used, target_permission_id,
+                        state, created_at, updated_at, canary_selected
+                 FROM migration_items
+                 WHERE job_id = ?1 AND canary_selected = 1
+                 ORDER BY depth DESC, name COLLATE NOCASE ASC",
+            )
+            .bind(job_id.value().to_string())
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+
+            let mut items = Vec::with_capacity(rows.len());
+            for row in rows {
+                items.push(item_from_row(row)?);
+            }
+            Ok(items)
+        })
+    }
+
+    fn save_item<'a>(&'a self, item: &'a MigrationItem) -> ItemStoreFuture<'a, ()> {
+        Box::pin(async move {
+            let result = sqlx::query(
+                "UPDATE migration_items
+                 SET state = ?1, target_permission_id = ?2, updated_at = ?3, canary_selected = ?4
+                 WHERE id = ?5 AND job_id = ?6",
+            )
+            .bind(item.state.as_str())
+            .bind(
+                item.target_permission_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_string()),
+            )
+            .bind(&item.updated_at)
+            .bind(i64::from(item.canary_selected))
+            .bind(item.id.value().to_string())
+            .bind(item.job_id.value().to_string())
+            .execute(self.pool())
+            .await
+            .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+            if result.rows_affected() == 0 {
+                return Err(ItemStoreError::Database(format!(
+                    "migration item {} was not found",
+                    item.id
+                )));
+            }
+            Ok(())
+        })
+    }
 }
 
 async fn count_state(
@@ -404,6 +492,7 @@ fn item_from_row(row: sqlx::sqlite::SqliteRow) -> Result<MigrationItem, ItemStor
     let state_str: String = row.get(10);
     let created_at: String = row.get(11);
     let updated_at: String = row.get(12);
+    let canary_selected: i64 = row.get(13);
 
     let original_parent_ids: Vec<String> = serde_json::from_str(&parents_json).unwrap_or_default();
     let state = ItemState::from_str(&state_str).map_err(|_| ItemStoreError::InvalidState)?;
@@ -421,6 +510,7 @@ fn item_from_row(row: sqlx::sqlite::SqliteRow) -> Result<MigrationItem, ItemStor
         quota_bytes_used: quota,
         target_permission_id: target.map(GooglePermissionId::new),
         state,
+        canary_selected: canary_selected != 0,
         created_at,
         updated_at,
     })
@@ -494,6 +584,7 @@ mod tests {
             quota_bytes_used: Some(1),
             target_permission_id: None,
             state: ItemState::Eligible,
+            canary_selected: false,
             created_at: "t".into(),
             updated_at: "t".into(),
         }
@@ -555,12 +646,12 @@ mod tests {
     async fn schema_migration_creates_items_table() {
         let accounts = SqliteAccountStore::open_in_memory().await.unwrap();
         let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM _schema_migrations WHERE version = 4")
+            sqlx::query_scalar("SELECT COUNT(*) FROM _schema_migrations WHERE version = 5")
                 .fetch_one(accounts.pool())
                 .await
                 .unwrap();
         assert_eq!(count, 1);
-        sqlx::query("SELECT job_id, file_id, depth, mime_type, original_parent_ids_json, state FROM migration_items LIMIT 1")
+        sqlx::query("SELECT job_id, file_id, depth, mime_type, original_parent_ids_json, state, canary_selected FROM migration_items LIMIT 1")
             .fetch_optional(accounts.pool())
             .await
             .unwrap();

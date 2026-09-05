@@ -1,6 +1,6 @@
 pub mod application;
 pub mod commands;
-pub mod domain;
+pub use gdom_migration as domain;
 pub mod infrastructure;
 mod runtime;
 pub mod state;
@@ -48,6 +48,8 @@ pub fn run() {
             commands::job::pause_scan,
             commands::job::list_job_items,
             commands::job::export_dry_run,
+            commands::job::start_canary,
+            commands::job::continue_migration,
         ])
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
