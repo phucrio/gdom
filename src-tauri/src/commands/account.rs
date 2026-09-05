@@ -40,25 +40,14 @@ async fn configure_oauth_inner(
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty());
 
-    let mut guard = state.oauth_config.write().await;
-    *guard = Some(OAuthConfig::new(
-        client_id.to_owned(),
-        client_secret.clone(),
-    ));
-
     state
         .account_store
-        .set_setting("oauth.client_id", client_id)
+        .save_oauth_config(client_id, client_secret.as_deref())
         .await
         .map_err(|e| CommandError::Database(e.to_string()))?;
 
-    if let Some(secret) = client_secret {
-        state
-            .account_store
-            .set_setting("oauth.client_secret", &secret)
-            .await
-            .map_err(|e| CommandError::Database(e.to_string()))?;
-    }
+    let mut guard = state.oauth_config.write().await;
+    *guard = Some(OAuthConfig::new(client_id.to_owned(), client_secret));
 
     Ok(())
 }
@@ -198,7 +187,8 @@ mod tests {
         let cred_store = WindowsCredentialStore::new_mock();
         let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
             Arc::new(DummyConnectAccountUseCase);
-        AppState::new(Arc::new(store), Arc::new(cred_store), oauth, use_case)
+        let oauth_lock = Arc::new(tokio::sync::RwLock::new(oauth));
+        AppState::new(Arc::new(store), Arc::new(cred_store), oauth_lock, use_case)
     }
 
     // -- list_accounts -------------------------------------------------------
@@ -315,6 +305,23 @@ mod tests {
         let config = guard.as_ref().expect("config is set");
         assert_eq!(config.client_id, "new-id");
         assert!(config.client_secret.is_none());
+
+        assert_eq!(
+            state
+                .account_store
+                .get_setting("oauth.client_id")
+                .await
+                .unwrap(),
+            Some("new-id".into())
+        );
+        assert_eq!(
+            state
+                .account_store
+                .get_setting("oauth.client_secret")
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     // -- get_oauth_config ----------------------------------------------------

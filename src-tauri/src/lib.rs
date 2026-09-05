@@ -93,7 +93,7 @@ pub fn run() {
             };
 
             let account_store = Arc::new(account_store);
-            let shared_oauth_config = Arc::new(tokio::sync::RwLock::new(oauth_config.clone()));
+            let shared_oauth_config = Arc::new(tokio::sync::RwLock::new(oauth_config));
 
             let token_exchange = DynamicTokenExchange {
                 oauth_config: Arc::clone(&shared_oauth_config),
@@ -115,7 +115,7 @@ pub fn run() {
             let state = AppState::new(
                 account_store,
                 credential_store,
-                oauth_config,
+                shared_oauth_config,
                 connect_account_use_case,
             );
 

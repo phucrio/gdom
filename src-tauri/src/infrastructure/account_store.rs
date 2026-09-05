@@ -183,6 +183,48 @@ impl SqliteAccountStore {
 
         Ok(())
     }
+
+    pub async fn delete_setting(&self, key: &str) -> Result<(), AccountStoreError> {
+        sqlx::query("DELETE FROM app_settings WHERE key = ?1")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn save_oauth_config(
+        &self,
+        client_id: &str,
+        client_secret: Option<&str>,
+    ) -> Result<(), AccountStoreError> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "INSERT INTO app_settings (key, value) VALUES ('oauth.client_id', ?1)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(client_id)
+        .execute(&mut *tx)
+        .await?;
+
+        if let Some(secret) = client_secret {
+            sqlx::query(
+                "INSERT INTO app_settings (key, value) VALUES ('oauth.client_secret', ?1)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            )
+            .bind(secret)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query("DELETE FROM app_settings WHERE key = 'oauth.client_secret'")
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 fn parse_account(stored: StoredAccountRow) -> Result<ConnectedAccount, AccountStoreError> {

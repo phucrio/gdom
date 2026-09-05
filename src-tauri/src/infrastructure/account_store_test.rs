@@ -251,6 +251,58 @@ async fn app_settings_persist_and_update() {
             store.get_setting("test_key").await.unwrap(),
             Some("value_2".to_owned())
         );
+
+        // When
+        store
+            .delete_setting("test_key")
+            .await
+            .expect("delete succeeds");
+
+        // Then
+        assert_eq!(store.get_setting("test_key").await.unwrap(), None);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn save_oauth_config_atomically_persists_and_deletes_secret() {
+    complete(async {
+        // Given
+        let store = SqliteAccountStore::open_in_memory()
+            .await
+            .expect("in-memory database opens");
+
+        // When
+        store
+            .save_oauth_config("client-123", Some("secret-456"))
+            .await
+            .expect("save succeeds");
+
+        // Then
+        assert_eq!(
+            store.get_setting("oauth.client_id").await.unwrap(),
+            Some("client-123".to_owned())
+        );
+        assert_eq!(
+            store.get_setting("oauth.client_secret").await.unwrap(),
+            Some("secret-456".to_owned())
+        );
+
+        // When
+        store
+            .save_oauth_config("client-789", None)
+            .await
+            .expect("save without secret succeeds");
+
+        // Then
+        assert_eq!(
+            store.get_setting("oauth.client_id").await.unwrap(),
+            Some("client-789".to_owned())
+        );
+        assert_eq!(
+            store.get_setting("oauth.client_secret").await.unwrap(),
+            None
+        );
     })
     .await;
 }

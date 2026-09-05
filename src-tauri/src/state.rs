@@ -72,7 +72,7 @@ pub struct AppState {
     #[cfg(not(target_os = "windows"))]
     pub credential_store: Arc<dyn RefreshTokenStore + Send + Sync>,
 
-    pub oauth_config: RwLock<Option<OAuthConfig>>,
+    pub oauth_config: Arc<RwLock<Option<OAuthConfig>>>,
 
     pub connect_account_lock: tokio::sync::Mutex<()>,
 
@@ -84,13 +84,13 @@ impl AppState {
     pub fn new(
         account_store: Arc<SqliteAccountStore>,
         credential_store: Arc<WindowsCredentialStore>,
-        oauth_config: Option<OAuthConfig>,
+        oauth_config: Arc<RwLock<Option<OAuthConfig>>>,
         connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
     ) -> Self {
         Self {
             account_store,
             credential_store,
-            oauth_config: RwLock::new(oauth_config),
+            oauth_config,
             connect_account_lock: tokio::sync::Mutex::new(()),
             connect_account_use_case,
         }
@@ -100,13 +100,13 @@ impl AppState {
     pub fn new(
         account_store: Arc<SqliteAccountStore>,
         credential_store: Arc<dyn RefreshTokenStore + Send + Sync>,
-        oauth_config: Option<OAuthConfig>,
+        oauth_config: Arc<RwLock<Option<OAuthConfig>>>,
         connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
     ) -> Self {
         Self {
             account_store,
             credential_store,
-            oauth_config: RwLock::new(oauth_config),
+            oauth_config,
             connect_account_lock: tokio::sync::Mutex::new(()),
             connect_account_use_case,
         }
@@ -214,10 +214,11 @@ mod tests {
         let account_store = Arc::new(store);
         let cred_store = crate::infrastructure::secrets::WindowsCredentialStore::new_mock();
         let oauth = OAuthConfig::new("test-id", None);
+        let oauth_lock = Arc::new(RwLock::new(Some(oauth)));
         let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
             Arc::new(DummyConnectAccountUseCase);
 
-        let state = AppState::new(account_store, Arc::new(cred_store), Some(oauth), use_case);
+        let state = AppState::new(account_store, Arc::new(cred_store), oauth_lock, use_case);
 
         let guard = state.oauth_config.read().await;
         let config = guard.as_ref().expect("should have config");
@@ -231,10 +232,11 @@ mod tests {
             .expect("in-memory store");
         let account_store = Arc::new(store);
         let cred_store = crate::infrastructure::secrets::WindowsCredentialStore::new_mock();
+        let oauth_lock = Arc::new(RwLock::new(None));
         let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
             Arc::new(DummyConnectAccountUseCase);
 
-        let state = AppState::new(account_store, Arc::new(cred_store), None, use_case);
+        let state = AppState::new(account_store, Arc::new(cred_store), oauth_lock, use_case);
 
         let guard = state.oauth_config.read().await;
         assert!(guard.is_none());
