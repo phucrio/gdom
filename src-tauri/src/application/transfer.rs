@@ -80,26 +80,49 @@ pub async fn execute_canary(
     job: &mut MigrationJob,
 ) -> Result<TransferHalt, TransferError> {
     job.start_canary()?;
+    let batch = select_canary_batch(run, job).await?;
+    let halt = transfer_items(run, &batch).await?;
+    apply_halt(job, &halt)?;
+    Ok(halt)
+}
+
+async fn select_canary_batch(
+    run: &TransferRun<'_>,
+    job: &MigrationJob,
+) -> Result<Vec<MigrationItem>, TransferError> {
+    let cohort = run.store.list_canary_cohort(job.id()).await?;
+    if !cohort.is_empty() {
+        return Ok(cohort
+            .into_iter()
+            .filter(|item| !item.state.is_terminal())
+            .collect());
+    }
+
     let items = run.store.list_items_for_transfer(job.id()).await?;
-    let in_progress: Vec<MigrationItem> = items
+    let mut in_progress: Vec<MigrationItem> = items
         .iter()
         .filter(|item| item.state != ItemState::Eligible)
         .cloned()
         .collect();
-    let mut batch = if in_progress.is_empty() {
-        items.into_iter().take(job.canary_size()).collect()
-    } else {
-        in_progress
-    };
+    if !in_progress.is_empty() {
+        for item in &mut in_progress {
+            if !item.canary_selected {
+                item.canary_selected = true;
+                run.store.save_item(item).await?;
+            }
+        }
+        return Ok(in_progress);
+    }
+
+    let mut batch: Vec<MigrationItem> = items.into_iter().take(job.canary_size()).collect();
     for item in &mut batch {
+        item.canary_selected = true;
         if item.state == ItemState::Eligible {
             apply_state(item, ItemState::PendingOwnerRequired).map_err(StepError::into_transfer)?;
-            run.store.save_item(item).await?;
         }
+        run.store.save_item(item).await?;
     }
-    let halt = transfer_items(run, &batch).await?;
-    apply_halt(job, &halt)?;
-    Ok(halt)
+    Ok(batch)
 }
 
 pub async fn execute_bulk(

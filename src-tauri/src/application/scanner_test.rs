@@ -227,6 +227,13 @@ impl ItemStorePort for CountingStore {
         self.inner.list_items_for_transfer(job_id)
     }
 
+    fn list_canary_cohort<'a>(
+        &'a self,
+        job_id: crate::domain::job::JobId,
+    ) -> ItemStoreFuture<'a, Vec<crate::domain::item::MigrationItem>> {
+        self.inner.list_canary_cohort(job_id)
+    }
+
     fn save_item<'a>(
         &'a self,
         item: &'a crate::domain::item::MigrationItem,

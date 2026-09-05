@@ -89,5 +89,7 @@ pub trait ItemStorePort: Send + Sync {
         job_id: JobId,
     ) -> ItemStoreFuture<'a, Vec<MigrationItem>>;
 
+    fn list_canary_cohort<'a>(&'a self, job_id: JobId) -> ItemStoreFuture<'a, Vec<MigrationItem>>;
+
     fn save_item<'a>(&'a self, item: &'a MigrationItem) -> ItemStoreFuture<'a, ()>;
 }

@@ -178,7 +178,9 @@ impl ItemState {
             (Self::RetryableFailed, Self::PendingOwnerRequired)
             | (Self::RetryableFailed, Self::Verifying)
             | (Self::RetryableFailed, Self::PermanentFailed)
-            | (Self::RetryableFailed, Self::Cancelled) => true,
+            | (Self::RetryableFailed, Self::Cancelled)
+            | (Self::RetryableFailed, Self::SkippedTrashed)
+            | (Self::RetryableFailed, Self::SkippedSharedDrive) => true,
             (from, to) if from == to => true,
             _ => false,
         }
@@ -257,6 +259,7 @@ pub struct MigrationItem {
     pub quota_bytes_used: Option<i64>,
     pub target_permission_id: Option<GooglePermissionId>,
     pub state: ItemState,
+    pub canary_selected: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -326,5 +329,21 @@ mod tests {
         );
         assert!(ItemState::Verified.is_terminal());
         assert!(ItemState::Eligible.is_transfer_active());
+    }
+
+    #[test]
+    fn retryable_failed_can_skip_trashed_or_shared_drive() {
+        assert_eq!(
+            ItemState::RetryableFailed.transition_to(ItemState::SkippedTrashed),
+            Ok(ItemState::SkippedTrashed)
+        );
+        assert_eq!(
+            ItemState::RetryableFailed.transition_to(ItemState::SkippedSharedDrive),
+            Ok(ItemState::SkippedSharedDrive)
+        );
+        assert_eq!(
+            ItemState::RetryableFailed.transition_to(ItemState::Eligible),
+            Err(ItemError::IllegalTransition)
+        );
     }
 }

@@ -215,6 +215,22 @@ struct TransferLeaseGuard {
     job_id: JobId,
 }
 
+fn try_acquire_transfer_slot(
+    slot: &Arc<std::sync::Mutex<Option<JobId>>>,
+    job_id: JobId,
+) -> Result<TransferLeaseGuard, JobServiceError> {
+    let mut lease = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if lease.is_some() {
+        return Err(JobServiceError::TransferInProgress);
+    }
+    *lease = Some(job_id);
+    drop(lease);
+    Ok(TransferLeaseGuard {
+        slot: Arc::clone(slot),
+        job_id,
+    })
+}
+
 impl Drop for TransferLeaseGuard {
     fn drop(&mut self) {
         let mut lease = self
@@ -290,21 +306,7 @@ where
     }
 
     fn try_acquire_transfer(&self, job_id: JobId) -> Result<TransferLeaseGuard, JobServiceError> {
-        let mut lease = self
-            .transfer_lease
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(active) = *lease
-            && active != job_id
-        {
-            return Err(JobServiceError::TransferInProgress);
-        }
-        *lease = Some(job_id);
-        drop(lease);
-        Ok(TransferLeaseGuard {
-            slot: Arc::clone(&self.transfer_lease),
-            job_id,
-        })
+        try_acquire_transfer_slot(&self.transfer_lease, job_id)
     }
 
     fn emails_match(left: &str, right: &str) -> bool {
@@ -782,5 +784,44 @@ where
                 Err(err)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transfer_lease_is_exclusive_including_same_job() {
+        let slot = Arc::new(std::sync::Mutex::new(None));
+        let first = JobId::new(1);
+        let second = JobId::new(2);
+
+        let guard = try_acquire_transfer_slot(&slot, first).expect("first acquire");
+        assert!(matches!(
+            try_acquire_transfer_slot(&slot, first),
+            Err(JobServiceError::TransferInProgress)
+        ));
+        assert!(matches!(
+            try_acquire_transfer_slot(&slot, second),
+            Err(JobServiceError::TransferInProgress)
+        ));
+        assert_eq!(
+            *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            Some(first)
+        );
+
+        drop(guard);
+        assert_eq!(
+            *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            None
+        );
+
+        let later = try_acquire_transfer_slot(&slot, second).expect("acquire after release");
+        drop(later);
+        assert_eq!(
+            *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            None
+        );
     }
 }

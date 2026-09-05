@@ -56,6 +56,7 @@ struct DriveScript {
     transferred: Mutex<HashSet<String>>,
     already_owned: Mutex<HashSet<String>>,
     writer_without_pending: Mutex<HashSet<String>>,
+    trash_on_source_get: Mutex<HashSet<String>>,
     trash_on_target_get: Mutex<HashSet<String>>,
     remaining_failures: AtomicUsize,
     fail_status: Mutex<String>,
@@ -69,6 +70,7 @@ impl DriveScript {
             transferred: Mutex::new(HashSet::new()),
             already_owned: Mutex::new(HashSet::new()),
             writer_without_pending: Mutex::new(HashSet::new()),
+            trash_on_source_get: Mutex::new(HashSet::new()),
             trash_on_target_get: Mutex::new(HashSet::new()),
             remaining_failures: AtomicUsize::new(0),
             fail_status: Mutex::new("429 Too Many Requests".into()),
@@ -174,6 +176,12 @@ fn handle_drive(script: &DriveScript, request: &str) -> (String, String) {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .contains(&file_id);
+        let trash_on_source = !is_verify_get
+            && script
+                .trash_on_source_get
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&file_id);
         let owner = if transferred {
             TARGET_PERM
         } else {
@@ -186,7 +194,7 @@ fn handle_drive(script: &DriveScript, request: &str) -> (String, String) {
                 owner,
                 transferred,
                 writer_without_pending && !transferred,
-                trash_on_target,
+                trash_on_source || trash_on_target,
             ),
         );
     }
@@ -286,6 +294,7 @@ fn eligible_item(job_id: JobId, id: u128, file_id: &str, depth: i64) -> Migratio
         quota_bytes_used: Some(1),
         target_permission_id: None,
         state: ItemState::Eligible,
+        canary_selected: false,
         created_at: "t".into(),
         updated_at: "t".into(),
     }
@@ -732,5 +741,116 @@ async fn trashed_during_verify_skips_item_and_continues_batch() {
         .map(|item| (item.file_id.clone(), item.state))
         .collect();
     assert_eq!(by_id["trash-file"], ItemState::SkippedTrashed);
+    assert_eq!(by_id["keep-file"], ItemState::Verified);
+}
+
+fn job_with_status(job: &MigrationJob, status: JobStatus) -> MigrationJob {
+    MigrationJob::reconstitute(
+        job.id(),
+        job.accounts(),
+        job.snapshots().clone(),
+        status,
+        None,
+        job.canary_size(),
+        job.created_at().to_string(),
+        job.started_at().map(ToOwned::to_owned),
+        None,
+        None,
+        job.roots().to_vec(),
+    )
+}
+
+#[tokio::test]
+async fn canary_resume_after_terminal_cohort_does_not_expand() {
+    let fixture = setup(
+        2,
+        vec![
+            ("deep-file", 3),
+            ("mid-file", 2),
+            ("child-folder", 1),
+            ("root-folder", 0),
+        ],
+    )
+    .await;
+    let mut job = fixture.job.clone();
+    let run = run_of(&fixture);
+    execute_canary(&run, &mut job).await.expect("canary");
+    assert_eq!(job.status(), JobStatus::CanaryReview);
+
+    let mutations_after_first = mutation_requests(&captured_requests(&fixture)).len();
+    let remaining = fixture
+        .store
+        .list_items_for_transfer(fixture.job.id())
+        .await
+        .expect("remaining");
+    assert_eq!(remaining.len(), 2);
+    assert!(
+        remaining
+            .iter()
+            .all(|item| item.state == ItemState::Eligible)
+    );
+
+    let mut crashed = job_with_status(&job, JobStatus::RunningCanary);
+    let run = run_of(&fixture);
+    execute_canary(&run, &mut crashed)
+        .await
+        .expect("resume after canary persist crash");
+    assert_eq!(crashed.status(), JobStatus::CanaryReview);
+    assert_eq!(
+        mutation_requests(&captured_requests(&fixture)).len(),
+        mutations_after_first
+    );
+
+    let remaining = fixture
+        .store
+        .list_items_for_transfer(fixture.job.id())
+        .await
+        .expect("still remaining");
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|item| item.file_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["child-folder", "root-folder"]
+    );
+}
+
+#[tokio::test]
+async fn retryable_failed_trashed_on_reconcile_skips_and_continues() {
+    let fixture = setup(2, vec![("retry-file", 2), ("keep-file", 1)]).await;
+    let mut retry = fixture
+        .store
+        .list_items_for_transfer(fixture.job.id())
+        .await
+        .expect("items")
+        .into_iter()
+        .find(|item| item.file_id == "retry-file")
+        .expect("retry-file");
+    retry.state = ItemState::RetryableFailed;
+    fixture.store.save_item(&retry).await.expect("seed retry");
+    fixture
+        .script
+        .trash_on_source_get
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert("retry-file".into());
+
+    let mut job = job_with_status(&fixture.job, JobStatus::CanaryReview);
+    let run = run_of(&fixture);
+    let halt = execute_bulk(&run, &mut job).await.expect("bulk");
+    assert!(matches!(halt, TransferHalt::Exhausted { verified: 1, .. }));
+    assert_eq!(job.status(), JobStatus::Completed);
+
+    let items = fixture
+        .store
+        .list_items_page(job.id(), None, 1, 50)
+        .await
+        .expect("items")
+        .items;
+    let by_id: std::collections::HashMap<_, _> = items
+        .into_iter()
+        .map(|item| (item.file_id.clone(), item.state))
+        .collect();
+    assert_eq!(by_id["retry-file"], ItemState::SkippedTrashed);
     assert_eq!(by_id["keep-file"], ItemState::Verified);
 }
