@@ -12,6 +12,8 @@
   --danger: #ff8a7a;
   --notice: #d7c48a;
   --focus: #a5b4ff;
+  --field-fill: #0a0c11;
+  --field-border: #8a93a8;
   --surface: rgba(243, 241, 234, 0.04);
   --font-display: "Bahnschrift", "Segoe UI Variable Display", "Segoe UI", sans-serif;
   --font-body: "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, sans-serif;
@@ -106,7 +108,7 @@ button:disabled {
 .step-tab,
 .root-list button {
   border-radius: 6px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--field-border);
   background: var(--surface);
   color: var(--paper);
   padding: 8px 12px;
@@ -121,7 +123,7 @@ button:disabled {
 }
 
 .danger-button {
-  border-color: #8a3d36;
+  border-color: var(--danger);
   color: var(--danger);
 }
 
@@ -334,9 +336,9 @@ select {
   width: 100%;
   min-height: 40px;
   padding: 8px 10px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--field-border);
   border-radius: 6px;
-  background: #0a0c11;
+  background: var(--field-fill);
   color: var(--paper);
 }
 
@@ -349,6 +351,9 @@ select {
 .checkbox-row input {
   width: auto;
   min-height: 0;
+  accent-color: var(--accent);
+  outline: 1px solid var(--field-border);
+  outline-offset: 1px;
 }
 
 .error {

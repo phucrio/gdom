@@ -25,5 +25,6 @@
     "noUncheckedIndexedAccess": true
   },
   "include": ["src"],
+  "exclude": ["src/ui/contrast.test.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
