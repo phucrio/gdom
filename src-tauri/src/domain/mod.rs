@@ -1,7 +1,8 @@
 mod account;
-mod job;
+pub mod job;
 
 pub use account::{
-    AccountError, AccountId, AccountProfile, AccountRegistry, ConnectedAccount, GooglePermissionId,
+    AccountError, AccountId, AccountLabel, AccountProfile, AccountRegistry, AuthStatus,
+    ConnectedAccount, GooglePermissionId,
 };
 pub use job::{DEFAULT_TRANSFER_CONCURRENCY, JobError, MigrationJob};

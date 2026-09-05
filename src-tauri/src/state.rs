@@ -77,6 +77,10 @@ pub struct AppState {
     pub connect_account_lock: tokio::sync::Mutex<()>,
 
     pub connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
+
+    pub account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
+
+    pub token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
 }
 
 impl AppState {
@@ -86,6 +90,8 @@ impl AppState {
         credential_store: Arc<WindowsCredentialStore>,
         oauth_config: Arc<RwLock<Option<OAuthConfig>>>,
         connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
+        account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
+        token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
     ) -> Self {
         Self {
             account_store,
@@ -93,6 +99,8 @@ impl AppState {
             oauth_config,
             connect_account_lock: tokio::sync::Mutex::new(()),
             connect_account_use_case,
+            account_lifecycle_use_case,
+            token_provider,
         }
     }
 
@@ -102,6 +110,8 @@ impl AppState {
         credential_store: Arc<dyn RefreshTokenStore + Send + Sync>,
         oauth_config: Arc<RwLock<Option<OAuthConfig>>>,
         connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
+        account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
+        token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
     ) -> Self {
         Self {
             account_store,
@@ -109,6 +119,8 @@ impl AppState {
             oauth_config,
             connect_account_lock: tokio::sync::Mutex::new(()),
             connect_account_use_case,
+            account_lifecycle_use_case,
+            token_provider,
         }
     }
 }
@@ -206,19 +218,138 @@ mod tests {
         }
     }
 
+    struct DummyAccountLifecycleUseCase;
+
+    impl crate::application::AccountLifecycleUseCase for DummyAccountLifecycleUseCase {
+        fn list_accounts(
+            &self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<crate::domain::ConnectedAccount>,
+                            crate::application::AccountLifecycleError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { unimplemented!() })
+        }
+
+        fn update_account_label(
+            &self,
+            _account_id: crate::domain::AccountId,
+            _label: Option<String>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::domain::ConnectedAccount,
+                            crate::application::AccountLifecycleError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { unimplemented!() })
+        }
+
+        fn disconnect_account(
+            &self,
+            _account_id: crate::domain::AccountId,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<(), crate::application::AccountLifecycleError>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { unimplemented!() })
+        }
+
+        fn reauthenticate_account(
+            &self,
+            _account_id: crate::domain::AccountId,
+            _oauth_grant: crate::application::OAuthGrant,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            crate::domain::ConnectedAccount,
+                            crate::application::AccountLifecycleError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { unimplemented!() })
+        }
+
+        fn remove_account(
+            &self,
+            _account_id: crate::domain::AccountId,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<(), crate::application::AccountLifecycleError>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { unimplemented!() })
+        }
+
+        fn delete_local_account_data(
+            &self,
+            _account_id: crate::domain::AccountId,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<(), crate::application::AccountLifecycleError>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { unimplemented!() })
+        }
+    }
+
     #[tokio::test]
     async fn app_state_new_holds_oauth_config() {
         let store = SqliteAccountStore::open_in_memory()
             .await
             .expect("in-memory store");
         let account_store = Arc::new(store);
-        let cred_store = crate::infrastructure::secrets::WindowsCredentialStore::new_mock();
+        let cred_store =
+            Arc::new(crate::infrastructure::secrets::WindowsCredentialStore::new_mock());
         let oauth = OAuthConfig::new("test-id", None);
         let oauth_lock = Arc::new(RwLock::new(Some(oauth)));
         let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
             Arc::new(DummyConnectAccountUseCase);
+        let lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase> =
+            Arc::new(DummyAccountLifecycleUseCase);
 
-        let state = AppState::new(account_store, Arc::new(cred_store), oauth_lock, use_case);
+        let refresh_port = Arc::new(
+            crate::infrastructure::google_token::DynamicGoogleTokenClient::new(Arc::clone(
+                &oauth_lock,
+            )),
+        );
+        let token_provider = Arc::new(crate::application::AccountTokenProvider::new(
+            refresh_port,
+            cred_store.clone(),
+            account_store.clone(),
+        ));
+
+        let state = AppState::new(
+            account_store,
+            cred_store,
+            oauth_lock,
+            use_case,
+            lifecycle_use_case,
+            token_provider,
+        );
 
         let guard = state.oauth_config.read().await;
         let config = guard.as_ref().expect("should have config");
@@ -231,12 +362,33 @@ mod tests {
             .await
             .expect("in-memory store");
         let account_store = Arc::new(store);
-        let cred_store = crate::infrastructure::secrets::WindowsCredentialStore::new_mock();
+        let cred_store =
+            Arc::new(crate::infrastructure::secrets::WindowsCredentialStore::new_mock());
         let oauth_lock = Arc::new(RwLock::new(None));
         let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
             Arc::new(DummyConnectAccountUseCase);
+        let lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase> =
+            Arc::new(DummyAccountLifecycleUseCase);
 
-        let state = AppState::new(account_store, Arc::new(cred_store), oauth_lock, use_case);
+        let refresh_port = Arc::new(
+            crate::infrastructure::google_token::DynamicGoogleTokenClient::new(Arc::clone(
+                &oauth_lock,
+            )),
+        );
+        let token_provider = Arc::new(crate::application::AccountTokenProvider::new(
+            refresh_port,
+            cred_store.clone(),
+            account_store.clone(),
+        ));
+
+        let state = AppState::new(
+            account_store,
+            cred_store,
+            oauth_lock,
+            use_case,
+            lifecycle_use_case,
+            token_provider,
+        );
 
         let guard = state.oauth_config.read().await;
         assert!(guard.is_none());

@@ -2,7 +2,9 @@ use std::{error::Error, fmt, sync::Arc};
 
 use crate::{
     application::{AccessToken, RefreshToken, RefreshTokenStore, RefreshTokenStoreError},
-    domain::{AccountError, AccountId, ConnectedAccount, GooglePermissionId},
+    domain::{
+        AccountError, AccountId, AccountLabel, AuthStatus, ConnectedAccount, GooglePermissionId,
+    },
 };
 
 pub struct OAuthGrant {
@@ -192,12 +194,39 @@ pub trait AccountStorePort {
         permission_id: &GooglePermissionId,
     ) -> impl std::future::Future<Output = Result<Option<ConnectedAccount>, AccountStorePortError>> + Send;
 
+    fn find_by_id(
+        &self,
+        account_id: AccountId,
+    ) -> impl std::future::Future<Output = Result<Option<ConnectedAccount>, AccountStorePortError>> + Send;
+
     fn connect(
         &self,
         account: &ConnectedAccount,
     ) -> impl std::future::Future<Output = Result<ConnectedAccount, AccountStorePortError>> + Send;
 
+    fn update_auth_status(
+        &self,
+        account_id: AccountId,
+        status: AuthStatus,
+    ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send;
+
+    fn update_label(
+        &self,
+        account_id: AccountId,
+        label: Option<&AccountLabel>,
+    ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send;
+
+    fn mark_last_authenticated(
+        &self,
+        account_id: AccountId,
+    ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send;
+
     fn remove(
+        &self,
+        account_id: AccountId,
+    ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send;
+
+    fn hard_delete(
         &self,
         account_id: AccountId,
     ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send;
@@ -249,6 +278,25 @@ where
     }
 }
 
+impl<T: TokenExchangePort + Send + Sync + ?Sized> TokenExchangePort for Arc<T> {
+    fn exchange_code(
+        &self,
+        grant: OAuthGrant,
+    ) -> impl std::future::Future<Output = Result<TokenResponse, TokenExchangeError>> + Send {
+        (**self).exchange_code(grant)
+    }
+}
+
+impl<T: IdentityLookupPort + Send + Sync + ?Sized> IdentityLookupPort for Arc<T> {
+    fn account_identity(
+        &self,
+        token: &AccessToken,
+    ) -> impl std::future::Future<Output = Result<AccountIdentity, IdentityLookupError>> + Send
+    {
+        (**self).account_identity(token)
+    }
+}
+
 impl<T: ConnectAccountUseCase + ?Sized> ConnectAccountUseCase for Arc<T> {
     fn connect_account(
         &self,
@@ -274,6 +322,14 @@ impl<T: AccountStorePort + Send + Sync> AccountStorePort for Arc<T> {
         (**self).find_by_permission_id(permission_id)
     }
 
+    fn find_by_id(
+        &self,
+        account_id: AccountId,
+    ) -> impl std::future::Future<Output = Result<Option<ConnectedAccount>, AccountStorePortError>> + Send
+    {
+        (**self).find_by_id(account_id)
+    }
+
     fn connect(
         &self,
         account: &ConnectedAccount,
@@ -282,11 +338,41 @@ impl<T: AccountStorePort + Send + Sync> AccountStorePort for Arc<T> {
         (**self).connect(account)
     }
 
+    fn update_auth_status(
+        &self,
+        account_id: AccountId,
+        status: AuthStatus,
+    ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send {
+        (**self).update_auth_status(account_id, status)
+    }
+
+    fn update_label(
+        &self,
+        account_id: AccountId,
+        label: Option<&AccountLabel>,
+    ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send {
+        (**self).update_label(account_id, label)
+    }
+
+    fn mark_last_authenticated(
+        &self,
+        account_id: AccountId,
+    ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send {
+        (**self).mark_last_authenticated(account_id)
+    }
+
     fn remove(
         &self,
         account_id: AccountId,
     ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send {
         (**self).remove(account_id)
+    }
+
+    fn hard_delete(
+        &self,
+        account_id: AccountId,
+    ) -> impl std::future::Future<Output = Result<(), AccountStorePortError>> + Send {
+        (**self).hard_delete(account_id)
     }
 
     fn list_all(

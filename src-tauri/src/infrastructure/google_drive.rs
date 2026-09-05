@@ -14,6 +14,7 @@ const ABOUT_PATH: &str =
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const USER_AGENT: &str = concat!("gdom/", env!("CARGO_PKG_VERSION"));
 
+#[derive(Clone)]
 pub struct GoogleDriveClient {
     client: reqwest::Client,
     base_url: String,

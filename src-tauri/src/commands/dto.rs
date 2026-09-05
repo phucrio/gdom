@@ -1,9 +1,9 @@
-use crate::domain::ConnectedAccount;
+use crate::domain::{AccountLabel, AuthStatus, ConnectedAccount};
 
 /// Serializable account representation for the frontend.
 ///
-/// Deliberately omits tokens and credentials — only identity and profile
-/// fields cross the IPC boundary.
+/// Deliberately omits tokens and credentials — only identity, status,
+/// and lifecycle metadata cross the IPC boundary.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDto {
@@ -11,6 +11,12 @@ pub struct AccountDto {
     pub google_permission_id: String,
     pub email: String,
     pub display_name: String,
+    pub label: Option<String>,
+    pub auth_status: AuthStatus,
+    pub connected_at: String,
+    pub last_authenticated_at: String,
+    pub updated_at: String,
+    pub removed_at: Option<String>,
 }
 
 impl From<&ConnectedAccount> for AccountDto {
@@ -20,6 +26,15 @@ impl From<&ConnectedAccount> for AccountDto {
             google_permission_id: account.google_permission_id().as_str().to_owned(),
             email: account.email().to_owned(),
             display_name: account.display_name().to_owned(),
+            label: account
+                .label()
+                .map(AccountLabel::as_str)
+                .map(ToOwned::to_owned),
+            auth_status: account.auth_status(),
+            connected_at: account.connected_at().to_owned(),
+            last_authenticated_at: account.last_authenticated_at().to_owned(),
+            updated_at: account.updated_at().to_owned(),
+            removed_at: account.removed_at().map(ToOwned::to_owned),
         }
     }
 }
@@ -28,6 +43,26 @@ impl From<ConnectedAccount> for AccountDto {
     fn from(account: ConnectedAccount) -> Self {
         Self::from(&account)
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAccountLabelInput {
+    pub account_id: String,
+    pub label: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountIdInput {
+    pub account_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAccountDataInput {
+    pub account_id: String,
+    pub confirmation: bool,
 }
 
 #[derive(Clone, Eq, PartialEq, serde::Deserialize)]
@@ -82,6 +117,8 @@ mod tests {
         assert_eq!(dto.google_permission_id, "perm-abc123");
         assert_eq!(dto.email, "user@gmail.com");
         assert_eq!(dto.display_name, "Test User");
+        assert_eq!(dto.auth_status, AuthStatus::Connected);
+        assert_eq!(dto.label, None);
     }
 
     #[test]
@@ -100,6 +137,12 @@ mod tests {
             google_permission_id: "perm-x".into(),
             email: "a@b.com".into(),
             display_name: "A B".into(),
+            label: Some("My Label".into()),
+            auth_status: AuthStatus::Connected,
+            connected_at: "2026-09-05T00:00:00Z".into(),
+            last_authenticated_at: "2026-09-05T00:00:00Z".into(),
+            updated_at: "2026-09-05T00:00:00Z".into(),
+            removed_at: None,
         };
         let json = serde_json::to_value(&dto).expect("serializes");
 
@@ -107,6 +150,8 @@ mod tests {
         assert_eq!(json["googlePermissionId"], "perm-x");
         assert_eq!(json["email"], "a@b.com");
         assert_eq!(json["displayName"], "A B");
+        assert_eq!(json["label"], "My Label");
+        assert_eq!(json["authStatus"], "CONNECTED");
     }
 
     #[test]
@@ -116,6 +161,12 @@ mod tests {
             google_permission_id: "perm-z".into(),
             email: "z@example.com".into(),
             display_name: "Z".into(),
+            label: None,
+            auth_status: AuthStatus::TokenRefreshing,
+            connected_at: "2026-09-05T00:00:00Z".into(),
+            last_authenticated_at: "2026-09-05T00:00:00Z".into(),
+            updated_at: "2026-09-05T00:00:00Z".into(),
+            removed_at: None,
         };
         let json = serde_json::to_string(&dto).expect("serializes");
         let restored: AccountDto = serde_json::from_str(&json).expect("deserializes");
