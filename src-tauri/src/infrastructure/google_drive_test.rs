@@ -103,6 +103,7 @@ async fn about_get_maps_caller_actionable_statuses() {
     let cases = [
         ("401 Unauthorized", GoogleDriveError::Unauthorized),
         ("403 Forbidden", GoogleDriveError::Forbidden),
+        ("404 Not Found", GoogleDriveError::NotFound),
         ("429 Too Many Requests", GoogleDriveError::RateLimited),
         (
             "503 Service Unavailable",
@@ -162,4 +163,61 @@ async fn access_token_and_drive_errors_never_render_secrets() {
     for rendered in [token_debug, token_display, error_debug, error_display] {
         assert!(!rendered.contains(SECRET));
     }
+}
+
+#[tokio::test]
+async fn get_folder_metadata_parses_fields_and_owners() {
+    let body = r#"{
+        "id": "folder-123",
+        "name": "Important Folder",
+        "mimeType": "application/vnd.google-apps.folder",
+        "trashed": false,
+        "owners": [
+            {
+                "permissionId": "perm-owner-1",
+                "emailAddress": "owner@gmail.com"
+            }
+        ]
+    }"#;
+
+    let (base_url, request) = serve_once("200 OK", body);
+    let client = GoogleDriveClient::for_test(base_url).expect("test client builds");
+    let token = AccessToken::new(SECRET.to_owned());
+
+    let meta = client
+        .get_folder_metadata(&token, "folder-123")
+        .await
+        .expect("folder metadata loaded");
+
+    assert_eq!(meta.id, "folder-123");
+    assert_eq!(meta.name, "Important Folder");
+    assert_eq!(meta.mime_type, "application/vnd.google-apps.folder");
+    assert!(!meta.trashed);
+    assert_eq!(meta.drive_id, None);
+    assert_eq!(meta.owners.len(), 1);
+    assert_eq!(meta.owners[0].permission_id.as_str(), "perm-owner-1");
+    assert_eq!(
+        meta.owners[0].email_address.as_deref(),
+        Some("owner@gmail.com")
+    );
+
+    let request = request
+        .recv_timeout(Duration::from_secs(2))
+        .expect("test server captures the request")
+        .expect("valid UTF-8");
+    assert!(request.contains("GET /drive/v3/files/folder-123?supportsAllDrives=true&fields="));
+}
+
+#[tokio::test]
+async fn get_folder_metadata_maps_not_found() {
+    let (base_url, _) = serve_once("404 Not Found", "{}");
+    let client = GoogleDriveClient::for_test(base_url).expect("test client builds");
+    let token = AccessToken::new(SECRET.to_owned());
+
+    let err = client
+        .get_folder_metadata(&token, "nonexistent")
+        .await
+        .expect_err("404 error returned");
+
+    assert_eq!(err, GoogleDriveError::NotFound);
 }

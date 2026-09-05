@@ -402,14 +402,26 @@ mod tests {
             account_store.clone(),
         ));
 
+        let job_store = Arc::new(crate::infrastructure::SqliteJobStore::new(
+            account_store.pool().clone(),
+        ));
+        let drive_client = crate::infrastructure::google_drive::GoogleDriveClient::new().unwrap();
         let lifecycle_service = crate::application::AccountLifecycleService::new(
             token_service,
-            crate::infrastructure::google_drive::GoogleDriveClient::new().unwrap(),
+            drive_client.clone(),
             account_store.clone(),
             cred_store.clone(),
-        );
+        )
+        .with_job_store(job_store.clone());
         let lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase> =
             Arc::new(lifecycle_service);
+
+        let job_service = Arc::new(crate::application::JobService::new(
+            account_store.clone(),
+            job_store.clone(),
+            Arc::new(drive_client),
+            token_provider.clone(),
+        ));
 
         AppState::new(
             account_store,
@@ -418,6 +430,8 @@ mod tests {
             use_case,
             lifecycle_use_case,
             token_provider,
+            job_store,
+            job_service,
         )
     }
 

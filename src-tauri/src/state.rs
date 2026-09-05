@@ -81,9 +81,16 @@ pub struct AppState {
     pub account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
 
     pub token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
+
+    pub job_store: Arc<crate::infrastructure::SqliteJobStore>,
+
+    pub job_service: Arc<
+        crate::application::JobService<SqliteAccountStore, crate::infrastructure::SqliteJobStore>,
+    >,
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     #[cfg(target_os = "windows")]
     pub fn new(
         account_store: Arc<SqliteAccountStore>,
@@ -92,6 +99,13 @@ impl AppState {
         connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
         account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
         token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
+        job_store: Arc<crate::infrastructure::SqliteJobStore>,
+        job_service: Arc<
+            crate::application::JobService<
+                SqliteAccountStore,
+                crate::infrastructure::SqliteJobStore,
+            >,
+        >,
     ) -> Self {
         Self {
             account_store,
@@ -101,9 +115,12 @@ impl AppState {
             connect_account_use_case,
             account_lifecycle_use_case,
             token_provider,
+            job_store,
+            job_service,
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[cfg(not(target_os = "windows"))]
     pub fn new(
         account_store: Arc<SqliteAccountStore>,
@@ -112,6 +129,13 @@ impl AppState {
         connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
         account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
         token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
+        job_store: Arc<crate::infrastructure::SqliteJobStore>,
+        job_service: Arc<
+            crate::application::JobService<
+                SqliteAccountStore,
+                crate::infrastructure::SqliteJobStore,
+            >,
+        >,
     ) -> Self {
         Self {
             account_store,
@@ -121,6 +145,8 @@ impl AppState {
             connect_account_use_case,
             account_lifecycle_use_case,
             token_provider,
+            job_store,
+            job_service,
         }
     }
 }
@@ -342,6 +368,18 @@ mod tests {
             account_store.clone(),
         ));
 
+        let job_store = Arc::new(crate::infrastructure::SqliteJobStore::new(
+            account_store.pool().clone(),
+        ));
+        let drive_client: Arc<dyn crate::application::DriveFolderLookupPort> =
+            Arc::new(crate::infrastructure::google_drive::GoogleDriveClient::new().unwrap());
+        let job_service = Arc::new(crate::application::JobService::new(
+            account_store.clone(),
+            job_store.clone(),
+            drive_client,
+            token_provider.clone(),
+        ));
+
         let state = AppState::new(
             account_store,
             cred_store,
@@ -349,6 +387,8 @@ mod tests {
             use_case,
             lifecycle_use_case,
             token_provider,
+            job_store,
+            job_service,
         );
 
         let guard = state.oauth_config.read().await;
@@ -381,6 +421,18 @@ mod tests {
             account_store.clone(),
         ));
 
+        let job_store = Arc::new(crate::infrastructure::SqliteJobStore::new(
+            account_store.pool().clone(),
+        ));
+        let drive_client: Arc<dyn crate::application::DriveFolderLookupPort> =
+            Arc::new(crate::infrastructure::google_drive::GoogleDriveClient::new().unwrap());
+        let job_service = Arc::new(crate::application::JobService::new(
+            account_store.clone(),
+            job_store.clone(),
+            drive_client,
+            token_provider.clone(),
+        ));
+
         let state = AppState::new(
             account_store,
             cred_store,
@@ -388,6 +440,8 @@ mod tests {
             use_case,
             lifecycle_use_case,
             token_provider,
+            job_store,
+            job_service,
         );
 
         let guard = state.oauth_config.read().await;

@@ -88,18 +88,23 @@ impl SqliteAccountStore {
             .filename(path)
             .create_if_missing(true)
             .foreign_keys(true)
+            .busy_timeout(std::time::Duration::from_secs(5))
             .journal_mode(SqliteJournalMode::Wal);
         Self::from_options(options).await
     }
 
-    #[cfg(test)]
-    pub(crate) async fn open_in_memory() -> Result<Self, AccountStoreError> {
+    pub async fn open_in_memory() -> Result<Self, AccountStoreError> {
         Self::from_options(
             SqliteConnectOptions::new()
                 .in_memory(true)
+                .busy_timeout(std::time::Duration::from_secs(5))
                 .foreign_keys(true),
         )
         .await
+    }
+
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
     async fn from_options(options: SqliteConnectOptions) -> Result<Self, AccountStoreError> {
@@ -145,6 +150,23 @@ impl SqliteAccountStore {
                 .await?;
             sqlx::query(
                 "INSERT INTO _schema_migrations (version, applied_at) VALUES (2, datetime('now'))",
+            )
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+        }
+
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT version FROM _schema_migrations WHERE version = 3")
+                .fetch_optional(&pool)
+                .await?;
+        if row.is_none() {
+            let mut tx = pool.begin().await?;
+            sqlx::raw_sql(include_str!("../../migrations/003_migration_jobs.sql"))
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                "INSERT INTO _schema_migrations (version, applied_at) VALUES (3, datetime('now'))",
             )
             .execute(&mut *tx)
             .await?;

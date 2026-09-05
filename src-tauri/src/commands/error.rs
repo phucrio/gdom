@@ -27,6 +27,15 @@ pub enum CommandError {
     AccountNotFound(String),
     IdentityMismatch(String),
     ConfirmationRequired(String),
+    JobNotFound(String),
+    SameSourceAndTarget(String),
+    AccountPairLocked(String),
+    RootsLocked(String),
+    InvalidFolder(String),
+    SharedDriveNotSupported(String),
+    NotOwnedBySource(String),
+    DuplicateRoot(String),
+    ActiveJobsPreventRemoval(String),
 }
 
 impl fmt::Display for CommandError {
@@ -42,6 +51,17 @@ impl fmt::Display for CommandError {
             Self::AccountNotFound(msg) => write!(f, "account not found: {msg}"),
             Self::IdentityMismatch(msg) => write!(f, "identity mismatch: {msg}"),
             Self::ConfirmationRequired(msg) => write!(f, "confirmation required: {msg}"),
+            Self::JobNotFound(msg) => write!(f, "job not found: {msg}"),
+            Self::SameSourceAndTarget(msg) => write!(f, "same source and target: {msg}"),
+            Self::AccountPairLocked(msg) => write!(f, "account pair locked: {msg}"),
+            Self::RootsLocked(msg) => write!(f, "roots locked: {msg}"),
+            Self::InvalidFolder(msg) => write!(f, "invalid folder: {msg}"),
+            Self::SharedDriveNotSupported(msg) => write!(f, "shared drive not supported: {msg}"),
+            Self::NotOwnedBySource(msg) => write!(f, "not owned by source: {msg}"),
+            Self::DuplicateRoot(msg) => write!(f, "duplicate root: {msg}"),
+            Self::ActiveJobsPreventRemoval(msg) => {
+                write!(f, "active jobs prevent removal: {msg}")
+            }
         }
     }
 }
@@ -62,9 +82,9 @@ impl From<crate::application::AccountLifecycleError> for CommandError {
                     actual.as_str()
                 ))
             }
-            AccountLifecycleError::ActiveJobsPreventRemoval => {
-                Self::Internal("cannot remove account with active jobs".into())
-            }
+            AccountLifecycleError::ActiveJobsPreventRemoval => Self::ActiveJobsPreventRemoval(
+                "cannot remove or delete an account referenced by migration jobs".into(),
+            ),
             AccountLifecycleError::MissingRefreshToken => {
                 Self::OAuth("missing refresh token".into())
             }

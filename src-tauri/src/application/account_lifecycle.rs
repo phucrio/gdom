@@ -125,6 +125,7 @@ pub struct AccountLifecycleService<
     identity_lookup: IdentityLookup,
     account_store: AccountPersistence,
     credential_store: CredentialPersistence,
+    job_store: Option<Arc<dyn crate::application::job_store::JobStorePort>>,
 }
 
 impl<TokenExchange, IdentityLookup, AccountPersistence, CredentialPersistence>
@@ -151,7 +152,16 @@ where
             identity_lookup,
             account_store,
             credential_store,
+            job_store: None,
         }
+    }
+
+    pub fn with_job_store(
+        mut self,
+        job_store: Arc<dyn crate::application::job_store::JobStorePort>,
+    ) -> Self {
+        self.job_store = Some(job_store);
+        self
     }
 
     pub async fn list_accounts(&self) -> Result<Vec<ConnectedAccount>, AccountLifecycleError> {
@@ -286,6 +296,20 @@ where
             .map_err(AccountLifecycleError::Database)?
             .ok_or(AccountLifecycleError::AccountNotFound)?;
 
+        let job_store = self
+            .job_store
+            .as_ref()
+            .ok_or(AccountLifecycleError::ActiveJobsPreventRemoval)?;
+        let has_active = job_store
+            .has_active_jobs_for_account(account_id)
+            .await
+            .map_err(|e| {
+                AccountLifecycleError::Database(AccountStorePortError::Storage(e.to_string()))
+            })?;
+        if has_active {
+            return Err(AccountLifecycleError::ActiveJobsPreventRemoval);
+        }
+
         self.credential_store
             .delete(account_id)
             .map_err(AccountLifecycleError::Keychain)?;
@@ -302,6 +326,20 @@ where
         &self,
         account_id: AccountId,
     ) -> Result<(), AccountLifecycleError> {
+        let job_store = self
+            .job_store
+            .as_ref()
+            .ok_or(AccountLifecycleError::ActiveJobsPreventRemoval)?;
+        let has_jobs = job_store
+            .has_jobs_for_account(account_id)
+            .await
+            .map_err(|e| {
+                AccountLifecycleError::Database(AccountStorePortError::Storage(e.to_string()))
+            })?;
+        if has_jobs {
+            return Err(AccountLifecycleError::ActiveJobsPreventRemoval);
+        }
+
         self.credential_store
             .delete(account_id)
             .map_err(AccountLifecycleError::Keychain)?;

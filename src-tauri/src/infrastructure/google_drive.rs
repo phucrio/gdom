@@ -4,7 +4,11 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 
 use crate::{
-    application::{AccessToken, AccountIdentity, IdentityLookupError, IdentityLookupPort},
+    application::{
+        AccessToken, AccountIdentity, DriveFolderLookupError, DriveFolderLookupPort,
+        DriveFolderMetadata as AppFolderMetadata, DriveFolderOwner, IdentityLookupError,
+        IdentityLookupPort,
+    },
     domain::GooglePermissionId,
 };
 
@@ -69,6 +73,98 @@ impl GoogleDriveClient {
             display_name: response.user.display_name,
         })
     }
+
+    pub async fn get_folder_metadata(
+        &self,
+        token: &AccessToken,
+        folder_id: &str,
+    ) -> Result<DriveFolderMetadata, GoogleDriveError> {
+        let fields = "id,name,mimeType,parents,owners(permissionId,emailAddress),driveId,trashed";
+        let url = format!(
+            "{}/drive/v3/files/{}?supportsAllDrives=true&fields={}",
+            self.base_url,
+            encode_path_segment(folder_id),
+            fields
+        );
+
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(token.expose_secret())
+            .send()
+            .await
+            .map_err(|_| GoogleDriveError::Transport)?;
+
+        if !response.status().is_success() {
+            return Err(GoogleDriveError::from_status(response.status()));
+        }
+
+        let raw = response
+            .json::<RawFileResponse>()
+            .await
+            .map_err(|_| GoogleDriveError::InvalidResponse)?;
+
+        let owners = raw
+            .owners
+            .unwrap_or_default()
+            .into_iter()
+            .map(|o| DriveFileOwner {
+                permission_id: GooglePermissionId::new(o.permission_id),
+                email_address: o.email_address,
+            })
+            .collect();
+
+        Ok(DriveFolderMetadata {
+            id: raw.id,
+            name: raw.name,
+            mime_type: raw.mime_type,
+            trashed: raw.trashed.unwrap_or(false),
+            drive_id: raw.drive_id,
+            parents: raw.parents.unwrap_or_default(),
+            owners,
+        })
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct DriveFileOwner {
+    pub permission_id: GooglePermissionId,
+    pub email_address: Option<String>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct DriveFolderMetadata {
+    pub id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub trashed: bool,
+    pub drive_id: Option<String>,
+    pub parents: Vec<String>,
+    pub owners: Vec<DriveFileOwner>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawFileResponse {
+    id: String,
+    name: String,
+    mime_type: String,
+    #[serde(default)]
+    trashed: Option<bool>,
+    #[serde(default)]
+    drive_id: Option<String>,
+    #[serde(default)]
+    parents: Option<Vec<String>>,
+    #[serde(default)]
+    owners: Option<Vec<RawOwner>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawOwner {
+    permission_id: String,
+    #[serde(default)]
+    email_address: Option<String>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -108,6 +204,7 @@ impl DriveAccountIdentity {
 pub enum GoogleDriveError {
     Unauthorized,
     Forbidden,
+    NotFound,
     RateLimited,
     ServerUnavailable,
     UnexpectedStatus(u16),
@@ -120,6 +217,7 @@ impl GoogleDriveError {
         match status.as_u16() {
             401 => Self::Unauthorized,
             403 => Self::Forbidden,
+            404 => Self::NotFound,
             429 => Self::RateLimited,
             500..=599 => Self::ServerUnavailable,
             code => Self::UnexpectedStatus(code),
@@ -132,6 +230,7 @@ impl fmt::Display for GoogleDriveError {
         match self {
             Self::Unauthorized => formatter.write_str("Google Drive rejected the access token"),
             Self::Forbidden => formatter.write_str("Google Drive denied this request"),
+            Self::NotFound => formatter.write_str("Google Drive file or folder not found"),
             Self::RateLimited => formatter.write_str("Google Drive rate limit reached"),
             Self::ServerUnavailable => formatter.write_str("Google Drive is unavailable"),
             Self::UnexpectedStatus(status) => {
@@ -149,6 +248,61 @@ impl fmt::Display for GoogleDriveError {
 }
 
 impl Error for GoogleDriveError {}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(char::from(byte));
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+impl DriveFolderLookupPort for GoogleDriveClient {
+    fn get_folder_metadata<'a>(
+        &'a self,
+        token: &'a AccessToken,
+        folder_id: &'a str,
+    ) -> crate::application::drive_folder::DriveFolderLookupFuture<'a> {
+        Box::pin(async move {
+            let metadata = self.get_folder_metadata(token, folder_id).await?;
+            Ok(AppFolderMetadata {
+                id: metadata.id,
+                name: metadata.name,
+                mime_type: metadata.mime_type,
+                trashed: metadata.trashed,
+                drive_id: metadata.drive_id,
+                owners: metadata
+                    .owners
+                    .into_iter()
+                    .map(|owner| DriveFolderOwner {
+                        permission_id: owner.permission_id,
+                        email_address: owner.email_address,
+                    })
+                    .collect(),
+            })
+        })
+    }
+}
+
+impl From<GoogleDriveError> for DriveFolderLookupError {
+    fn from(error: GoogleDriveError) -> Self {
+        match error {
+            GoogleDriveError::Unauthorized => Self::Unauthorized,
+            GoogleDriveError::Forbidden => Self::Forbidden,
+            GoogleDriveError::NotFound => Self::NotFound,
+            GoogleDriveError::RateLimited => Self::RateLimited,
+            GoogleDriveError::ServerUnavailable => Self::Unavailable,
+            GoogleDriveError::Transport => Self::Transport,
+            GoogleDriveError::InvalidResponse => Self::InvalidResponse,
+            GoogleDriveError::UnexpectedStatus(status) => Self::UnexpectedStatus(status),
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct AboutResponse {
@@ -182,6 +336,7 @@ impl From<GoogleDriveError> for IdentityLookupError {
         match error {
             GoogleDriveError::Unauthorized => Self::Unauthorized,
             GoogleDriveError::Forbidden => Self::Forbidden,
+            GoogleDriveError::NotFound => Self::UnexpectedStatus(404),
             GoogleDriveError::RateLimited => Self::RateLimited,
             GoogleDriveError::ServerUnavailable => Self::Unavailable,
             GoogleDriveError::Transport => Self::Transport,
