@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { isCommandMissing, toIpcError } from "../ipc/errors.ts";
 import type { BackendPort } from "../ipc/port.ts";
@@ -13,7 +13,23 @@ import {
   parseFolderInput,
   type FolderParseResult,
 } from "./folderInput.ts";
-import { canaryAllowsBulk, isDraftJob, scanAllowsCanary } from "./jobStatus.ts";
+import {
+  canaryAllowsBulk,
+  canCancelTransfer,
+  canPauseScan,
+  canPauseTransfer,
+  canResumeScan,
+  canResumeTransfer,
+  canStartBulk,
+  canStartCanary,
+  canStartScan,
+  haltStatusDetail,
+  isDraftJob,
+  isHaltStatus,
+  isScanRunning,
+  jobStatusLabel,
+  scanAllowsCanary,
+} from "./jobStatus.ts";
 import {
   WIZARD_STEP_ORDER,
   WIZARD_STEP_TITLES,
@@ -103,6 +119,9 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
       IPC_EVENTS.jobStatusChanged,
       IPC_EVENTS.scanProgress,
       IPC_EVENTS.migrationProgress,
+      IPC_EVENTS.itemStateChanged,
+      IPC_EVENTS.canaryCompleted,
+      IPC_EVENTS.migrationCompleted,
     ].map((event) => backend.subscribe(event, refreshJob));
 
     return () => {
@@ -115,6 +134,15 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
     };
   }, [backend, jobId, onAnnounce]);
 
+  const announcedStatus = useRef<string | null>(null);
+  useEffect(() => {
+    if (job === null || announcedStatus.current === job.status) {
+      return;
+    }
+    announcedStatus.current = job.status;
+    onAnnounce(jobStatusLabel(job.status));
+  }, [job, onAnnounce]);
+
   const gate: WizardGate = useMemo(
     () => ({
       sourceAccountId,
@@ -122,9 +150,18 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
       validRootCount: roots.length,
       preflightReady,
       canaryConfirmed,
+      canaryFinished: canaryReady,
       pairLocked,
     }),
-    [sourceAccountId, targetAccountId, roots.length, preflightReady, canaryConfirmed, pairLocked],
+    [
+      sourceAccountId,
+      targetAccountId,
+      roots.length,
+      preflightReady,
+      canaryConfirmed,
+      canaryReady,
+      pairLocked,
+    ],
   );
 
   function showError(message: string) {
@@ -312,6 +349,28 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
     onAnnounce("Job engine is unavailable. Review the local dry-run dashboard before canary.");
   }
 
+  async function handlePauseScan() {
+    if (job === null) {
+      return;
+    }
+    const paused = await withBackend(() => backend.pauseScan(job.id));
+    if (paused.status === "ok") {
+      setJob(paused.value);
+      onAnnounce("Scan pause requested. The worker will stop after the current page.");
+    }
+  }
+
+  async function handleResumeScan() {
+    if (job === null) {
+      return;
+    }
+    const resumed = await withBackend(() => backend.startScan(job.id));
+    if (resumed.status === "ok") {
+      setJob(resumed.value);
+      onAnnounce("Scan resumed.");
+    }
+  }
+
   async function handleStartCanary() {
     if (!canaryConfirmed) {
       showError(wizardAdvanceErrorMessage("canary-not-confirmed"));
@@ -421,6 +480,14 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
   const errors = [...(job?.errors ?? []), ...localErrors];
   const progressMax = Math.max(progress.total, 1);
   const progressValue = Math.min(progress.completed, progressMax);
+  const jobStatus = job?.status ?? null;
+  const haltDetail = jobStatus !== null ? haltStatusDetail(jobStatus, job?.lastError ?? null) : null;
+  const showTransferProgress =
+    progress.total > 0 ||
+    jobStatus === "RUNNING_CANARY" ||
+    jobStatus === "RUNNING" ||
+    jobStatus === "PAUSING" ||
+    jobStatus === "PAUSED";
 
   return (
     <section id="migration-wizard" className="wizard" aria-labelledby="wizard-title" tabIndex={-1}>
@@ -460,6 +527,25 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
         <p className="notice" role="status">
           Job commands are not registered in this build yet. Account pairing, folder checks, and
           the canary gate still run locally.
+        </p>
+      )}
+
+      {job !== null && (
+        <p
+          className={
+            jobStatus !== null && isHaltStatus(jobStatus) ? "warning job-run-status" : "notice job-run-status"
+          }
+          role="status"
+        >
+          Job status: {jobStatusLabel(job.status)}
+          {haltDetail === null && job.lastError !== null && job.lastError.length > 0
+            ? ` — ${job.lastError}`
+            : ""}
+        </p>
+      )}
+      {haltDetail !== null && (
+        <p className="warning" role="alert">
+          {haltDetail}
         </p>
       )}
 
@@ -552,16 +638,32 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
         <div className="wizard-panel">
           <p>
             Scan uses the source account to list owned items. Review the dry-run before any
-            ownership change.
+            ownership change. Pause stops new pages; resume continues from the last checkpoint.
           </p>
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() => void handleStartScan()}
-            disabled={busy}
-          >
-            {busy ? "Scanning…" : "Start scan"}
-          </button>
+          <div className="migration-controls">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => void handleStartScan()}
+              disabled={busy || !canStartScan(jobStatus)}
+            >
+              {jobStatus !== null && isScanRunning(jobStatus) ? "Scanning…" : "Start scan"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handlePauseScan()}
+              disabled={busy || !canPauseScan(jobStatus)}
+            >
+              Pause scan
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleResumeScan()}
+              disabled={busy || !canResumeScan(jobStatus)}
+            >
+              Resume scan
+            </button>
+          </div>
           <div className="preflight" aria-label="Dry-run preflight dashboard">
             <article>
               <span className="metric-label">Files</span>
@@ -611,14 +713,49 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
               ? "Target email matches the job snapshot."
               : "Continue is blocked until the email matches the target snapshot."}
           </p>
+          {showTransferProgress && (
+            <div className="progress-block">
+              <label htmlFor="canary-progress">Canary progress</label>
+              <progress
+                id="canary-progress"
+                max={progressMax}
+                value={progressValue}
+                aria-valuemin={0}
+                aria-valuemax={progressMax}
+                aria-valuenow={progressValue}
+              />
+              <p>
+                {progress.completed} of {progress.total} items
+                {progress.currentPath ? ` · ${progress.currentPath}` : ""}
+              </p>
+            </div>
+          )}
           <div className="migration-controls">
             <button
               type="button"
               className="primary-button"
-              disabled={!canaryConfirmed || busy || canaryReady}
+              disabled={
+                !canaryConfirmed ||
+                busy ||
+                !(canStartCanary(jobStatus) || canaryCommandMissing || scanCommandMissing)
+              }
               onClick={() => void handleStartCanary()}
             >
               Start canary
+            </button>
+            <button
+              type="button"
+              disabled={busy || !canPauseTransfer(jobStatus)}
+              onClick={() => void handlePause()}
+            >
+              Pause
+            </button>
+            <button
+              type="button"
+              disabled={busy || !canResumeTransfer(jobStatus)}
+              onClick={() => void handleResume()}
+            >
+              Resume
             </button>
             <button
               type="button"
@@ -654,16 +791,34 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
             </p>
           </div>
           <div className="migration-controls">
-            <button type="button" className="primary-button" onClick={() => void handleContinueMigration()} disabled={busy}>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => void handleContinueMigration()}
+              disabled={busy || !canStartBulk(jobStatus)}
+            >
               Start
             </button>
-            <button type="button" onClick={() => void handlePause()} disabled={busy}>
+            <button
+              type="button"
+              onClick={() => void handlePause()}
+              disabled={busy || !canPauseTransfer(jobStatus)}
+            >
               Pause
             </button>
-            <button type="button" onClick={() => void handleResume()} disabled={busy}>
+            <button
+              type="button"
+              onClick={() => void handleResume()}
+              disabled={busy || !canResumeTransfer(jobStatus)}
+            >
               Resume
             </button>
-            <button type="button" className="danger-button" onClick={() => void handleCancel()} disabled={busy}>
+            <button
+              type="button"
+              className="danger-button"
+              onClick={() => void handleCancel()}
+              disabled={busy || !canCancelTransfer(jobStatus)}
+            >
               Cancel
             </button>
           </div>
@@ -689,7 +844,12 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
           Back
         </button>
         {step !== "canary-review" && step !== "live-migration" && (
-          <button type="button" className="primary-button" onClick={goForward}>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={goForward}
+            disabled={step === "scan-preflight" && !preflightReady}
+          >
             Continue
           </button>
         )}

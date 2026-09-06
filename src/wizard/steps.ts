@@ -24,6 +24,7 @@ export type WizardAdvanceError =
   | "no-valid-roots"
   | "scan-incomplete"
   | "canary-not-confirmed"
+  | "canary-incomplete"
   | "cannot-skip-step"
   | "already-at-step";
 
@@ -33,6 +34,7 @@ export type WizardGate = {
   validRootCount: number;
   preflightReady: boolean;
   canaryConfirmed: boolean;
+  canaryFinished: boolean;
   pairLocked: boolean;
 };
 
@@ -69,6 +71,9 @@ export function canLeaveStep(step: WizardStepId, gate: WizardGate): StepMoveResu
     case "canary-review":
       if (!gate.canaryConfirmed) {
         return { ok: false, reason: "canary-not-confirmed" };
+      }
+      if (!gate.canaryFinished) {
+        return { ok: false, reason: "canary-incomplete" };
       }
       return { ok: true, step: "live-migration" };
     case "live-migration":
@@ -115,6 +120,8 @@ export function wizardAdvanceErrorMessage(reason: WizardAdvanceError): string {
       return "Finish the scan and review the dry-run before canary.";
     case "canary-not-confirmed":
       return "Re-enter the target email and confirm it matches before migrating.";
+    case "canary-incomplete":
+      return "Finish the canary and review the outcome before bulk migration.";
     case "cannot-skip-step":
       return "Complete each step in order. The canary gate cannot be skipped.";
     case "already-at-step":

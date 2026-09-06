@@ -9,6 +9,7 @@ const readyThroughScan: WizardGate = {
   validRootCount: 1,
   preflightReady: true,
   canaryConfirmed: false,
+  canaryFinished: false,
   pairLocked: false,
 };
 
@@ -20,6 +21,7 @@ describe("wizard step order", () => {
       validRootCount: 0,
       preflightReady: false,
       canaryConfirmed: false,
+      canaryFinished: false,
       pairLocked: false,
     });
     expect(result).toEqual({ ok: false, reason: "same-source-and-target" });
@@ -32,6 +34,7 @@ describe("wizard step order", () => {
       validRootCount: 0,
       preflightReady: false,
       canaryConfirmed: false,
+      canaryFinished: false,
       pairLocked: false,
     });
     expect(result).toEqual({ ok: true, step: "add-roots" });
@@ -53,9 +56,15 @@ describe("wizard step order", () => {
 
   it("allows live migration only after the canary email matches", () => {
     expect(confirmCanaryEmail("target@gmail.com", "target@gmail.com")).toBe(true);
+    const emailOnly = advanceWizard("canary-review", {
+      ...readyThroughScan,
+      canaryConfirmed: true,
+    });
+    expect(emailOnly).toEqual({ ok: false, reason: "canary-incomplete" });
     const allowed = advanceWizard("canary-review", {
       ...readyThroughScan,
       canaryConfirmed: true,
+      canaryFinished: true,
     });
     expect(allowed).toEqual({ ok: true, step: "live-migration" });
   });
@@ -72,5 +81,14 @@ describe("wizard step order", () => {
       canaryConfirmed: true,
     });
     expect(skipped).toEqual({ ok: false, reason: "cannot-skip-step" });
+  });
+
+  it("blocks the live-migration step tab until canary has finished", () => {
+    const skipped = moveToStep("canary-review", "live-migration", {
+      ...readyThroughScan,
+      canaryConfirmed: true,
+      canaryFinished: false,
+    });
+    expect(skipped).toEqual({ ok: false, reason: "canary-incomplete" });
   });
 });
