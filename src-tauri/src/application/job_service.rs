@@ -349,7 +349,18 @@ where
     pub async fn await_idle(&self, job_id: JobId) {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
         loop {
-            if !self.scan_is_in_flight(job_id) && !self.transfer_is_in_flight(job_id) {
+            let lease_held = self.scan_is_in_flight(job_id) || self.transfer_is_in_flight(job_id);
+            let status_busy = self.get_job(job_id).await.ok().is_some_and(|job| {
+                matches!(
+                    job.status(),
+                    JobStatus::Scanning
+                        | JobStatus::RunningCanary
+                        | JobStatus::Running
+                        | JobStatus::Pausing
+                        | JobStatus::Cancelling
+                )
+            });
+            if !lease_held && !status_busy {
                 return;
             }
             if tokio::time::Instant::now() >= deadline {
@@ -1130,24 +1141,23 @@ where
         Self::set_control_flag(&self.transfer_cancel_flags, job_id, false).await;
         let previous = job.status().as_str().to_string();
         let result = self.run_transfer(job, canary).await;
+        if job.status() == JobStatus::Cancelled {
+            let _ = self.job_store.cancel_unstarted_items(job_id).await;
+        }
+        let persist = self
+            .persist_status(job, Some(&previous), "JOB_STATUS")
+            .await;
         drop(lease);
         self.release_durable_lease(job_id).await;
         self.transfer_pause_flags.lock().await.remove(&job_id);
         self.transfer_cancel_flags.lock().await.remove(&job_id);
-        if job.status() == JobStatus::Cancelled {
-            let _ = self.job_store.cancel_unstarted_items(job_id).await;
-        }
         match result {
             Ok(_) => {
-                let _ = self
-                    .persist_status(job, Some(&previous), "JOB_STATUS")
-                    .await;
+                persist?;
                 self.get_job(job_id).await
             }
             Err(err) => {
-                let _ = self
-                    .persist_status(job, Some(&previous), "JOB_STATUS")
-                    .await;
+                let _ = persist;
                 Err(err)
             }
         }
