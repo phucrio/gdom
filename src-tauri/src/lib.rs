@@ -32,6 +32,7 @@ pub fn run() {
             commands::account::configure_oauth,
             commands::account::get_oauth_config,
             commands::account::reset_oauth_config,
+            commands::account::import_oauth_client,
             commands::account::connect_account,
             commands::account::disconnect_account,
             commands::account::update_account_label,

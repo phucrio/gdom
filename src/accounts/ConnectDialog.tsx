@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState } from "react";
 
 import type { BackendPort } from "../ipc/port.ts";
 import type { OAuthConfigDto } from "../ipc/types.ts";
@@ -16,17 +16,16 @@ import {
   CONNECT_BACK,
   CONNECT_BROWSER_ANNOUNCEMENT,
   CONNECT_CANCEL,
-  CONNECT_CLIENT_ID_LABEL,
-  CONNECT_CLIENT_ID_REQUIRED,
   CONNECT_CONFIG_LOAD_FAILED,
   CONNECT_CONFIG_LOADING,
-  CONNECT_CUSTOM_SAVED,
   CONNECT_FAILED,
+  CONNECT_IMPORT_JSON,
+  CONNECT_IMPORT_SAVED,
   CONNECT_READY_CUSTOM,
   CONNECT_READY_DEFAULT,
   CONNECT_RESET_ANNOUNCEMENT,
   CONNECT_RESET_DEFAULT,
-  CONNECT_SAVE_CUSTOM,
+  CONNECT_SECRET_REQUIRED,
   CONNECT_SIGN_IN,
   CONNECT_SIGN_IN_BUSY,
   CONNECT_SUCCESS_ANNOUNCEMENT,
@@ -48,7 +47,6 @@ export function ConnectDialog({
 }: ConnectDialogProps) {
   const [config, setConfig] = useState<OAuthConfigDto | null>(null);
   const [configLoaded, setConfigLoaded] = useState(false);
-  const [clientId, setClientId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [legal, setLegal] = useState<LegalDocumentId | null>(null);
@@ -61,7 +59,6 @@ export function ConnectDialog({
       .then((next) => {
         if (!cancelled) {
           setConfig(next);
-          setClientId(next.usingCustomOverride ? (next.clientId ?? "") : "");
           setConfigLoaded(true);
         }
       })
@@ -77,11 +74,6 @@ export function ConnectDialog({
     };
   }, [backend]);
 
-  function applyConfig(next: OAuthConfigDto) {
-    setConfig(next);
-    setClientId(next.usingCustomOverride ? (next.clientId ?? "") : "");
-  }
-
   async function handleSignIn() {
     setBusy(true);
     setError(null);
@@ -89,6 +81,13 @@ export function ConnectDialog({
     try {
       if (!configLoaded) {
         setError(CONNECT_CONFIG_LOADING);
+        setBusy(false);
+        return;
+      }
+
+      if (config?.canSignIn !== true) {
+        setError(CONNECT_SECRET_REQUIRED);
+        onAnnounce(CONNECT_SECRET_REQUIRED);
         setBusy(false);
         return;
       }
@@ -107,21 +106,21 @@ export function ConnectDialog({
     }
   }
 
-  async function handleSaveCustom(event: FormEvent) {
-    event.preventDefault();
-    const trimmed = clientId.trim();
-    if (trimmed.length === 0) {
-      setError(CONNECT_CLIENT_ID_REQUIRED);
-      onAnnounce(CONNECT_CLIENT_ID_REQUIRED);
-      return;
-    }
+  async function handleImportJson() {
     setBusy(true);
     setError(null);
     try {
-      await backend.configureOAuth(trimmed);
-      const next = await backend.getOAuthConfig();
-      applyConfig(next);
-      onAnnounce(CONNECT_CUSTOM_SAVED);
+      const previousCanSignIn = config?.canSignIn === true;
+      const previousClientId = config?.clientId;
+      const next = await backend.importOAuthClient();
+      setConfig(next);
+      if (
+        next.canSignIn &&
+        next.usingCustomOverride &&
+        (next.clientId !== previousClientId || !previousCanSignIn)
+      ) {
+        onAnnounce(CONNECT_IMPORT_SAVED);
+      }
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : CONNECT_FAILED;
       setError(message);
@@ -136,7 +135,7 @@ export function ConnectDialog({
     setError(null);
     try {
       const next = await backend.resetOAuthConfig();
-      applyConfig(next);
+      setConfig(next);
       onAnnounce(CONNECT_RESET_ANNOUNCEMENT);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : CONNECT_FAILED;
@@ -149,6 +148,7 @@ export function ConnectDialog({
 
   const oauthConfigured = config?.isConfigured === true;
   const usingCustom = config?.usingCustomOverride === true;
+  const canSignIn = config?.canSignIn === true;
 
   if (legal !== null) {
     return (
@@ -185,30 +185,33 @@ export function ConnectDialog({
           <p role="status">{CONNECT_CONFIG_LOADING}</p>
         )}
 
-        {configLoaded && oauthConfigured && (
+        {configLoaded && oauthConfigured && canSignIn && (
           <p className="muted" role="status">
             {usingCustom ? CONNECT_READY_CUSTOM : CONNECT_READY_DEFAULT}
           </p>
         )}
 
+        {configLoaded && !canSignIn && (
+          <p className="error" role="status">
+            {CONNECT_SECRET_REQUIRED}
+          </p>
+        )}
+
         <details className="advanced-options">
           <summary>{CONNECT_ADVANCED_SUMMARY}</summary>
-          <form className="advanced-options-form" onSubmit={(event) => void handleSaveCustom(event)}>
+          <div className="advanced-options-form">
             <p className="muted">{CONNECT_ADVANCED_HELP}</p>
-            <div className="field">
-              <label htmlFor="oauth-client-id">{CONNECT_CLIENT_ID_LABEL}</label>
-              <input
-                id="oauth-client-id"
-                name="clientId"
-                autoComplete="off"
-                value={clientId}
-                onChange={(event) => setClientId(event.target.value)}
-                disabled={busy}
-              />
-            </div>
+            {usingCustom && config?.clientId ? (
+              <p className="muted">Using client ID {config.clientId}</p>
+            ) : null}
             <div className="dialog-actions">
-              <button type="submit" className="ghost-button" disabled={busy || !configLoaded}>
-                {CONNECT_SAVE_CUSTOM}
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={busy || !configLoaded}
+                onClick={() => void handleImportJson()}
+              >
+                {CONNECT_IMPORT_JSON}
               </button>
               <button
                 type="button"
@@ -219,7 +222,7 @@ export function ConnectDialog({
                 {CONNECT_RESET_DEFAULT}
               </button>
             </div>
-          </form>
+          </div>
         </details>
 
         {error !== null && (
@@ -235,7 +238,7 @@ export function ConnectDialog({
           <button
             type="button"
             className="google-sign-in"
-            disabled={busy || !configLoaded || !oauthConfigured}
+            disabled={busy || !configLoaded || !oauthConfigured || !canSignIn}
             onClick={() => void handleSignIn()}
           >
             <GoogleMark />

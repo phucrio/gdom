@@ -59,10 +59,14 @@ The UI targets WCAG 2.2 AA: 4.5:1 normal text contrast, 3:1 large text and compo
 
 ## Public Desktop OAuth Client ID and SSO
 
-Desktop OAuth clients are public clients per RFC 8252. The production client ID is pre-configured into the application so users experience seamless single-click Google Sign-In without manually creating Google Cloud projects or typing client IDs. Advanced users can supply a custom client ID via settings. The client ID resolution hierarchy is:
-1. Custom override stored in SQLite `app_settings`
-2. `GDOM_GOOGLE_CLIENT_ID` environment variable
-3. Embedded default desktop client ID
+Desktop OAuth clients are public clients per RFC 8252. Google's token endpoint for the **Desktop app** client type still requires the console-issued `client_secret` (`invalid_request` / `client_secret is missing.`). That secret is not a refresh token, but it must not be committed to the open-source tree.
+
+Sign-in therefore uses a client ID plus a secret that never enters git or the React WebView:
+1. Custom Desktop client JSON imported through a native file dialog (client ID in SQLite `app_settings`, secret in Windows Credential Manager)
+2. `GDOM_GOOGLE_CLIENT_ID` and/or `GDOM_GOOGLE_CLIENT_SECRET` environment variables (secret-only binds to the embedded client ID)
+3. Embedded default desktop client ID, with an optional compile-time `GDOM_DEFAULT_CLIENT_SECRET` for private release builds
+
+The client ID may stay in source. The secret stays in Credential Manager, the process environment, or a CI secret injected at compile time.
 
 ## Validation rule
 

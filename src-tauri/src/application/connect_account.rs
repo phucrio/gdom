@@ -60,6 +60,7 @@ impl TokenResponse {
 pub enum TokenExchangeError {
     InvalidGrant,
     InvalidClient,
+    InvalidRequest,
     RateLimited,
     Unavailable,
     Transport,
@@ -74,6 +75,9 @@ impl fmt::Display for TokenExchangeError {
             Self::InvalidClient => {
                 formatter.write_str("token exchange rejected client credentials")
             }
+            Self::InvalidRequest => formatter.write_str(
+                "Google rejected the token request. Desktop OAuth clients require a client secret stored in Windows Credential Manager, not in application source",
+            ),
             Self::RateLimited => formatter.write_str("token exchange rate limit reached"),
             Self::Unavailable => formatter.write_str("token service is unavailable"),
             Self::Transport => formatter.write_str("token exchange network request failed"),

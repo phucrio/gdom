@@ -3,8 +3,10 @@ use tauri::{AppHandle, Emitter};
 use crate::{
     application::{OAuthGrant, RefreshTokenStore},
     domain::AccountId,
-    infrastructure::google_oauth::DesktopOAuthSession,
-    state::{AppState, OAuthConfig},
+    infrastructure::{
+        google_client_json::parse_desktop_client_json, google_oauth::DesktopOAuthSession,
+    },
+    state::{AppState, DESKTOP_CLIENT_SECRET_REQUIRED, OAuthConfig},
 };
 
 use super::dto::{
@@ -64,7 +66,8 @@ async fn configure_oauth_inner(
     let client_secret = input
         .client_secret
         .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| CommandError::NotConfigured(DESKTOP_CLIENT_SECRET_REQUIRED.into()))?;
 
     state
         .account_store
@@ -72,20 +75,13 @@ async fn configure_oauth_inner(
         .await
         .map_err(|e| CommandError::Database(e.to_string()))?;
 
-    if let Some(ref secret) = client_secret {
-        state
-            .credential_store
-            .save_oauth_secret(secret)
-            .map_err(|e| CommandError::Keychain(e.to_string()))?;
-    } else {
-        state
-            .credential_store
-            .delete_oauth_secret()
-            .map_err(|e| CommandError::Keychain(e.to_string()))?;
-    }
+    state
+        .credential_store
+        .save_oauth_secret(&client_secret)
+        .map_err(|e| CommandError::Keychain(e.to_string()))?;
 
     let mut guard = state.oauth_config.write().await;
-    *guard = Some(OAuthConfig::new(client_id.to_owned(), client_secret));
+    *guard = Some(OAuthConfig::new(client_id.to_owned(), Some(client_secret)));
 
     Ok(())
 }
@@ -107,13 +103,49 @@ async fn get_oauth_config_inner(state: &AppState) -> Result<OAuthConfigDto, Comm
         None => Some(OAuthConfig::embedded_client_id().to_owned()),
     };
 
+    let can_sign_in = match guard.as_ref() {
+        Some(config) => config.has_client_secret(),
+        None => OAuthConfig::default_config().has_client_secret(),
+    };
+
     Ok(OAuthConfigDto {
         is_configured: client_id
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty()),
         client_id,
         using_custom_override,
+        can_sign_in,
     })
+}
+
+fn require_desktop_client_secret(config: &OAuthConfig) -> Result<(), CommandError> {
+    if config.has_client_secret() {
+        Ok(())
+    } else {
+        Err(CommandError::NotConfigured(
+            DESKTOP_CLIENT_SECRET_REQUIRED.into(),
+        ))
+    }
+}
+
+pub(crate) async fn import_oauth_client_from_path(
+    path: &std::path::Path,
+    state: &AppState,
+) -> Result<OAuthConfigDto, CommandError> {
+    let bytes = std::fs::read(path).map_err(|error| {
+        CommandError::OAuth(format!("could not read OAuth client JSON: {error}"))
+    })?;
+    let client = parse_desktop_client_json(&bytes)
+        .map_err(|error| CommandError::OAuth(error.to_string()))?;
+    configure_oauth_inner(
+        ConfigureOAuthInput {
+            client_id: client.client_id,
+            client_secret: Some(client.client_secret),
+        },
+        state,
+    )
+    .await?;
+    get_oauth_config_inner(state).await
 }
 
 async fn reset_oauth_config_inner(state: &AppState) -> Result<OAuthConfigDto, CommandError> {
@@ -199,6 +231,26 @@ pub async fn reset_oauth_config(
 }
 
 #[tauri::command]
+pub async fn import_oauth_client(
+    state: tauri::State<'_, AppState>,
+) -> Result<OAuthConfigDto, CommandError> {
+    let path = tokio::task::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .add_filter("Google Desktop client JSON", &["json"])
+            .set_title("Import Google Desktop client JSON")
+            .pick_file()
+    })
+    .await
+    .map_err(|_| CommandError::Internal("credential import dialog failed".into()))?;
+
+    let Some(path) = path else {
+        return get_oauth_config_inner(&state).await;
+    };
+
+    import_oauth_client_from_path(&path, &state).await
+}
+
+#[tauri::command]
 pub async fn connect_account(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
@@ -211,6 +263,7 @@ pub async fn connect_account(
         let guard = state.oauth_config.read().await;
         guard.clone().unwrap_or_else(OAuthConfig::default_config)
     };
+    require_desktop_client_secret(&config)?;
 
     let session = DesktopOAuthSession::start(&config.client_id)
         .await
@@ -347,6 +400,7 @@ pub async fn reauthenticate_account(
         let guard = state.oauth_config.read().await;
         guard.clone().unwrap_or_else(OAuthConfig::default_config)
     };
+    require_desktop_client_secret(&config)?;
 
     let session = DesktopOAuthSession::start(&config.client_id)
         .await
@@ -415,8 +469,8 @@ mod tests {
     };
 
     use super::{
-        configure_oauth_inner, get_oauth_config_inner, list_accounts_inner,
-        reset_oauth_config_inner,
+        configure_oauth_inner, get_oauth_config_inner, import_oauth_client_from_path,
+        list_accounts_inner, reset_oauth_config_inner,
     };
 
     struct DummyConnectAccountUseCase;
@@ -570,6 +624,19 @@ mod tests {
 
         let dto = get_oauth_config_inner(&state).await.expect("dto");
         assert!(dto.using_custom_override);
+        assert!(dto.can_sign_in);
+    }
+
+    #[tokio::test]
+    async fn configure_oauth_rejects_missing_secret() {
+        let state = test_state(None).await;
+        let input = ConfigureOAuthInput {
+            client_id: "desktop-id".into(),
+            client_secret: None,
+        };
+
+        let result = configure_oauth_inner(input, &state).await;
+        assert!(matches!(result, Err(CommandError::NotConfigured(_))));
     }
 
     #[tokio::test]
@@ -589,7 +656,7 @@ mod tests {
         let state = test_state(Some(OAuthConfig::new("old-id", Some("old-secret".into())))).await;
         let input = ConfigureOAuthInput {
             client_id: "new-id".into(),
-            client_secret: None,
+            client_secret: Some("new-secret".into()),
         };
 
         let result = configure_oauth_inner(input, &state).await;
@@ -598,13 +665,14 @@ mod tests {
         let guard = state.oauth_config.read().await;
         let config = guard.as_ref().expect("config is stored");
         assert_eq!(config.client_id, "new-id");
-        assert_eq!(config.client_secret, None);
+        assert_eq!(config.client_secret.as_deref(), Some("new-secret"));
 
         let stored_secret = state
             .credential_store
             .load_oauth_secret()
-            .expect("keychain read");
-        assert!(stored_secret.is_none());
+            .expect("keychain read")
+            .expect("secret exists");
+        assert_eq!(stored_secret, "new-secret");
     }
 
     #[tokio::test]
@@ -624,7 +692,7 @@ mod tests {
 
         let input = ConfigureOAuthInput {
             client_id: "different-id".into(),
-            client_secret: None,
+            client_secret: Some("secret".into()),
         };
 
         let result = configure_oauth_inner(input, &state).await;
@@ -657,6 +725,10 @@ mod tests {
             Some(OAuthConfig::embedded_client_id())
         );
         assert!(!result.using_custom_override);
+        assert_eq!(
+            result.can_sign_in,
+            OAuthConfig::default_config().has_client_secret()
+        );
     }
 
     #[tokio::test]
@@ -667,6 +739,7 @@ mod tests {
         assert!(result.is_configured);
         assert_eq!(result.client_id.as_deref(), Some("my-client-id"));
         assert!(!result.using_custom_override);
+        assert!(!result.can_sign_in);
     }
 
     #[tokio::test]
@@ -712,6 +785,74 @@ mod tests {
         let result = get_oauth_config_inner(&state).await.expect("succeeds");
 
         assert_eq!(result.client_id.as_deref(), Some("my-client-id"));
+        assert!(result.can_sign_in);
+        let rendered = format!("{result:?}");
+        assert!(!rendered.contains("super-secret"));
+        let json = serde_json::to_string(&result).expect("serializes");
+        assert!(!json.contains("super-secret"));
+        assert!(!json.contains("clientSecret"));
+    }
+
+    #[tokio::test]
+    async fn import_oauth_client_from_path_stores_desktop_credentials() {
+        let state = test_state(None).await;
+        let path = std::env::temp_dir().join(format!(
+            "gdom-oauth-client-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"installed":{"client_id":"imported.apps.googleusercontent.com","client_secret":"GOCSPX-imported"}}"#,
+        )
+        .expect("write client json");
+
+        let dto = import_oauth_client_from_path(&path, &state)
+            .await
+            .expect("import succeeds");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(dto.can_sign_in);
+        assert!(dto.using_custom_override);
+        assert_eq!(
+            dto.client_id.as_deref(),
+            Some("imported.apps.googleusercontent.com")
+        );
+        assert_eq!(
+            state
+                .credential_store
+                .load_oauth_secret()
+                .expect("keychain")
+                .as_deref(),
+            Some("GOCSPX-imported")
+        );
+        let rendered = format!("{dto:?}");
+        assert!(!rendered.contains("GOCSPX-imported"));
+    }
+
+    #[tokio::test]
+    async fn import_oauth_client_from_path_rejects_web_client() {
+        let state = test_state(None).await;
+        let path = std::env::temp_dir().join(format!(
+            "gdom-oauth-web-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"web":{"client_id":"web.apps.googleusercontent.com","client_secret":"web-secret"}}"#,
+        )
+        .expect("write web json");
+
+        let result = import_oauth_client_from_path(&path, &state).await;
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(result, Err(CommandError::OAuth(_))));
     }
 
     #[tokio::test]

@@ -1,4 +1,5 @@
 pub mod account_store;
+pub mod google_client_json;
 pub mod google_drive;
 pub mod google_oauth;
 pub mod google_token;

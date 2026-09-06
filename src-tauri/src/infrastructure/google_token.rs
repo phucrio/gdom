@@ -85,29 +85,7 @@ impl GoogleTokenClient {
             .await
             .map_err(|_| GoogleTokenError::Transport)?;
 
-        let status = response.status();
-        if !status.is_success() {
-            if let Ok(error_body) = response.json::<OAuthErrorResponse>().await {
-                return Err(GoogleTokenError::from_oauth_error(
-                    &error_body.error,
-                    status,
-                ));
-            }
-            return Err(GoogleTokenError::from_status(status));
-        }
-
-        let raw_token = response
-            .json::<RawTokenResponse>()
-            .await
-            .map_err(|_| GoogleTokenError::InvalidResponse)?;
-
-        Ok(GoogleTokenResponse {
-            access_token: AccessToken::new(raw_token.access_token),
-            expires_in: Duration::from_secs(raw_token.expires_in),
-            refresh_token: raw_token.refresh_token.map(RefreshToken::new),
-            token_type: raw_token.token_type,
-            scope: raw_token.scope,
-        })
+        parse_token_response(response).await
     }
 
     pub async fn refresh_token(
@@ -136,29 +114,44 @@ impl GoogleTokenClient {
             .await
             .map_err(|_| GoogleTokenError::Transport)?;
 
-        let status = response.status();
-        if !status.is_success() {
-            if let Ok(error_body) = response.json::<OAuthErrorResponse>().await {
-                return Err(GoogleTokenError::from_oauth_error(
-                    &error_body.error,
-                    status,
-                ));
-            }
-            return Err(GoogleTokenError::from_status(status));
-        }
+        parse_token_response(response).await
+    }
+}
 
+async fn parse_token_response(
+    response: reqwest::Response,
+) -> Result<GoogleTokenResponse, GoogleTokenError> {
+    let status = response.status();
+    if status.is_success() {
         let raw_token = response
             .json::<RawTokenResponse>()
             .await
             .map_err(|_| GoogleTokenError::InvalidResponse)?;
-
-        Ok(GoogleTokenResponse {
+        return Ok(GoogleTokenResponse {
             access_token: AccessToken::new(raw_token.access_token),
             expires_in: Duration::from_secs(raw_token.expires_in),
             refresh_token: raw_token.refresh_token.map(RefreshToken::new),
             token_type: raw_token.token_type,
             scope: raw_token.scope,
-        })
+        });
+    }
+
+    match response.json::<OAuthErrorResponse>().await {
+        Ok(error_body) => {
+            tracing::warn!(
+                oauth_error = %error_body.error,
+                status = status.as_u16(),
+                "Google token endpoint rejected the request"
+            );
+            Err(GoogleTokenError::from_oauth_error(&error_body, status))
+        }
+        Err(_) => {
+            tracing::warn!(
+                status = status.as_u16(),
+                "Google token endpoint returned a non-success status without an OAuth error body"
+            );
+            Err(GoogleTokenError::from_status(status))
+        }
     }
 }
 
@@ -190,6 +183,7 @@ impl fmt::Debug for GoogleTokenResponse {
 pub enum GoogleTokenError {
     InvalidGrant,
     InvalidClient,
+    InvalidRequest,
     RateLimited,
     ServerUnavailable,
     UnexpectedStatus(u16),
@@ -198,10 +192,11 @@ pub enum GoogleTokenError {
 }
 
 impl GoogleTokenError {
-    fn from_oauth_error(error: &str, status: StatusCode) -> Self {
-        match error {
+    fn from_oauth_error(error: &OAuthErrorResponse, status: StatusCode) -> Self {
+        match error.error.as_str() {
             "invalid_grant" => Self::InvalidGrant,
             "invalid_client" => Self::InvalidClient,
+            "invalid_request" => Self::InvalidRequest,
             _ => Self::from_status(status),
         }
     }
@@ -225,6 +220,9 @@ impl fmt::Display for GoogleTokenError {
             Self::InvalidClient => {
                 formatter.write_str("Google rejected the OAuth client credentials")
             }
+            Self::InvalidRequest => formatter.write_str(
+                "Google rejected the token request. Desktop OAuth clients require a client secret stored in Windows Credential Manager, not in application source",
+            ),
             Self::RateLimited => formatter.write_str("Google token endpoint rate limit reached"),
             Self::ServerUnavailable => formatter.write_str("Google token endpoint is unavailable"),
             Self::UnexpectedStatus(status) => {
@@ -272,6 +270,7 @@ impl From<GoogleTokenError> for TokenExchangeError {
         match error {
             GoogleTokenError::InvalidGrant => Self::InvalidGrant,
             GoogleTokenError::InvalidClient => Self::InvalidClient,
+            GoogleTokenError::InvalidRequest => Self::InvalidRequest,
             GoogleTokenError::RateLimited => Self::RateLimited,
             GoogleTokenError::ServerUnavailable => Self::Unavailable,
             GoogleTokenError::Transport => Self::Transport,
@@ -286,6 +285,7 @@ impl From<GoogleTokenError> for TokenRefreshError {
         match err {
             GoogleTokenError::InvalidGrant => Self::InvalidGrant,
             GoogleTokenError::InvalidClient => Self::InvalidClient,
+            GoogleTokenError::InvalidRequest => Self::InvalidRequest,
             GoogleTokenError::RateLimited => Self::RateLimited,
             GoogleTokenError::ServerUnavailable => Self::Unavailable,
             GoogleTokenError::Transport => Self::Transport,
@@ -314,6 +314,9 @@ impl TokenExchangePort for DynamicGoogleTokenClient {
             guard.clone()
         };
         let config = config.ok_or(TokenExchangeError::InvalidClient)?;
+        if !config.has_client_secret() {
+            return Err(TokenExchangeError::InvalidRequest);
+        }
         let client = GoogleTokenClient::new(config.client_id, config.client_secret)
             .map_err(|_| TokenExchangeError::Transport)?;
         TokenExchangePort::exchange_code(&client, grant).await
@@ -329,6 +332,9 @@ impl TokenRefreshPort for DynamicGoogleTokenClient {
                 guard.clone()
             };
             let config = config.ok_or(TokenRefreshError::InvalidClient)?;
+            if !config.has_client_secret() {
+                return Err(TokenRefreshError::InvalidRequest);
+            }
             let client = GoogleTokenClient::new(config.client_id, config.client_secret)
                 .map_err(|_| TokenRefreshError::Transport)?;
             let response = client

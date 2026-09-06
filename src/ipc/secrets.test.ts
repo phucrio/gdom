@@ -28,6 +28,7 @@ const oauthConfig: OAuthConfigDto = {
   isConfigured: true,
   clientId: "desktop-client.apps.googleusercontent.com",
   usingCustomOverride: false,
+  canSignIn: false,
 };
 
 const job: JobDto = {
