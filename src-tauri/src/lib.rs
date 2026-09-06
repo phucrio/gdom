@@ -67,6 +67,15 @@ pub fn run() {
                 format!("failed to create app data directory: {e}")
             })?;
 
+            let log_dir = app_data_dir.join(gdom_logs::LOG_DIR_NAME);
+            let log_guard = gdom_logs::init_file_logging(&log_dir).map_err(|e| {
+                format!("failed to initialize file logging: {e}")
+            })?;
+            tracing::info!(
+                path = %gdom_logs::log_file_path(&log_dir).display(),
+                "file logging initialized"
+            );
+
             let db_path = app_data_dir.join("gdom.db");
 
             let account_store = tauri::async_runtime::block_on(
@@ -152,6 +161,7 @@ pub fn run() {
             );
 
             tauri::async_runtime::block_on(job_service.reconcile_on_startup()).map_err(|e| {
+                tracing::error!("failed to reconcile unfinished migration jobs on startup: {e}");
                 format!("failed to reconcile unfinished migration jobs on startup: {e}")
             })?;
 
@@ -167,12 +177,14 @@ pub fn run() {
                 job_service,
             );
 
+            app.manage(log_guard);
             app.manage(state);
 
             Ok(())
         });
 
     if let Err(error) = builder.run(tauri::generate_context!()) {
+        tracing::error!("failed to run GDOM: {error}");
         eprintln!("failed to run GDOM: {error}");
     }
 }

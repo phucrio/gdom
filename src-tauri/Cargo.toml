@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/gdom-migration"]
+members = [".", "crates/gdom-migration", "crates/gdom-logs"]
 resolver = "2"
 
 [package]
@@ -24,6 +24,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 gdom-migration = { path = "crates/gdom-migration" }
+gdom-logs = { path = "crates/gdom-logs" }
+tracing = "0.1"
 oauth2 = { version = "5.0.0", default-features = false, features = ["timing-resistant-secret-traits"] }
 open = "5"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
