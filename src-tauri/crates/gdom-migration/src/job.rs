@@ -559,7 +559,7 @@ impl MigrationJob {
 
     pub fn start_canary(&mut self) -> Result<(), JobError> {
         match self.status {
-            JobStatus::ReadyForReview => {
+            JobStatus::ReadyForReview | JobStatus::Queued => {
                 self.status = JobStatus::RunningCanary;
                 self.queue_position = None;
                 Ok(())
@@ -568,7 +568,6 @@ impl MigrationJob {
             JobStatus::Draft
             | JobStatus::Scanning
             | JobStatus::CanaryReview
-            | JobStatus::Queued
             | JobStatus::Running
             | JobStatus::Pausing
             | JobStatus::Paused
@@ -1215,6 +1214,16 @@ mod tests {
         assert_eq!(job.start_bulk(), Err(JobError::IllegalTransition));
         job.resume_transfer(true).expect("resume canary");
         assert_eq!(job.status(), JobStatus::RunningCanary);
+        assert_eq!(job.start_bulk(), Err(JobError::IllegalTransition));
+    }
+
+    #[test]
+    fn queued_ready_job_can_start_canary_without_skipping_review() {
+        let mut job = job_ready_for_review();
+        job.enqueue(1).expect("ready job queues");
+        job.start_canary().expect("explicit start after queue");
+        assert_eq!(job.status(), JobStatus::RunningCanary);
+        assert_eq!(job.queue_position(), None);
         assert_eq!(job.start_bulk(), Err(JobError::IllegalTransition));
     }
 

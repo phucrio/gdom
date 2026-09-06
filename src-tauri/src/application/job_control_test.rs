@@ -22,7 +22,8 @@ use crate::infrastructure::google_token::DynamicGoogleTokenClient;
 use crate::infrastructure::secrets::WindowsCredentialStore;
 use crate::state::OAuthConfig;
 use crate::test_support::{
-    SOURCE_PERM, SOURCE_TOKEN, TARGET_PERM, TARGET_TOKEN, request_method, spawn_http_handler,
+    SOURCE_PERM, SOURCE_TOKEN, TARGET_PERM, TARGET_TOKEN, request_method, request_path,
+    spawn_http_handler,
 };
 use tokio::sync::RwLock;
 
@@ -308,7 +309,11 @@ async fn durable_lease_is_globally_exclusive() {
 async fn second_start_canary_queues_without_mutations_or_auto_start() {
     let env = build_env(|request| {
         if request_method(request) == Some("GET") {
-            return ("200 OK".into(), file_json("file-a", false, false));
+            let transferred = request_path(request).is_some_and(|path| path.contains("file-b"));
+            return (
+                "200 OK".into(),
+                file_json("file-b", false, transferred),
+            );
         }
         (
             "200 OK".into(),
@@ -332,12 +337,12 @@ async fn second_start_canary_queues_without_mutations_or_auto_start() {
     let job_b = seed_ready_job(
         &env.job_store,
         21,
-        3,
-        4,
-        "source-b@gmail.com",
-        "target-b@gmail.com",
-        "perm-source-b",
-        "perm-target-b",
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
     )
     .await;
     env.job_store
@@ -359,12 +364,30 @@ async fn second_start_canary_queues_without_mutations_or_auto_start() {
 
     let queued = env
         .job_service
-        .start_canary(job_b.id(), "target-b@gmail.com")
+        .start_canary(job_b.id(), "target@gmail.com")
         .await
         .expect("queued behind the lease holder");
     assert_eq!(queued.status(), JobStatus::Queued);
     assert_eq!(queued.queue_position(), Some(1));
     assert!(mutation_methods(&env.captured).is_empty());
+
+    let leaked = env
+        .job_service
+        .continue_migration(job_b.id())
+        .await
+        .expect_err("queued canary job cannot skip review");
+    assert!(matches!(
+        leaked,
+        crate::application::JobServiceError::IllegalTransition
+    ));
+    assert!(
+        env.job_store
+            .current_mutation_lease()
+            .await
+            .unwrap()
+            .is_some_and(|lease| lease.job_id == job_a.id()),
+        "illegal continue must not steal or leak onto a second lease row"
+    );
 
     env.job_store
         .release_mutation_lease(job_a.id(), "other-instance")
@@ -372,7 +395,104 @@ async fn second_start_canary_queues_without_mutations_or_auto_start() {
         .unwrap();
     let still = env.job_service.get_job(job_b.id()).await.unwrap();
     assert_eq!(still.status(), JobStatus::Queued);
-    assert!(mutation_methods(&env.captured).is_empty());
+    assert!(
+        env.job_store
+            .current_mutation_lease()
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let started = env
+        .job_service
+        .start_canary(job_b.id(), "target@gmail.com")
+        .await
+        .expect("explicit start after the previous holder released");
+    assert_ne!(started.status(), JobStatus::Queued);
+    assert!(
+        env.job_store
+            .current_mutation_lease()
+            .await
+            .unwrap()
+            .is_none(),
+        "completed start_canary must release the durable lease"
+    );
+}
+
+#[tokio::test]
+async fn resume_queued_job_after_holder_releases_does_not_stick_lease() {
+    let env = build_env(|request| {
+        if request_method(request) == Some("GET") {
+            let transferred = request_path(request).is_some_and(|path| path.contains("file-b"));
+            return ("200 OK".into(), file_json("file-b", false, transferred));
+        }
+        (
+            "200 OK".into(),
+            format!(
+                r#"{{"id":"{TARGET_PERM}","type":"user","role":"writer","emailAddress":"target@gmail.com","pendingOwner":true}}"#
+            ),
+        )
+    })
+    .await;
+    let job_a = seed_ready_job(
+        &env.job_store,
+        22,
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
+    )
+    .await;
+    let job_b = seed_ready_job(
+        &env.job_store,
+        23,
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
+    )
+    .await;
+    env.job_store
+        .commit_scan_batch(
+            job_b.id(),
+            &ItemBatchCommit {
+                items: vec![eligible_item(job_b.id(), 231, "file-b", 1)],
+                checkpoints_upsert: Vec::new(),
+                checkpoints_delete: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    env.job_store
+        .acquire_mutation_lease(job_a.id(), "other-instance", &iso_now())
+        .await
+        .unwrap();
+    env.job_service
+        .start_canary(job_b.id(), "target@gmail.com")
+        .await
+        .expect("queued");
+    env.job_store
+        .release_mutation_lease(job_a.id(), "other-instance")
+        .await
+        .unwrap();
+
+    let resumed = env
+        .job_service
+        .resume_migration(job_b.id())
+        .await
+        .expect("explicit resume of queued job after holder released");
+    assert_ne!(resumed.status(), JobStatus::Queued);
+    assert!(
+        env.job_store
+            .current_mutation_lease()
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]

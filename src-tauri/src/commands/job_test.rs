@@ -11,13 +11,13 @@ mod tests {
     };
     use crate::commands::dto::{
         CreateJobInput, ExportDryRunInput, JobIdInput, ListJobItemsInput, QueueJobInput,
-        UpdateDraftJobAccountsInput,
+        StartCanaryInput, UpdateDraftJobAccountsInput,
     };
     use crate::commands::error::CommandError;
     use crate::commands::job::{
         cancel_migration_inner, create_job_inner, export_dry_run_inner, get_job_inner,
         list_job_items_inner, list_jobs_inner, pause_migration_inner, pause_scan_inner,
-        queue_job_inner, resume_migration_inner, retry_failed_items_inner, start_scan_inner,
+        queue_job_inner, retry_failed_items_inner, start_canary_inner, start_scan_inner,
         update_draft_job_accounts_inner,
     };
     use crate::domain::job::{MigrationRoot, RootId, RootValidationStatus};
@@ -871,10 +871,17 @@ mod tests {
     async fn pause_resume_cancel_retry_and_queue_command_inners_persist_state() {
         let (base_url, captured) = spawn_http_handler(|request| {
             if crate::test_support::request_method(request) == Some("GET") {
+                let target_perm = if crate::test_support::request_path(request)
+                    .is_some_and(|path| path.contains("queued-b"))
+                {
+                    "perm-target-b"
+                } else {
+                    TARGET_PERM
+                };
                 return (
                     "200 OK".into(),
                     format!(
-                        r#"{{"id":"owned","name":"owned","mimeType":"text/plain","trashed":false,"parents":["parent"],"owners":[{{"permissionId":"{TARGET_PERM}","emailAddress":"target@gmail.com"}}],"permissions":[{{"id":"{TARGET_PERM}","type":"user","role":"owner","emailAddress":"target@gmail.com","pendingOwner":false}}]}}"#
+                        r#"{{"id":"owned","name":"owned","mimeType":"text/plain","trashed":false,"parents":["parent"],"owners":[{{"permissionId":"{target_perm}","emailAddress":"target@gmail.com"}}],"permissions":[{{"id":"{target_perm}","type":"user","role":"owner","emailAddress":"target@gmail.com","pendingOwner":false}}]}}"#
                     ),
                 );
             }
@@ -920,6 +927,14 @@ mod tests {
         state
             .token_provider
             .insert_cached_token_for_test(AccountId::new(2), AccessToken::new(TARGET_TOKEN.into()))
+            .await;
+        state
+            .token_provider
+            .insert_cached_token_for_test(AccountId::new(3), AccessToken::new(SOURCE_TOKEN.into()))
+            .await;
+        state
+            .token_provider
+            .insert_cached_token_for_test(AccountId::new(4), AccessToken::new(TARGET_TOKEN.into()))
             .await;
 
         let job_a = create_job_inner(
@@ -1114,13 +1129,60 @@ mod tests {
         );
         assert_eq!(todo.state, "CANCELLED");
 
-        let _ = resume_migration_inner(
+        let job_b_id: crate::domain::job::JobId = job_b.id.parse().unwrap();
+        state
+            .job_store
+            .commit_scan_batch(
+                job_b_id,
+                &ItemBatchCommit {
+                    items: vec![crate::domain::item::MigrationItem {
+                        id: crate::domain::item::ItemId::new(9),
+                        job_id: job_b_id,
+                        file_id: "queued-b".into(),
+                        name: "queued-b".into(),
+                        mime_type: "text/plain".into(),
+                        depth: 1,
+                        original_parent_ids: vec!["parent".into()],
+                        original_owner_permission_id: Some(GooglePermissionId::new(
+                            "perm-source-b",
+                        )),
+                        quota_bytes_used: Some(1),
+                        target_permission_id: None,
+                        state: crate::domain::item::ItemState::Eligible,
+                        canary_selected: false,
+                        created_at: "t".into(),
+                        updated_at: "t".into(),
+                    }],
+                    checkpoints_upsert: Vec::new(),
+                    checkpoints_delete: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let still_queued = get_job_inner(
             &state,
             JobIdInput {
                 job_id: job_b.id.clone(),
             },
         )
-        .await;
+        .await
+        .unwrap();
+        assert_eq!(still_queued.status, "QUEUED");
+        let started = start_canary_inner(
+            &state,
+            StartCanaryInput {
+                job_id: job_b.id.clone(),
+                confirmation: "target-b@gmail.com".into(),
+            },
+        )
+        .await
+        .expect("queued job starts after the previous mutation job is no longer running");
+        assert_ne!(started.status, "QUEUED");
+        let lease = state.job_store.current_mutation_lease().await.unwrap();
+        assert!(
+            lease.is_none(),
+            "durable lease must be released after start_canary"
+        );
         let requests = captured.lock().unwrap().clone();
         let mutations = requests.iter().filter(|request| {
             matches!(

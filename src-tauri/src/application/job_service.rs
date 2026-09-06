@@ -870,6 +870,10 @@ where
         if !Self::emails_match(confirmation_email, &job.snapshots().target.email) {
             return Err(JobServiceError::ConfirmationMismatch);
         }
+        match job.status() {
+            JobStatus::ReadyForReview | JobStatus::RunningCanary | JobStatus::Queued => {}
+            _ => return Err(JobServiceError::IllegalTransition),
+        }
         let lease = match self.try_acquire_transfer(job_id).await {
             Ok(lease) => lease,
             Err(JobServiceError::TransferInProgress) => {
@@ -877,15 +881,20 @@ where
             }
             Err(err) => return Err(err),
         };
-        let previous = job.status().as_str().to_string();
-        job.start_canary()?;
-        self.persist_status(&job, Some(&previous), "JOB_STATUS")
-            .await?;
-        self.run_mutation(job_id, &mut job, true, lease).await
+        self.prepare_and_run_mutation(job_id, &mut job, lease, true, |job| {
+            job.start_canary().map_err(Into::into)
+        })
+        .await
     }
 
     pub async fn continue_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
         let mut job = self.get_job(job_id).await?;
+        let as_canary = self.should_resume_as_canary(&job).await?;
+        match job.status() {
+            JobStatus::CanaryReview | JobStatus::Running => {}
+            JobStatus::Queued if !as_canary => {}
+            _ => return Err(JobServiceError::IllegalTransition),
+        }
         let lease = match self.try_acquire_transfer(job_id).await {
             Ok(lease) => lease,
             Err(JobServiceError::TransferInProgress) => {
@@ -893,11 +902,39 @@ where
             }
             Err(err) => return Err(err),
         };
+        self.prepare_and_run_mutation(job_id, &mut job, lease, false, |job| {
+            if job.status() == JobStatus::Queued {
+                job.resume_transfer(false).map_err(Into::into)
+            } else {
+                job.start_bulk().map_err(Into::into)
+            }
+        })
+        .await
+    }
+
+    async fn prepare_and_run_mutation(
+        &self,
+        job_id: JobId,
+        job: &mut crate::domain::job::MigrationJob,
+        lease: TransferLeaseGuard,
+        canary: bool,
+        prepare: impl FnOnce(&mut crate::domain::job::MigrationJob) -> Result<(), JobServiceError>,
+    ) -> Result<MigrationJob, JobServiceError> {
         let previous = job.status().as_str().to_string();
-        job.start_bulk()?;
-        self.persist_status(&job, Some(&previous), "JOB_STATUS")
-            .await?;
-        self.run_mutation(job_id, &mut job, false, lease).await
+        if let Err(err) = prepare(job) {
+            drop(lease);
+            self.release_durable_lease(job_id).await;
+            return Err(err);
+        }
+        if let Err(err) = self
+            .persist_status(job, Some(&previous), "JOB_STATUS")
+            .await
+        {
+            drop(lease);
+            self.release_durable_lease(job_id).await;
+            return Err(err);
+        }
+        self.run_mutation(job_id, job, canary, lease).await
     }
 
     async fn run_mutation(
@@ -1001,11 +1038,10 @@ where
             return Err(err);
         }
 
-        let previous = job.status().as_str().to_string();
-        job.resume_transfer(as_canary)?;
-        self.persist_status(&job, Some(&previous), "JOB_STATUS")
-            .await?;
-        self.run_mutation(job_id, &mut job, as_canary, lease).await
+        self.prepare_and_run_mutation(job_id, &mut job, lease, as_canary, |job| {
+            job.resume_transfer(as_canary).map_err(Into::into)
+        })
+        .await
     }
 
     pub async fn cancel_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
