@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { AccountRegistry } from "./accounts/AccountRegistry.tsx";
 import { useAccountRegistry } from "./accounts/useAccountRegistry.ts";
+import gdomIcon from "./assets/gdom-icon.svg?no-inline";
 import type { BackendPort } from "./ipc/port.ts";
 import type { JobDto } from "./ipc/types.ts";
 import { openedJobAnnouncement, openPersistedJob, resumePersistedJob } from "./jobs/catalog.ts";
@@ -12,7 +13,6 @@ import { LIMITED_USE_TITLE, PRIVACY_POLICY_TITLE } from "./legal/copy.ts";
 import { LegalDialogs } from "./legal/LegalDialogs.tsx";
 import {
   ACCOUNT_JOBS_FILTER_ANNOUNCEMENT,
-  BRAND_MARK,
   BRAND_NAME,
   NEW_JOB_ANNOUNCEMENT,
   NEW_WIZARD_KEY,
@@ -97,7 +97,7 @@ export function App({ backend }: AppProps) {
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">
-            {BRAND_MARK}
+            <img src={gdomIcon} width={24} height={24} alt="" />
           </span>
           {BRAND_NAME}
         </div>

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <title>GDOM</title>
+  <desc>A folded pearl-white G handing off to a periwinkle arrow on an indigo tile.</desc>
+  <defs>
+    <linearGradient id="tile" x1="48" y1="0" x2="464" y2="512" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6875E5"/>
+      <stop offset="0.55" stop-color="#5E6AD2"/>
+      <stop offset="1" stop-color="#505CBD"/>
+    </linearGradient>
+    <linearGradient id="pearl" x1="56" y1="8" x2="194" y2="188" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F3F1EA"/>
+      <stop offset="0.48" stop-color="#F0F1FA"/>
+      <stop offset="1" stop-color="#96A8FF"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="50" y1="63" x2="151" y2="213" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#788AFF"/>
+      <stop offset="0.45" stop-color="#CFD5FF"/>
+      <stop offset="1" stop-color="#F0F1FA"/>
+    </linearGradient>
+    <linearGradient id="handoff" x1="114" y1="80" x2="236" y2="159" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C6CEFF"/>
+      <stop offset="0.65" stop-color="#9DB1FF"/>
+      <stop offset="1" stop-color="#879BFA"/>
+    </linearGradient>
+    <path id="g" d="M105 0H148C175 0 196 13 210 41Q214 48 206 48H105C69 48 47 67 47 103V123C47 155 64 172 98 172H148C168 172 178 156 178 131V115H224V136C224 183 194 213 150 213H98C35 213 0 179 0 123V105C0 47 45 0 105 0Z"/>
+    <clipPath id="g-clip"><use href="#g"/></clipPath>
+  </defs>
+  <rect width="512" height="512" rx="132" fill="url(#tile)"/>
+  <g transform="translate(80 112) scale(1.35)">
+    <use href="#g" fill="url(#pearl)"/>
+    <g clip-path="url(#g-clip)">
+      <path d="M67 57C33 90 13 124 3 155C10 192 45 213 98 213H150C103 200 63 181 47 151V105C47 82 53 68 67 57Z" fill="url(#fold)"/>
+    </g>
+    <path d="M114 94H211L205 88C200 83 201 74 206 70C211 66 217 67 222 72L256 105C261 110 261 115 256 120L222 153C217 158 210 158 206 154C201 150 200 143 205 137L211 132H119C111 132 107 128 107 120V101C107 96 109 94 114 94Z" fill="url(#handoff)"/>
+  </g>
+</svg>
