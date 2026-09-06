@@ -10,7 +10,9 @@
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "icons": "node scripts/generate-icons.mjs",
+    "icons:check": "node scripts/generate-icons.mjs --check"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
