@@ -382,6 +382,8 @@ fn run_of<'a>(fixture: &'a Fixture) -> TransferRun<'a> {
         source_permission_id: &fixture.source_permission_id,
         target_permission_id: &fixture.target_permission_id,
         target_email: &fixture.target_email,
+        pause: None,
+        cancel: None,
     }
 }
 

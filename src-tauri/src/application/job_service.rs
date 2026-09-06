@@ -13,7 +13,7 @@ use crate::application::drive_transfer::DriveTransferPort;
 use crate::application::drive_tree::{DEFAULT_SCAN_CONCURRENCY, DrivePort};
 use crate::application::entity_id::next_entity_id;
 use crate::application::item_store::{ItemPage, ItemStoreError, ItemStorePort};
-use crate::application::job_store::{JobStorePort, JobStorePortError};
+use crate::application::job_store::{JobStorePort, JobStorePortError, MigrationEvent};
 use crate::application::preflight::PreflightSummary;
 use crate::application::root_parser::{RootParseError, parse_root_input};
 use crate::application::scanner::{ScanError, ScanOutcome, ScanRun, run_scan};
@@ -191,6 +191,7 @@ impl From<JobStorePortError> for JobServiceError {
             JobStorePortError::AccountPairLocked => Self::AccountPairLocked,
             JobStorePortError::RootsLocked => Self::RootsLocked,
             JobStorePortError::Database(msg) => Self::StoreError(msg),
+            JobStorePortError::MutationLeaseHeld => Self::TransferInProgress,
         }
     }
 }
@@ -255,8 +256,11 @@ where
     scan_pause_flags: tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>,
     scan_in_flight: Arc<std::sync::Mutex<HashSet<JobId>>>,
     transfer_lease: Arc<std::sync::Mutex<Option<JobId>>>,
+    transfer_pause_flags: tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>,
+    transfer_cancel_flags: tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>,
     sleeper: Arc<dyn Sleeper>,
     jitter: Arc<dyn JitterSource>,
+    instance_id: String,
 }
 
 impl<A, J> JobService<A, J>
@@ -278,9 +282,22 @@ where
             scan_pause_flags: tokio::sync::Mutex::new(HashMap::new()),
             scan_in_flight: Arc::new(std::sync::Mutex::new(HashSet::new())),
             transfer_lease: Arc::new(std::sync::Mutex::new(None)),
+            transfer_pause_flags: tokio::sync::Mutex::new(HashMap::new()),
+            transfer_cancel_flags: tokio::sync::Mutex::new(HashMap::new()),
             sleeper: Arc::new(TokioSleeper),
             jitter: Arc::new(SystemJitter),
+            instance_id: format!("gdom-{}", next_entity_id()),
         }
+    }
+
+    pub fn with_sleeper(
+        mut self,
+        sleeper: Arc<dyn Sleeper>,
+        jitter: Arc<dyn JitterSource>,
+    ) -> Self {
+        self.sleeper = sleeper;
+        self.jitter = jitter;
+        self
     }
 
     fn try_acquire_scan(&self, job_id: JobId) -> Result<ScanInFlightGuard, JobServiceError> {
@@ -305,8 +322,100 @@ where
             .contains(&job_id)
     }
 
-    fn try_acquire_transfer(&self, job_id: JobId) -> Result<TransferLeaseGuard, JobServiceError> {
-        try_acquire_transfer_slot(&self.transfer_lease, job_id)
+    async fn try_acquire_transfer(
+        &self,
+        job_id: JobId,
+    ) -> Result<TransferLeaseGuard, JobServiceError> {
+        let guard = try_acquire_transfer_slot(&self.transfer_lease, job_id)?;
+        let now = iso_now();
+        match self
+            .job_store
+            .acquire_mutation_lease(job_id, &self.instance_id, &now)
+            .await
+        {
+            Ok(()) => Ok(guard),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    async fn release_durable_lease(&self, job_id: JobId) {
+        let _ = self
+            .job_store
+            .release_mutation_lease(job_id, &self.instance_id)
+            .await;
+    }
+
+    fn transfer_is_in_flight(&self, job_id: JobId) -> bool {
+        *self
+            .transfer_lease
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            == Some(job_id)
+    }
+
+    fn clear_memory_lease(&self, job_id: JobId) {
+        let mut slot = self
+            .transfer_lease
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *slot == Some(job_id) {
+            *slot = None;
+        }
+    }
+
+    fn status_event(
+        job: &crate::domain::job::MigrationJob,
+        previous: Option<&str>,
+        event_type: &str,
+    ) -> MigrationEvent {
+        MigrationEvent {
+            id: next_entity_id().to_string(),
+            job_id: job.id(),
+            file_id: None,
+            account_id: None,
+            event_type: event_type.to_string(),
+            previous_state: previous.map(ToOwned::to_owned),
+            new_state: Some(job.status().as_str().to_string()),
+            sanitized_detail_json: None,
+            created_at: iso_now(),
+        }
+    }
+
+    async fn persist_status(
+        &self,
+        job: &crate::domain::job::MigrationJob,
+        previous: Option<&str>,
+        event_type: &str,
+    ) -> Result<(), JobServiceError> {
+        let event = Self::status_event(job, previous, event_type);
+        self.job_store
+            .persist_job_with_event(job, &event)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn set_control_flag(
+        flags: &tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>,
+        job_id: JobId,
+        value: bool,
+    ) -> Arc<AtomicBool> {
+        let mut map = flags.lock().await;
+        let flag = map
+            .entry(job_id)
+            .or_insert_with(|| Arc::new(AtomicBool::new(value)));
+        flag.store(value, Ordering::SeqCst);
+        Arc::clone(flag)
+    }
+
+    async fn get_or_init_flag(
+        flags: &tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>,
+        job_id: JobId,
+    ) -> Arc<AtomicBool> {
+        let mut map = flags.lock().await;
+        Arc::clone(
+            map.entry(job_id)
+                .or_insert_with(|| Arc::new(AtomicBool::new(false))),
+        )
     }
 
     fn emails_match(left: &str, right: &str) -> bool {
@@ -331,6 +440,8 @@ where
         let source_perm = job.snapshots().source.permission_id.clone();
         let target_perm = job.snapshots().target.permission_id.clone();
         let target_email = job.snapshots().target.email.clone();
+        let pause = Self::get_or_init_flag(&self.transfer_pause_flags, job.id()).await;
+        let cancel = Self::get_or_init_flag(&self.transfer_cancel_flags, job.id()).await;
         let run = TransferRun {
             drive: self.drive.as_ref() as &dyn DriveTransferPort,
             store: &*self.job_store,
@@ -341,6 +452,8 @@ where
             source_permission_id: &source_perm,
             target_permission_id: &target_perm,
             target_email: &target_email,
+            pause: Some(pause.as_ref()),
+            cancel: Some(cancel.as_ref()),
         };
         if canary {
             Ok(execute_canary(&run, job).await?)
@@ -547,6 +660,9 @@ where
 
     pub async fn start_scan(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
         let mut job = self.get_job(job_id).await?;
+        if job.status() == JobStatus::Paused && self.looks_like_transfer_pause(&job).await? {
+            return Err(JobServiceError::IllegalTransition);
+        }
         let _lease = self.try_acquire_scan(job_id)?;
 
         let pause = {
@@ -754,36 +870,341 @@ where
         if !Self::emails_match(confirmation_email, &job.snapshots().target.email) {
             return Err(JobServiceError::ConfirmationMismatch);
         }
-        let _lease = self.try_acquire_transfer(job_id)?;
+        let lease = match self.try_acquire_transfer(job_id).await {
+            Ok(lease) => lease,
+            Err(JobServiceError::TransferInProgress) => {
+                return self.queue_or_busy(job_id).await;
+            }
+            Err(err) => return Err(err),
+        };
+        let previous = job.status().as_str().to_string();
         job.start_canary()?;
-        self.job_store.update_job(&job).await?;
-        match self.run_transfer(&mut job, true).await {
+        self.persist_status(&job, Some(&previous), "JOB_STATUS")
+            .await?;
+        self.run_mutation(job_id, &mut job, true, lease).await
+    }
+
+    pub async fn continue_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let mut job = self.get_job(job_id).await?;
+        let lease = match self.try_acquire_transfer(job_id).await {
+            Ok(lease) => lease,
+            Err(JobServiceError::TransferInProgress) => {
+                return self.queue_or_busy(job_id).await;
+            }
+            Err(err) => return Err(err),
+        };
+        let previous = job.status().as_str().to_string();
+        job.start_bulk()?;
+        self.persist_status(&job, Some(&previous), "JOB_STATUS")
+            .await?;
+        self.run_mutation(job_id, &mut job, false, lease).await
+    }
+
+    async fn run_mutation(
+        &self,
+        job_id: JobId,
+        job: &mut crate::domain::job::MigrationJob,
+        canary: bool,
+        lease: TransferLeaseGuard,
+    ) -> Result<MigrationJob, JobServiceError> {
+        Self::set_control_flag(&self.transfer_pause_flags, job_id, false).await;
+        Self::set_control_flag(&self.transfer_cancel_flags, job_id, false).await;
+        let previous = job.status().as_str().to_string();
+        let result = self.run_transfer(job, canary).await;
+        drop(lease);
+        self.release_durable_lease(job_id).await;
+        self.transfer_pause_flags.lock().await.remove(&job_id);
+        self.transfer_cancel_flags.lock().await.remove(&job_id);
+        if job.status() == JobStatus::Cancelled {
+            let _ = self.job_store.cancel_unstarted_items(job_id).await;
+        }
+        match result {
             Ok(_) => {
-                self.job_store.update_job(&job).await?;
+                let _ = self
+                    .persist_status(job, Some(&previous), "JOB_STATUS")
+                    .await;
                 self.get_job(job_id).await
             }
             Err(err) => {
-                let _ = self.job_store.update_job(&job).await;
+                let _ = self
+                    .persist_status(job, Some(&previous), "JOB_STATUS")
+                    .await;
                 Err(err)
             }
         }
     }
 
-    pub async fn continue_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+    async fn queue_or_busy(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        if self.transfer_is_in_flight(job_id) {
+            return Err(JobServiceError::TransferInProgress);
+        }
+        if let Some(lease) = self.job_store.current_mutation_lease().await?
+            && lease.job_id == job_id
+        {
+            return Err(JobServiceError::TransferInProgress);
+        }
+        let job = self.get_job(job_id).await?;
+        if job.status() == JobStatus::Running || job.status() == JobStatus::RunningCanary {
+            return Err(JobServiceError::TransferInProgress);
+        }
+        self.queue_job(job_id, None).await
+    }
+
+    pub async fn pause_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let job = self.get_job(job_id).await?;
+        match job.status() {
+            JobStatus::RunningCanary
+            | JobStatus::Running
+            | JobStatus::Pausing
+            | JobStatus::Paused => {}
+            _ => return Err(JobServiceError::IllegalTransition),
+        }
+
+        Self::set_control_flag(&self.transfer_pause_flags, job_id, true).await;
+
+        if !self.transfer_is_in_flight(job_id) {
+            let previous = job.status().as_str().to_string();
+            let mut job = job;
+            job.pause_transfer()?;
+            self.persist_status(&job, Some(&previous), "JOB_STATUS")
+                .await?;
+            self.release_durable_lease(job_id).await;
+            self.clear_memory_lease(job_id);
+            self.transfer_pause_flags.lock().await.remove(&job_id);
+        }
+
+        self.get_job(job_id).await
+    }
+
+    pub async fn resume_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
         let mut job = self.get_job(job_id).await?;
-        let _lease = self.try_acquire_transfer(job_id)?;
-        job.start_bulk()?;
-        self.job_store.update_job(&job).await?;
-        match self.run_transfer(&mut job, false).await {
-            Ok(_) => {
-                self.job_store.update_job(&job).await?;
-                self.get_job(job_id).await
+        if !job.status().is_transfer_resumable() {
+            return Err(JobServiceError::IllegalTransition);
+        }
+        let as_canary = self.should_resume_as_canary(&job).await?;
+        let lease = match self.try_acquire_transfer(job_id).await {
+            Ok(lease) => lease,
+            Err(JobServiceError::TransferInProgress) => {
+                return self.queue_or_busy(job_id).await;
             }
-            Err(err) => {
-                let _ = self.job_store.update_job(&job).await;
-                Err(err)
+            Err(err) => return Err(err),
+        };
+
+        if let Err(err) = self.revalidate_tokens(&job).await {
+            drop(lease);
+            self.release_durable_lease(job_id).await;
+            return Err(err);
+        }
+        if let Err(err) = self.reconcile_job_items(&job).await {
+            drop(lease);
+            self.release_durable_lease(job_id).await;
+            return Err(err);
+        }
+
+        let previous = job.status().as_str().to_string();
+        job.resume_transfer(as_canary)?;
+        self.persist_status(&job, Some(&previous), "JOB_STATUS")
+            .await?;
+        self.run_mutation(job_id, &mut job, as_canary, lease).await
+    }
+
+    pub async fn cancel_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let mut job = self.get_job(job_id).await?;
+        Self::set_control_flag(&self.transfer_pause_flags, job_id, true).await;
+        Self::set_control_flag(&self.transfer_cancel_flags, job_id, true).await;
+
+        if self.transfer_is_in_flight(job_id) {
+            return self.get_job(job_id).await;
+        }
+
+        let previous = job.status().as_str().to_string();
+        let _cancelled = self.job_store.cancel_unstarted_items(job_id).await?;
+        job.cancel_job(iso_now())?;
+        self.persist_status(&job, Some(&previous), "JOB_STATUS")
+            .await?;
+        self.release_durable_lease(job_id).await;
+        self.clear_memory_lease(job_id);
+        self.get_job(job_id).await
+    }
+
+    pub async fn retry_failed_items(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let job = self.get_job(job_id).await?;
+        let _reset = self.job_store.retry_failed_items(job_id).await?;
+        if job.status().is_transfer_resumable() {
+            return self.resume_migration(job_id).await;
+        }
+        self.get_job(job_id).await
+    }
+
+    pub async fn queue_job(
+        &self,
+        job_id: JobId,
+        position: Option<i64>,
+    ) -> Result<MigrationJob, JobServiceError> {
+        let jobs = self.job_store.list_jobs().await?;
+        let mut target = jobs
+            .iter()
+            .find(|job| job.id() == job_id)
+            .cloned()
+            .ok_or(JobServiceError::JobNotFound(job_id))?;
+
+        let mut queued: Vec<MigrationJob> = jobs
+            .iter()
+            .filter(|job| job.status() == JobStatus::Queued && job.id() != job_id)
+            .cloned()
+            .collect();
+        queued.sort_by_key(|job| job.queue_position().unwrap_or(i64::MAX));
+
+        let insert_at = position
+            .map(|pos| (pos.max(1) as usize).saturating_sub(1))
+            .unwrap_or(queued.len())
+            .min(queued.len());
+        let previous = target.status().as_str().to_string();
+        target.enqueue((insert_at as i64) + 1)?;
+        queued.insert(insert_at, target);
+
+        for (index, job) in queued.iter_mut().enumerate() {
+            job.set_queue_position(Some((index as i64) + 1));
+            let event_previous = if job.id() == job_id {
+                Some(previous.as_str())
+            } else {
+                Some(job.status().as_str())
+            };
+            self.persist_status(job, event_previous, "JOB_STATUS")
+                .await?;
+        }
+
+        self.get_job(job_id).await
+    }
+
+    pub async fn reconcile_on_startup(&self) -> Result<(), JobServiceError> {
+        self.job_store.clear_mutation_leases().await?;
+        {
+            let mut slot = self
+                .transfer_lease
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = None;
+        }
+
+        let jobs = self.job_store.list_jobs().await?;
+        for mut job in jobs {
+            if !job.status().is_unfinished_mutation() {
+                continue;
+            }
+            let previous = job.status().as_str().to_string();
+            if let Err(err) = self.revalidate_tokens(&job).await {
+                job.require_auth(err.to_string())?;
+                self.persist_status(&job, Some(&previous), "STARTUP_RECONCILE")
+                    .await?;
+                continue;
+            }
+            if let Err(err) = self.reconcile_job_items(&job).await {
+                job.set_last_error(err.to_string());
+            }
+            job.pause_transfer()?;
+            self.persist_status(&job, Some(&previous), "STARTUP_RECONCILE")
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn revalidate_tokens(
+        &self,
+        job: &crate::domain::job::MigrationJob,
+    ) -> Result<(), JobServiceError> {
+        self.token_provider
+            .get_access_token(job.source_account_id())
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
+        self.token_provider
+            .get_access_token(job.target_account_id())
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn reconcile_job_items(
+        &self,
+        job: &crate::domain::job::MigrationJob,
+    ) -> Result<(), JobServiceError> {
+        let source_token = self
+            .token_provider
+            .get_access_token(job.source_account_id())
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
+        let target_token = self
+            .token_provider
+            .get_access_token(job.target_account_id())
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
+        let source_perm = job.snapshots().source.permission_id.clone();
+        let target_perm = job.snapshots().target.permission_id.clone();
+        let target_email = job.snapshots().target.email.clone();
+        let items = self.job_store.list_items_for_transfer(job.id()).await?;
+        let run = TransferRun {
+            drive: self.drive.as_ref() as &dyn DriveTransferPort,
+            store: &*self.job_store,
+            sleeper: self.sleeper.as_ref(),
+            jitter: self.jitter.as_ref(),
+            source_token: &source_token,
+            target_token: &target_token,
+            source_permission_id: &source_perm,
+            target_permission_id: &target_perm,
+            target_email: &target_email,
+            pause: None,
+            cancel: None,
+        };
+        crate::application::transfer::reconcile_checkpoint(&run, &items).await?;
+        Ok(())
+    }
+
+    async fn should_resume_as_canary(
+        &self,
+        job: &crate::domain::job::MigrationJob,
+    ) -> Result<bool, JobServiceError> {
+        if let Some(event) = self.job_store.latest_job_event(job.id()).await? {
+            if event.previous_state.as_deref() == Some(JobStatus::Running.as_str())
+                || event.new_state.as_deref() == Some(JobStatus::Running.as_str())
+                || event.previous_state.as_deref() == Some(JobStatus::CanaryReview.as_str())
+            {
+                return Ok(false);
+            }
+            if event.previous_state.as_deref() == Some(JobStatus::RunningCanary.as_str())
+                || event.new_state.as_deref() == Some(JobStatus::RunningCanary.as_str())
+            {
+                return Ok(true);
             }
         }
+        Ok(!self.bulk_mutation_has_started(job).await?)
+    }
+
+    async fn bulk_mutation_has_started(
+        &self,
+        job: &crate::domain::job::MigrationJob,
+    ) -> Result<bool, JobServiceError> {
+        let items = self.job_store.list_items_for_transfer(job.id()).await?;
+        Ok(items.iter().any(|item| {
+            !item.canary_selected
+                && item.state != crate::domain::item::ItemState::Eligible
+                && item.state.is_transfer_active()
+        }))
+    }
+
+    async fn looks_like_transfer_pause(
+        &self,
+        job: &crate::domain::job::MigrationJob,
+    ) -> Result<bool, JobServiceError> {
+        if let Some(event) = self.job_store.latest_job_event(job.id()).await?
+            && matches!(
+                event.previous_state.as_deref(),
+                Some("RUNNING_CANARY" | "RUNNING" | "PAUSING" | "CANCELLING")
+            )
+        {
+            return Ok(true);
+        }
+        let cohort = self.job_store.list_canary_cohort(job.id()).await?;
+        Ok(!cohort.is_empty() || self.bulk_mutation_has_started(job).await?)
     }
 }
 

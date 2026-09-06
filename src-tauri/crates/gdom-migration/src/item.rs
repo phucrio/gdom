@@ -125,6 +125,23 @@ impl ItemState {
         )
     }
 
+    pub const fn is_unstarted_for_cancel(self) -> bool {
+        matches!(
+            self,
+            Self::Discovered
+                | Self::Eligible
+                | Self::PendingOwnerRequired
+                | Self::RetryableFailed
+        )
+    }
+
+    pub const fn is_intermediate_checkpoint(self) -> bool {
+        matches!(
+            self,
+            Self::PendingOwnerCreated | Self::Accepting | Self::Transferred | Self::Verifying
+        )
+    }
+
     pub fn can_transition_to(self, next: Self) -> bool {
         match (self, next) {
             (Self::Discovered, Self::Eligible) => true,

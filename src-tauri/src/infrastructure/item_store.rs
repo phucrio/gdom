@@ -436,7 +436,27 @@ impl ItemStorePort for SqliteJobStore {
 
     fn save_item<'a>(&'a self, item: &'a MigrationItem) -> ItemStoreFuture<'a, ()> {
         Box::pin(async move {
-            let result = sqlx::query(
+            let mut tx = self
+                .pool()
+                .begin()
+                .await
+                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+            let previous: Option<String> = sqlx::query_scalar(
+                "SELECT state FROM migration_items WHERE id = ?1 AND job_id = ?2",
+            )
+            .bind(item.id.value().to_string())
+            .bind(item.job_id.value().to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+            let Some(previous) = previous else {
+                return Err(ItemStoreError::Database(format!(
+                    "migration item {} was not found",
+                    item.id
+                )));
+            };
+
+            sqlx::query(
                 "UPDATE migration_items
                  SET state = ?1, target_permission_id = ?2, updated_at = ?3, canary_selected = ?4
                  WHERE id = ?5 AND job_id = ?6",
@@ -451,16 +471,138 @@ impl ItemStorePort for SqliteJobStore {
             .bind(i64::from(item.canary_selected))
             .bind(item.id.value().to_string())
             .bind(item.job_id.value().to_string())
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await
             .map_err(|e| ItemStoreError::Database(e.to_string()))?;
-            if result.rows_affected() == 0 {
-                return Err(ItemStoreError::Database(format!(
-                    "migration item {} was not found",
-                    item.id
-                )));
+
+            if previous != item.state.as_str() {
+                sqlx::query(
+                    "INSERT INTO migration_events (
+                        id, job_id, file_id, account_id, event_type, previous_state, new_state,
+                        sanitized_detail_json, created_at
+                     ) VALUES (?1, ?2, ?3, NULL, 'ITEM_STATE', ?4, ?5, NULL, ?6)",
+                )
+                .bind(crate::application::entity_id::next_entity_id().to_string())
+                .bind(item.job_id.value().to_string())
+                .bind(&item.file_id)
+                .bind(&previous)
+                .bind(item.state.as_str())
+                .bind(&item.updated_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
             }
+
+            tx.commit()
+                .await
+                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
             Ok(())
+        })
+    }
+
+    fn cancel_unstarted_items<'a>(&'a self, job_id: JobId) -> ItemStoreFuture<'a, u64> {
+        Box::pin(async move {
+            let job_id_str = job_id.value().to_string();
+            let mut tx = self
+                .pool()
+                .begin()
+                .await
+                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+            let rows = sqlx::query(
+                "SELECT id, file_id, state FROM migration_items
+                 WHERE job_id = ?1 AND state IN (
+                    'DISCOVERED', 'ELIGIBLE', 'PENDING_OWNER_REQUIRED', 'RETRYABLE_FAILED'
+                 )",
+            )
+            .bind(&job_id_str)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+
+            let count = rows.len() as u64;
+            for row in &rows {
+                let item_id: String = row.get(0);
+                let file_id: String = row.get(1);
+                let previous: String = row.get(2);
+                sqlx::query(
+                    "UPDATE migration_items SET state = 'CANCELLED', updated_at = ?1 WHERE id = ?2",
+                )
+                .bind(crate::application::time::iso_now())
+                .bind(&item_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+                sqlx::query(
+                    "INSERT INTO migration_events (
+                        id, job_id, file_id, account_id, event_type, previous_state, new_state,
+                        sanitized_detail_json, created_at
+                     ) VALUES (?1, ?2, ?3, NULL, 'ITEM_STATE', ?4, 'CANCELLED', NULL, ?5)",
+                )
+                .bind(crate::application::entity_id::next_entity_id().to_string())
+                .bind(&job_id_str)
+                .bind(&file_id)
+                .bind(&previous)
+                .bind(crate::application::time::iso_now())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+            }
+
+            tx.commit()
+                .await
+                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+            Ok(count)
+        })
+    }
+
+    fn retry_failed_items<'a>(&'a self, job_id: JobId) -> ItemStoreFuture<'a, u64> {
+        Box::pin(async move {
+            let job_id_str = job_id.value().to_string();
+            let mut tx = self
+                .pool()
+                .begin()
+                .await
+                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+            let rows = sqlx::query(
+                "SELECT id, file_id FROM migration_items
+                 WHERE job_id = ?1 AND state = 'RETRYABLE_FAILED'",
+            )
+            .bind(&job_id_str)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+
+            let count = rows.len() as u64;
+            for row in &rows {
+                let item_id: String = row.get(0);
+                let file_id: String = row.get(1);
+                sqlx::query(
+                    "UPDATE migration_items SET state = 'PENDING_OWNER_REQUIRED', updated_at = ?1 WHERE id = ?2",
+                )
+                .bind(crate::application::time::iso_now())
+                .bind(&item_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+                sqlx::query(
+                    "INSERT INTO migration_events (
+                        id, job_id, file_id, account_id, event_type, previous_state, new_state,
+                        sanitized_detail_json, created_at
+                     ) VALUES (?1, ?2, ?3, NULL, 'ITEM_STATE', 'RETRYABLE_FAILED', 'PENDING_OWNER_REQUIRED', NULL, ?4)",
+                )
+                .bind(crate::application::entity_id::next_entity_id().to_string())
+                .bind(&job_id_str)
+                .bind(&file_id)
+                .bind(crate::application::time::iso_now())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+            }
+
+            tx.commit()
+                .await
+                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+            Ok(count)
         })
     }
 }
@@ -655,5 +797,28 @@ mod tests {
             .fetch_optional(accounts.pool())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn schema_migration_creates_worker_leases_and_events() {
+        let accounts = SqliteAccountStore::open_in_memory().await.unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _schema_migrations WHERE version = 6")
+                .fetch_one(accounts.pool())
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+        sqlx::query(
+            "SELECT job_id, owner_instance_id, acquired_at, heartbeat_at FROM worker_leases LIMIT 1",
+        )
+        .fetch_optional(accounts.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "SELECT id, job_id, file_id, account_id, event_type, previous_state, new_state, sanitized_detail_json, created_at FROM migration_events LIMIT 1",
+        )
+        .fetch_optional(accounts.pool())
+        .await
+        .unwrap();
     }
 }

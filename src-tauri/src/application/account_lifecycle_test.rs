@@ -240,6 +240,55 @@ impl JobStorePort for EmptyJobStore {
     fn has_jobs_for_account<'a>(&'a self, _account_id: AccountId) -> JobStoreFuture<'a, bool> {
         Box::pin(async { Ok(false) })
     }
+
+    fn acquire_mutation_lease<'a>(
+        &'a self,
+        _job_id: JobId,
+        _owner_instance_id: &'a str,
+        _acquired_at: &'a str,
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn release_mutation_lease<'a>(
+        &'a self,
+        _job_id: JobId,
+        _owner_instance_id: &'a str,
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn clear_mutation_leases<'a>(&'a self) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn current_mutation_lease<'a>(
+        &'a self,
+    ) -> JobStoreFuture<'a, Option<crate::application::WorkerLease>> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn persist_job_with_event<'a>(
+        &'a self,
+        _job: &'a MigrationJob,
+        _event: &'a crate::application::MigrationEvent,
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn append_migration_event<'a>(
+        &'a self,
+        _event: &'a crate::application::MigrationEvent,
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
+    fn latest_job_event<'a>(
+        &'a self,
+        _job_id: JobId,
+    ) -> JobStoreFuture<'a, Option<crate::application::MigrationEvent>> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
 }
 
 fn build_service(

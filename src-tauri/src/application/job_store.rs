@@ -7,6 +7,27 @@ use crate::domain::AccountId;
 use crate::domain::job::{JobId, MigrationJob, MigrationRoot, RootId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerLease {
+    pub job_id: JobId,
+    pub owner_instance_id: String,
+    pub acquired_at: String,
+    pub heartbeat_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationEvent {
+    pub id: String,
+    pub job_id: JobId,
+    pub file_id: Option<String>,
+    pub account_id: Option<AccountId>,
+    pub event_type: String,
+    pub previous_state: Option<String>,
+    pub new_state: Option<String>,
+    pub sanitized_detail_json: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JobStorePortError {
     JobNotFound(JobId),
     RootNotFound(RootId),
@@ -16,6 +37,7 @@ pub enum JobStorePortError {
     DuplicateRoot(String),
     AccountPairLocked,
     RootsLocked,
+    MutationLeaseHeld,
     Database(String),
 }
 
@@ -38,6 +60,9 @@ impl fmt::Display for JobStorePortError {
                 write!(f, "account pair cannot be changed after draft status")
             }
             Self::RootsLocked => write!(f, "roots cannot be changed after draft status"),
+            Self::MutationLeaseHeld => {
+                write!(f, "another migration job already holds the mutation lease")
+            }
             Self::Database(msg) => write!(f, "database error: {msg}"),
         }
     }
@@ -60,4 +85,24 @@ pub trait JobStorePort: Send + Sync {
     fn has_active_jobs_for_account<'a>(&'a self, account_id: AccountId)
     -> JobStoreFuture<'a, bool>;
     fn has_jobs_for_account<'a>(&'a self, account_id: AccountId) -> JobStoreFuture<'a, bool>;
+    fn acquire_mutation_lease<'a>(
+        &'a self,
+        job_id: JobId,
+        owner_instance_id: &'a str,
+        acquired_at: &'a str,
+    ) -> JobStoreFuture<'a, ()>;
+    fn release_mutation_lease<'a>(
+        &'a self,
+        job_id: JobId,
+        owner_instance_id: &'a str,
+    ) -> JobStoreFuture<'a, ()>;
+    fn clear_mutation_leases<'a>(&'a self) -> JobStoreFuture<'a, ()>;
+    fn current_mutation_lease<'a>(&'a self) -> JobStoreFuture<'a, Option<WorkerLease>>;
+    fn persist_job_with_event<'a>(
+        &'a self,
+        job: &'a MigrationJob,
+        event: &'a MigrationEvent,
+    ) -> JobStoreFuture<'a, ()>;
+    fn append_migration_event<'a>(&'a self, event: &'a MigrationEvent) -> JobStoreFuture<'a, ()>;
+    fn latest_job_event<'a>(&'a self, job_id: JobId) -> JobStoreFuture<'a, Option<MigrationEvent>>;
 }

@@ -179,6 +179,8 @@ export const JOB_COMMANDS = {
   pauseMigration: "pause_migration",
   resumeMigration: "resume_migration",
   cancelMigration: "cancel_migration",
+  retryFailedItems: "retry_failed_items",
+  queueJob: "queue_job",
 } as const;
 
 export const IPC_EVENTS = {

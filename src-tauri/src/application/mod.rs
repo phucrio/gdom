@@ -40,7 +40,7 @@ pub use drive_tree::{
 };
 pub use item_store::{ItemAggregates, ItemBatchCommit, ItemPage, ItemStoreError, ItemStorePort};
 pub use job_service::{JobService, JobServiceError};
-pub use job_store::{JobStoreFuture, JobStorePort, JobStorePortError};
+pub use job_store::{JobStoreFuture, JobStorePort, JobStorePortError, MigrationEvent, WorkerLease};
 pub use preflight::PreflightSummary;
 pub use refresh_token_store::{RefreshToken, RefreshTokenStore, RefreshTokenStoreError};
 pub use root_parser::{RootParseError, parse_root_input};
@@ -49,6 +49,8 @@ pub use root_parser::{RootParseError, parse_root_input};
 mod account_lifecycle_test;
 #[cfg(test)]
 mod connect_account_test;
+#[cfg(test)]
+mod job_control_test;
 #[cfg(test)]
 mod scanner_test;
 #[cfg(test)]
