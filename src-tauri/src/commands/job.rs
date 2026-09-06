@@ -3,8 +3,9 @@ use tauri::State;
 use crate::application::job_service::JobServiceError;
 use crate::commands::dto::{
     CreateJobInput, DryRunExportDto, ExportDryRunInput, JobDto, JobIdInput, JobItemDto,
-    JobItemsPageDto, ListJobItemsInput, ListJobsFilter, RemoveRootInput, RootFolderInput,
-    ScanSummaryDto, StartCanaryInput, UpdateDraftJobAccountsInput, ValidateRootResultDto,
+    JobItemsPageDto, ListJobItemsInput, ListJobsFilter, QueueJobInput, RemoveRootInput,
+    RootFolderInput, ScanSummaryDto, StartCanaryInput, UpdateDraftJobAccountsInput,
+    ValidateRootResultDto,
 };
 use crate::commands::error::CommandError;
 use crate::domain::AccountId;
@@ -441,4 +442,109 @@ pub async fn continue_migration(
     input: JobIdInput,
 ) -> Result<JobDto, CommandError> {
     continue_migration_inner(&state, input).await
+}
+
+pub(crate) async fn pause_migration_inner(
+    state: &AppState,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    let job = state
+        .job_service
+        .pause_migration(job_id)
+        .await
+        .map_err(map_job_service_error)?;
+    job_dto_with_scan(state, job).await
+}
+
+pub(crate) async fn resume_migration_inner(
+    state: &AppState,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    let job = state
+        .job_service
+        .resume_migration(job_id)
+        .await
+        .map_err(map_job_service_error)?;
+    job_dto_with_scan(state, job).await
+}
+
+pub(crate) async fn cancel_migration_inner(
+    state: &AppState,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    let job = state
+        .job_service
+        .cancel_migration(job_id)
+        .await
+        .map_err(map_job_service_error)?;
+    job_dto_with_scan(state, job).await
+}
+
+pub(crate) async fn retry_failed_items_inner(
+    state: &AppState,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    let job = state
+        .job_service
+        .retry_failed_items(job_id)
+        .await
+        .map_err(map_job_service_error)?;
+    job_dto_with_scan(state, job).await
+}
+
+pub(crate) async fn queue_job_inner(
+    state: &AppState,
+    input: QueueJobInput,
+) -> Result<JobDto, CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    let job = state
+        .job_service
+        .queue_job(job_id, input.position)
+        .await
+        .map_err(map_job_service_error)?;
+    job_dto_with_scan(state, job).await
+}
+
+#[tauri::command]
+pub async fn pause_migration(
+    state: State<'_, AppState>,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    pause_migration_inner(&state, input).await
+}
+
+#[tauri::command]
+pub async fn resume_migration(
+    state: State<'_, AppState>,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    resume_migration_inner(&state, input).await
+}
+
+#[tauri::command]
+pub async fn cancel_migration(
+    state: State<'_, AppState>,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    cancel_migration_inner(&state, input).await
+}
+
+#[tauri::command]
+pub async fn retry_failed_items(
+    state: State<'_, AppState>,
+    input: JobIdInput,
+) -> Result<JobDto, CommandError> {
+    retry_failed_items_inner(&state, input).await
+}
+
+#[tauri::command]
+pub async fn queue_job(
+    state: State<'_, AppState>,
+    input: QueueJobInput,
+) -> Result<JobDto, CommandError> {
+    queue_job_inner(&state, input).await
 }

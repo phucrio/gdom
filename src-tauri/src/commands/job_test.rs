@@ -4,18 +4,21 @@ mod tests {
     use tokio::sync::RwLock;
 
     use crate::application::AccessToken;
+    use crate::application::item_store::{ItemBatchCommit, ItemStorePort};
     use crate::application::{
         AccountLifecycleUseCase, AccountTokenProvider, ConnectAccountUseCase, JobService,
         JobStorePort,
     };
     use crate::commands::dto::{
-        CreateJobInput, ExportDryRunInput, JobIdInput, ListJobItemsInput,
-        UpdateDraftJobAccountsInput,
+        CreateJobInput, ExportDryRunInput, JobIdInput, ListJobItemsInput, QueueJobInput,
+        StartCanaryInput, UpdateDraftJobAccountsInput,
     };
     use crate::commands::error::CommandError;
     use crate::commands::job::{
-        create_job_inner, export_dry_run_inner, get_job_inner, list_job_items_inner,
-        list_jobs_inner, pause_scan_inner, start_scan_inner, update_draft_job_accounts_inner,
+        cancel_migration_inner, create_job_inner, export_dry_run_inner, get_job_inner,
+        list_job_items_inner, list_jobs_inner, pause_migration_inner, pause_scan_inner,
+        queue_job_inner, retry_failed_items_inner, start_canary_inner, start_scan_inner,
+        update_draft_job_accounts_inner,
     };
     use crate::domain::job::{MigrationRoot, RootId, RootValidationStatus};
     use crate::domain::{AccountId, ConnectedAccount, GooglePermissionId};
@@ -862,5 +865,331 @@ mod tests {
             .unwrap();
         assert_eq!(job.status, "PAUSED");
         assert_ne!(job.status, "FAILED");
+    }
+
+    #[tokio::test]
+    async fn pause_resume_cancel_retry_and_queue_command_inners_persist_state() {
+        let (base_url, captured) = spawn_http_handler(|request| {
+            if crate::test_support::request_method(request) == Some("GET") {
+                let target_perm = if crate::test_support::request_path(request)
+                    .is_some_and(|path| path.contains("queued-b"))
+                {
+                    "perm-target-b"
+                } else {
+                    TARGET_PERM
+                };
+                return (
+                    "200 OK".into(),
+                    format!(
+                        r#"{{"id":"owned","name":"owned","mimeType":"text/plain","trashed":false,"parents":["parent"],"owners":[{{"permissionId":"{target_perm}","emailAddress":"target@gmail.com"}}],"permissions":[{{"id":"{target_perm}","type":"user","role":"owner","emailAddress":"target@gmail.com","pendingOwner":false}}]}}"#
+                    ),
+                );
+            }
+            ("404 Not Found".into(), "{}".into())
+        });
+        let state = build_state_with_drive(GoogleDriveClient::for_test(base_url).unwrap()).await;
+        create_dummy_account(
+            &state.account_store,
+            1,
+            "source@gmail.com",
+            "Source User",
+            SOURCE_PERM,
+        )
+        .await;
+        create_dummy_account(
+            &state.account_store,
+            2,
+            "target@gmail.com",
+            "Target User",
+            TARGET_PERM,
+        )
+        .await;
+        create_dummy_account(
+            &state.account_store,
+            3,
+            "source-b@gmail.com",
+            "Source B",
+            "perm-source-b",
+        )
+        .await;
+        create_dummy_account(
+            &state.account_store,
+            4,
+            "target-b@gmail.com",
+            "Target B",
+            "perm-target-b",
+        )
+        .await;
+        state
+            .token_provider
+            .insert_cached_token_for_test(AccountId::new(1), AccessToken::new(SOURCE_TOKEN.into()))
+            .await;
+        state
+            .token_provider
+            .insert_cached_token_for_test(AccountId::new(2), AccessToken::new(TARGET_TOKEN.into()))
+            .await;
+        state
+            .token_provider
+            .insert_cached_token_for_test(AccountId::new(3), AccessToken::new(SOURCE_TOKEN.into()))
+            .await;
+        state
+            .token_provider
+            .insert_cached_token_for_test(AccountId::new(4), AccessToken::new(TARGET_TOKEN.into()))
+            .await;
+
+        let job_a = create_job_inner(
+            &state,
+            CreateJobInput {
+                source_account_id: "1".into(),
+                target_account_id: "2".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let job_b = create_job_inner(
+            &state,
+            CreateJobInput {
+                source_account_id: "3".into(),
+                target_account_id: "4".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        sqlx::query("UPDATE migration_jobs SET status = 'READY_FOR_REVIEW' WHERE id = ?1")
+            .bind(&job_a.id)
+            .execute(state.account_store.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE migration_jobs SET status = 'READY_FOR_REVIEW' WHERE id = ?1")
+            .bind(&job_b.id)
+            .execute(state.account_store.pool())
+            .await
+            .unwrap();
+
+        let queued_a = queue_job_inner(
+            &state,
+            QueueJobInput {
+                job_id: job_a.id.clone(),
+                position: None,
+            },
+        )
+        .await
+        .unwrap();
+        let queued_b = queue_job_inner(
+            &state,
+            QueueJobInput {
+                job_id: job_b.id.clone(),
+                position: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(queued_a.status, "QUEUED");
+        assert_eq!(queued_a.queue_position, Some(1));
+        assert_eq!(queued_b.queue_position, Some(2));
+        let reordered = queue_job_inner(
+            &state,
+            QueueJobInput {
+                job_id: job_b.id.clone(),
+                position: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(reordered.queue_position, Some(1));
+        assert_eq!(reordered.status, "QUEUED");
+
+        sqlx::query("UPDATE migration_jobs SET status = 'RUNNING_CANARY', queue_position = NULL WHERE id = ?1")
+            .bind(&job_a.id)
+            .execute(state.account_store.pool())
+            .await
+            .unwrap();
+        let job_a_id: crate::domain::job::JobId = job_a.id.parse().unwrap();
+        state
+            .job_store
+            .commit_scan_batch(
+                job_a_id,
+                &ItemBatchCommit {
+                    items: vec![
+                        crate::domain::item::MigrationItem {
+                            id: crate::domain::item::ItemId::new(1),
+                            job_id: job_a_id,
+                            file_id: "owned".into(),
+                            name: "owned".into(),
+                            mime_type: "text/plain".into(),
+                            depth: 1,
+                            original_parent_ids: vec!["parent".into()],
+                            original_owner_permission_id: Some(GooglePermissionId::new(
+                                SOURCE_PERM,
+                            )),
+                            quota_bytes_used: Some(1),
+                            target_permission_id: None,
+                            state: crate::domain::item::ItemState::Eligible,
+                            canary_selected: true,
+                            created_at: "t".into(),
+                            updated_at: "t".into(),
+                        },
+                        crate::domain::item::MigrationItem {
+                            id: crate::domain::item::ItemId::new(2),
+                            job_id: job_a_id,
+                            file_id: "todo".into(),
+                            name: "todo".into(),
+                            mime_type: "text/plain".into(),
+                            depth: 0,
+                            original_parent_ids: vec!["parent".into()],
+                            original_owner_permission_id: Some(GooglePermissionId::new(
+                                SOURCE_PERM,
+                            )),
+                            quota_bytes_used: Some(1),
+                            target_permission_id: None,
+                            state: crate::domain::item::ItemState::Eligible,
+                            canary_selected: false,
+                            created_at: "t".into(),
+                            updated_at: "t".into(),
+                        },
+                    ],
+                    checkpoints_upsert: Vec::new(),
+                    checkpoints_delete: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        sqlx::query("UPDATE migration_items SET state = 'TRANSFERRED' WHERE file_id = 'owned'")
+            .execute(state.account_store.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE migration_items SET state = 'RETRYABLE_FAILED' WHERE file_id = 'todo'")
+            .execute(state.account_store.pool())
+            .await
+            .unwrap();
+
+        let paused = pause_migration_inner(
+            &state,
+            JobIdInput {
+                job_id: job_a.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(paused.status, "PAUSED");
+
+        let retried = retry_failed_items_inner(
+            &state,
+            JobIdInput {
+                job_id: job_a.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_ne!(retried.status, "PAUSED");
+
+        sqlx::query("UPDATE migration_jobs SET status = 'RUNNING' WHERE id = ?1")
+            .bind(&job_a.id)
+            .execute(state.account_store.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE migration_items SET state = 'ELIGIBLE' WHERE file_id = 'todo'")
+            .execute(state.account_store.pool())
+            .await
+            .unwrap();
+        let cancelled = cancel_migration_inner(
+            &state,
+            JobIdInput {
+                job_id: job_a.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(cancelled.status, "CANCELLED");
+        let page = list_job_items_inner(
+            &state,
+            ListJobItemsInput {
+                job_id: job_a.id.clone(),
+                filter: None,
+                page: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        let owned = page
+            .items
+            .iter()
+            .find(|item| item.file_id == "owned")
+            .unwrap();
+        let todo = page
+            .items
+            .iter()
+            .find(|item| item.file_id == "todo")
+            .unwrap();
+        assert!(
+            owned.state == "TRANSFERRED" || owned.state == "VERIFIED",
+            "already transferred items must not be rolled back, got {}",
+            owned.state
+        );
+        assert_eq!(todo.state, "CANCELLED");
+
+        let job_b_id: crate::domain::job::JobId = job_b.id.parse().unwrap();
+        state
+            .job_store
+            .commit_scan_batch(
+                job_b_id,
+                &ItemBatchCommit {
+                    items: vec![crate::domain::item::MigrationItem {
+                        id: crate::domain::item::ItemId::new(9),
+                        job_id: job_b_id,
+                        file_id: "queued-b".into(),
+                        name: "queued-b".into(),
+                        mime_type: "text/plain".into(),
+                        depth: 1,
+                        original_parent_ids: vec!["parent".into()],
+                        original_owner_permission_id: Some(GooglePermissionId::new(
+                            "perm-source-b",
+                        )),
+                        quota_bytes_used: Some(1),
+                        target_permission_id: None,
+                        state: crate::domain::item::ItemState::Eligible,
+                        canary_selected: false,
+                        created_at: "t".into(),
+                        updated_at: "t".into(),
+                    }],
+                    checkpoints_upsert: Vec::new(),
+                    checkpoints_delete: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let still_queued = get_job_inner(
+            &state,
+            JobIdInput {
+                job_id: job_b.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(still_queued.status, "QUEUED");
+        let started = start_canary_inner(
+            &state,
+            StartCanaryInput {
+                job_id: job_b.id.clone(),
+                confirmation: "target-b@gmail.com".into(),
+            },
+        )
+        .await
+        .expect("queued job starts after the previous mutation job is no longer running");
+        assert_ne!(started.status, "QUEUED");
+        let lease = state.job_store.current_mutation_lease().await.unwrap();
+        assert!(
+            lease.is_none(),
+            "durable lease must be released after start_canary"
+        );
+        let requests = captured.lock().unwrap().clone();
+        let mutations = requests.iter().filter(|request| {
+            matches!(
+                crate::test_support::request_method(request),
+                Some("POST" | "PATCH" | "PUT")
+            )
+        });
+        assert_eq!(mutations.count(), 0);
     }
 }

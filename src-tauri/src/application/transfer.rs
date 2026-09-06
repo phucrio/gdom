@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::application::AccessToken;
 use crate::application::backoff::{JitterSource, MAX_RETRY_ATTEMPTS, Sleeper, backoff_delay};
 use crate::application::drive_folder::DriveFolderOwner;
@@ -61,6 +63,8 @@ pub enum TransferHalt {
     SharingRateLimited { message: String },
     WaitingForQuota { message: String },
     AuthRequired { message: String },
+    Paused,
+    Cancelled,
 }
 
 pub struct TransferRun<'a> {
@@ -73,6 +77,8 @@ pub struct TransferRun<'a> {
     pub source_permission_id: &'a GooglePermissionId,
     pub target_permission_id: &'a GooglePermissionId,
     pub target_email: &'a str,
+    pub pause: Option<&'a AtomicBool>,
+    pub cancel: Option<&'a AtomicBool>,
 }
 
 pub async fn execute_canary(
@@ -150,7 +156,19 @@ fn apply_halt(job: &mut MigrationJob, halt: &TransferHalt) -> Result<(), JobErro
         }
         TransferHalt::WaitingForQuota { message } => job.wait_for_quota(message.clone()),
         TransferHalt::AuthRequired { message } => job.require_auth(message.clone()),
+        TransferHalt::Paused => job.pause_transfer(),
+        TransferHalt::Cancelled => job.cancel_job(iso_now()),
     }
+}
+
+fn stop_requested(run: &TransferRun<'_>) -> Option<TransferHalt> {
+    if run.cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        return Some(TransferHalt::Cancelled);
+    }
+    if run.pause.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        return Some(TransferHalt::Paused);
+    }
+    None
 }
 
 pub async fn transfer_items(
@@ -160,6 +178,9 @@ pub async fn transfer_items(
     let mut verified = 0;
     let mut failed = 0;
     for item in items {
+        if let Some(halt) = stop_requested(run) {
+            return Ok(halt);
+        }
         match transfer_one(run, item.clone()).await {
             Ok(ItemState::Verified) => verified += 1,
             Ok(_) => {}
@@ -535,4 +556,74 @@ fn same_parents(original: &[String], remote: &[String]) -> bool {
     left.sort();
     right.sort();
     left == right
+}
+
+pub async fn reconcile_checkpoint(
+    run: &TransferRun<'_>,
+    items: &[MigrationItem],
+) -> Result<(), TransferError> {
+    for item in items {
+        if !item.state.is_intermediate_checkpoint() {
+            continue;
+        }
+        let mut item = item.clone();
+        reconcile_intermediate_readonly(run, &mut item).await?;
+    }
+    Ok(())
+}
+
+async fn reconcile_intermediate_readonly(
+    run: &TransferRun<'_>,
+    item: &mut MigrationItem,
+) -> Result<(), TransferError> {
+    let token = match item.state {
+        ItemState::Transferred | ItemState::Verifying => run.target_token,
+        _ => run.source_token,
+    };
+    let snapshot = match run.drive.get_file(token, &item.file_id).await {
+        Ok(snapshot) => snapshot,
+        Err(DriveTransferError::NotFound) => {
+            apply_state(item, ItemState::PermanentFailed).map_err(StepError::into_transfer)?;
+            persist(run, item).await.map_err(StepError::into_transfer)?;
+            return Ok(());
+        }
+        Err(err) => return Err(TransferError::Drive(err)),
+    };
+
+    if snapshot.trashed {
+        apply_state(item, ItemState::SkippedTrashed).map_err(StepError::into_transfer)?;
+        persist(run, item).await.map_err(StepError::into_transfer)?;
+        return Ok(());
+    }
+
+    let target_owns = is_owner(&snapshot.owners, run.target_permission_id);
+    let source_owns = is_owner(&snapshot.owners, run.source_permission_id);
+    if target_owns && !source_owns {
+        let next = match item.state {
+            ItemState::PendingOwnerCreated | ItemState::Accepting => ItemState::Verifying,
+            ItemState::Transferred | ItemState::Verifying => item.state,
+            other => other,
+        };
+        if next != item.state {
+            apply_state(item, next).map_err(StepError::into_transfer)?;
+        }
+        persist(run, item).await.map_err(StepError::into_transfer)?;
+        return Ok(());
+    }
+
+    if let Some(existing) = find_target_permission(
+        &snapshot.permissions,
+        run.target_email,
+        run.target_permission_id,
+    ) {
+        item.target_permission_id = Some(GooglePermissionId::new(existing.id.clone()));
+        if existing.pending_owner && item.state == ItemState::PendingOwnerCreated {
+            apply_state(item, ItemState::AcceptRequired).map_err(StepError::into_transfer)?;
+        }
+        persist(run, item).await.map_err(StepError::into_transfer)?;
+        return Ok(());
+    }
+
+    persist(run, item).await.map_err(StepError::into_transfer)?;
+    Ok(())
 }

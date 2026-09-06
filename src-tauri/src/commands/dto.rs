@@ -319,6 +319,13 @@ pub struct StartCanaryInput {
     pub confirmation: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueJobInput {
+    pub job_id: String,
+    pub position: Option<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

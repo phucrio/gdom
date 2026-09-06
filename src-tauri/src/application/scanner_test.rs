@@ -240,6 +240,20 @@ impl ItemStorePort for CountingStore {
     ) -> ItemStoreFuture<'a, ()> {
         self.inner.save_item(item)
     }
+
+    fn cancel_unstarted_items<'a>(
+        &'a self,
+        job_id: crate::domain::job::JobId,
+    ) -> ItemStoreFuture<'a, u64> {
+        self.inner.cancel_unstarted_items(job_id)
+    }
+
+    fn retry_failed_items<'a>(
+        &'a self,
+        job_id: crate::domain::job::JobId,
+    ) -> ItemStoreFuture<'a, u64> {
+        self.inner.retry_failed_items(job_id)
+    }
 }
 
 async fn execute_scan(

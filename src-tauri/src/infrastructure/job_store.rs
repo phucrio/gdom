@@ -1,7 +1,9 @@
 use sqlx::{Row, SqlitePool};
 use std::str::FromStr;
 
-use crate::application::job_store::{JobStoreFuture, JobStorePort, JobStorePortError};
+use crate::application::job_store::{
+    JobStoreFuture, JobStorePort, JobStorePortError, MigrationEvent, WorkerLease,
+};
 use crate::domain::job::{
     AccountPair, AccountSnapshot, JobAccountSnapshots, JobId, JobStatus, MigrationJob,
     MigrationRoot, RootId, RootValidationStatus,
@@ -537,6 +539,263 @@ impl JobStorePort for SqliteJobStore {
             Ok(count > 0)
         })
     }
+
+    fn acquire_mutation_lease<'a>(
+        &'a self,
+        job_id: JobId,
+        owner_instance_id: &'a str,
+        acquired_at: &'a str,
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(async move {
+            let result = sqlx::query(
+                "INSERT INTO worker_leases (lease_id, job_id, owner_instance_id, acquired_at, heartbeat_at)
+                 VALUES (1, ?1, ?2, ?3, ?3)",
+            )
+            .bind(job_id.value().to_string())
+            .bind(owner_instance_id)
+            .bind(acquired_at)
+            .execute(&self.pool)
+            .await;
+
+            match result {
+                Ok(_) => Ok(()),
+                Err(sqlx::Error::Database(dbe)) if dbe.is_unique_violation() => {
+                    Err(JobStorePortError::MutationLeaseHeld)
+                }
+                Err(err) => Err(JobStorePortError::Database(err.to_string())),
+            }
+        })
+    }
+
+    fn release_mutation_lease<'a>(
+        &'a self,
+        job_id: JobId,
+        owner_instance_id: &'a str,
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(async move {
+            sqlx::query(
+                "DELETE FROM worker_leases
+                 WHERE job_id = ?1 AND owner_instance_id = ?2",
+            )
+            .bind(job_id.value().to_string())
+            .bind(owner_instance_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn clear_mutation_leases<'a>(&'a self) -> JobStoreFuture<'a, ()> {
+        Box::pin(async move {
+            sqlx::query("DELETE FROM worker_leases")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn current_mutation_lease<'a>(&'a self) -> JobStoreFuture<'a, Option<WorkerLease>> {
+        Box::pin(async move {
+            let row = sqlx::query(
+                "SELECT job_id, owner_instance_id, acquired_at, heartbeat_at FROM worker_leases LIMIT 1",
+            )
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            let job_id_str: String = row.get(0);
+            let owner_instance_id: String = row.get(1);
+            let acquired_at: String = row.get(2);
+            let heartbeat_at: String = row.get(3);
+            let job_id = JobId::from_str(&job_id_str)
+                .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+            Ok(Some(WorkerLease {
+                job_id,
+                owner_instance_id,
+                acquired_at,
+                heartbeat_at,
+            }))
+        })
+    }
+
+    fn persist_job_with_event<'a>(
+        &'a self,
+        job: &'a MigrationJob,
+        event: &'a MigrationEvent,
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(async move {
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+
+            let id = job.id().value().to_string();
+            let source_acc = job.source_account_id().value().to_string();
+            let target_acc = job.target_account_id().value().to_string();
+            let source_snap = &job.snapshots().source;
+            let target_snap = &job.snapshots().target;
+            let status = job.status().as_str();
+            let canary_size = job.canary_size() as i64;
+
+            let res = sqlx::query(
+                "UPDATE migration_jobs SET
+                    source_account_id = ?1,
+                    target_account_id = ?2,
+                    source_email_snapshot = ?3,
+                    target_email_snapshot = ?4,
+                    source_display_name_snapshot = ?5,
+                    target_display_name_snapshot = ?6,
+                    source_permission_id_snapshot = ?7,
+                    target_permission_id_snapshot = ?8,
+                    status = ?9,
+                    queue_position = ?10,
+                    canary_size = ?11,
+                    started_at = ?12,
+                    completed_at = ?13,
+                    last_error = ?14
+                WHERE id = ?15",
+            )
+            .bind(source_acc)
+            .bind(target_acc)
+            .bind(&source_snap.email)
+            .bind(&target_snap.email)
+            .bind(&source_snap.display_name)
+            .bind(&target_snap.display_name)
+            .bind(source_snap.permission_id.as_str())
+            .bind(target_snap.permission_id.as_str())
+            .bind(status)
+            .bind(job.queue_position())
+            .bind(canary_size)
+            .bind(job.started_at())
+            .bind(job.completed_at())
+            .bind(job.last_error())
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+
+            if res.rows_affected() == 0 {
+                return Err(JobStorePortError::JobNotFound(job.id()));
+            }
+
+            insert_migration_event(&mut tx, event)
+                .await
+                .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+
+            tx.commit()
+                .await
+                .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn append_migration_event<'a>(&'a self, event: &'a MigrationEvent) -> JobStoreFuture<'a, ()> {
+        Box::pin(async move { insert_migration_event_pool(&self.pool, event).await })
+    }
+
+    fn latest_job_event<'a>(&'a self, job_id: JobId) -> JobStoreFuture<'a, Option<MigrationEvent>> {
+        Box::pin(async move {
+            let row = sqlx::query(
+                "SELECT id, job_id, file_id, account_id, event_type, previous_state, new_state,
+                        sanitized_detail_json, created_at
+                 FROM migration_events
+                 WHERE job_id = ?1 AND event_type = 'JOB_STATUS'
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1",
+            )
+            .bind(job_id.value().to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            let id: String = row.get(0);
+            let job_id_str: String = row.get(1);
+            let file_id: Option<String> = row.get(2);
+            let account_id_str: Option<String> = row.get(3);
+            let event_type: String = row.get(4);
+            let previous_state: Option<String> = row.get(5);
+            let new_state: Option<String> = row.get(6);
+            let sanitized_detail_json: Option<String> = row.get(7);
+            let created_at: String = row.get(8);
+            let parsed_job_id = JobId::from_str(&job_id_str)
+                .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+            let account_id = match account_id_str {
+                Some(raw) => Some(AccountId::new(
+                    raw.parse::<u128>()
+                        .map_err(|e| JobStorePortError::Database(e.to_string()))?,
+                )),
+                None => None,
+            };
+            Ok(Some(MigrationEvent {
+                id,
+                job_id: parsed_job_id,
+                file_id,
+                account_id,
+                event_type,
+                previous_state,
+                new_state,
+                sanitized_detail_json,
+                created_at,
+            }))
+        })
+    }
+}
+
+async fn insert_migration_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &MigrationEvent,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO migration_events (
+            id, job_id, file_id, account_id, event_type, previous_state, new_state,
+            sanitized_detail_json, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )
+    .bind(&event.id)
+    .bind(event.job_id.value().to_string())
+    .bind(&event.file_id)
+    .bind(event.account_id.map(|id| id.value().to_string()))
+    .bind(&event.event_type)
+    .bind(&event.previous_state)
+    .bind(&event.new_state)
+    .bind(&event.sanitized_detail_json)
+    .bind(&event.created_at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn insert_migration_event_pool(
+    pool: &sqlx::SqlitePool,
+    event: &MigrationEvent,
+) -> Result<(), JobStorePortError> {
+    sqlx::query(
+        "INSERT INTO migration_events (
+            id, job_id, file_id, account_id, event_type, previous_state, new_state,
+            sanitized_detail_json, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )
+    .bind(&event.id)
+    .bind(event.job_id.value().to_string())
+    .bind(&event.file_id)
+    .bind(event.account_id.map(|id| id.value().to_string()))
+    .bind(&event.event_type)
+    .bind(&event.previous_state)
+    .bind(&event.new_state)
+    .bind(&event.sanitized_detail_json)
+    .bind(&event.created_at)
+    .execute(pool)
+    .await
+    .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+    Ok(())
 }
 
 #[cfg(test)]

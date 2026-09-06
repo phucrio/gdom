@@ -114,6 +114,24 @@ impl JobStatus {
         )
     }
 
+    pub const fn is_unfinished_mutation(self) -> bool {
+        matches!(
+            self,
+            Self::RunningCanary | Self::Running | Self::Pausing | Self::Cancelling
+        )
+    }
+
+    pub const fn is_transfer_resumable(self) -> bool {
+        matches!(
+            self,
+            Self::Paused
+                | Self::Queued
+                | Self::SourceRateLimited
+                | Self::WaitingForQuota
+                | Self::AuthRequired
+        )
+    }
+
     const fn require_draft_pair(self) -> Result<(), JobError> {
         match self {
             Self::Draft => Ok(()),
@@ -541,15 +559,15 @@ impl MigrationJob {
 
     pub fn start_canary(&mut self) -> Result<(), JobError> {
         match self.status {
-            JobStatus::ReadyForReview => {
+            JobStatus::ReadyForReview | JobStatus::Queued => {
                 self.status = JobStatus::RunningCanary;
+                self.queue_position = None;
                 Ok(())
             }
             JobStatus::RunningCanary => Ok(()),
             JobStatus::Draft
             | JobStatus::Scanning
             | JobStatus::CanaryReview
-            | JobStatus::Queued
             | JobStatus::Running
             | JobStatus::Pausing
             | JobStatus::Paused
@@ -593,6 +611,7 @@ impl MigrationJob {
         match self.status {
             JobStatus::CanaryReview => {
                 self.status = JobStatus::Running;
+                self.queue_position = None;
                 Ok(())
             }
             JobStatus::Running => Ok(()),
@@ -699,7 +718,10 @@ impl MigrationJob {
 
     pub fn require_auth(&mut self, error: String) -> Result<(), JobError> {
         match self.status {
-            JobStatus::RunningCanary | JobStatus::Running => {
+            JobStatus::RunningCanary
+            | JobStatus::Running
+            | JobStatus::Pausing
+            | JobStatus::Cancelling => {
                 self.status = JobStatus::AuthRequired;
                 self.last_error = Some(error);
                 Ok(())
@@ -710,15 +732,128 @@ impl MigrationJob {
             | JobStatus::ReadyForReview
             | JobStatus::CanaryReview
             | JobStatus::Queued
-            | JobStatus::Pausing
             | JobStatus::Paused
-            | JobStatus::Cancelling
             | JobStatus::Cancelled
             | JobStatus::Completed
             | JobStatus::CompletedWithErrors
             | JobStatus::Failed
             | JobStatus::SourceRateLimited
             | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn pause_transfer(&mut self) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::RunningCanary
+            | JobStatus::Running
+            | JobStatus::Pausing
+            | JobStatus::Cancelling => {
+                self.status = JobStatus::Paused;
+                self.queue_position = None;
+                Ok(())
+            }
+            JobStatus::Paused => Ok(()),
+            JobStatus::Draft
+            | JobStatus::Scanning
+            | JobStatus::ReadyForReview
+            | JobStatus::CanaryReview
+            | JobStatus::Queued
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed
+            | JobStatus::AuthRequired
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn resume_transfer(&mut self, as_canary: bool) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::Paused
+            | JobStatus::Queued
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota
+            | JobStatus::AuthRequired => {
+                self.status = if as_canary {
+                    JobStatus::RunningCanary
+                } else {
+                    JobStatus::Running
+                };
+                self.queue_position = None;
+                Ok(())
+            }
+            JobStatus::RunningCanary if as_canary => Ok(()),
+            JobStatus::Running if !as_canary => Ok(()),
+            JobStatus::Draft
+            | JobStatus::Scanning
+            | JobStatus::ReadyForReview
+            | JobStatus::RunningCanary
+            | JobStatus::CanaryReview
+            | JobStatus::Running
+            | JobStatus::Pausing
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn enqueue(&mut self, position: i64) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::ReadyForReview
+            | JobStatus::CanaryReview
+            | JobStatus::Paused
+            | JobStatus::Queued
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota
+            | JobStatus::AuthRequired => {
+                self.status = JobStatus::Queued;
+                self.queue_position = Some(position);
+                Ok(())
+            }
+            JobStatus::Draft
+            | JobStatus::Scanning
+            | JobStatus::RunningCanary
+            | JobStatus::Running
+            | JobStatus::Pausing
+            | JobStatus::Cancelling
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed => Err(JobError::IllegalTransition),
+        }
+    }
+
+    pub fn set_queue_position(&mut self, position: Option<i64>) {
+        self.queue_position = position;
+    }
+
+    pub fn cancel_job(&mut self, completed_at: String) -> Result<(), JobError> {
+        match self.status {
+            JobStatus::Draft
+            | JobStatus::Scanning
+            | JobStatus::ReadyForReview
+            | JobStatus::RunningCanary
+            | JobStatus::CanaryReview
+            | JobStatus::Queued
+            | JobStatus::Running
+            | JobStatus::Pausing
+            | JobStatus::Paused
+            | JobStatus::Cancelling
+            | JobStatus::AuthRequired
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota => {
+                self.status = JobStatus::Cancelled;
+                self.completed_at = Some(completed_at);
+                self.queue_position = None;
+                Ok(())
+            }
+            JobStatus::Cancelled => Ok(()),
+            JobStatus::Completed | JobStatus::CompletedWithErrors | JobStatus::Failed => {
+                Err(JobError::IllegalTransition)
+            }
         }
     }
 
@@ -1018,6 +1153,85 @@ mod tests {
         job.complete_transfer("2026-09-05T02:00:00Z".to_string(), false)
             .expect("bulk completes");
         assert_eq!(job.status(), JobStatus::Completed);
+    }
+
+    fn job_ready_for_review() -> MigrationJob {
+        let source = sample_snapshot(1, "source@gmail.com", "perm_1");
+        let target = sample_snapshot(2, "target@gmail.com", "perm_2");
+        let mut job = MigrationJob::new(
+            JobId::new(100),
+            source,
+            target,
+            "2026-09-05T00:00:00Z".to_string(),
+        )
+        .expect("valid job");
+        job.add_root(MigrationRoot {
+            id: RootId::new(501),
+            job_id: job.id(),
+            root_file_id: "folder_abc".to_string(),
+            root_name: "My Folder".to_string(),
+            validation_status: RootValidationStatus::Validated,
+            created_at: "2026-09-05T00:00:00Z".to_string(),
+        })
+        .expect("root added");
+        job.start_scanning("2026-09-05T01:00:00Z".to_string())
+            .expect("scan starts");
+        job.complete_scanning().expect("scan completes");
+        job
+    }
+
+    #[test]
+    fn pause_resume_queue_and_cancel_follow_legal_transfer_transitions() {
+        let mut job = job_ready_for_review();
+        job.start_canary().expect("canary starts");
+        job.pause_transfer().expect("canary pauses");
+        assert_eq!(job.status(), JobStatus::Paused);
+        job.resume_transfer(true).expect("canary resumes");
+        assert_eq!(job.status(), JobStatus::RunningCanary);
+        job.complete_canary().expect("canary completes");
+
+        job.enqueue(1).expect("review job can queue");
+        assert_eq!(job.status(), JobStatus::Queued);
+        assert_eq!(job.queue_position(), Some(1));
+        job.resume_transfer(false).expect("queued job resumes bulk");
+        assert_eq!(job.status(), JobStatus::Running);
+        assert_eq!(job.queue_position(), None);
+        job.pause_transfer().expect("bulk pauses");
+        job.cancel_job("2026-09-05T03:00:00Z".to_string())
+            .expect("paused job cancels");
+        assert_eq!(job.status(), JobStatus::Cancelled);
+        assert_eq!(job.cancel_job("2026-09-05T03:01:00Z".to_string()), Ok(()));
+    }
+
+    #[test]
+    fn start_bulk_from_paused_canary_is_illegal() {
+        let mut job = job_ready_for_review();
+        job.start_canary().expect("canary starts");
+        job.pause_transfer().expect("paused");
+        assert_eq!(job.start_bulk(), Err(JobError::IllegalTransition));
+        job.resume_transfer(true).expect("resume canary");
+        assert_eq!(job.status(), JobStatus::RunningCanary);
+        assert_eq!(job.start_bulk(), Err(JobError::IllegalTransition));
+    }
+
+    #[test]
+    fn queued_ready_job_can_start_canary_without_skipping_review() {
+        let mut job = job_ready_for_review();
+        job.enqueue(1).expect("ready job queues");
+        job.start_canary().expect("explicit start after queue");
+        assert_eq!(job.status(), JobStatus::RunningCanary);
+        assert_eq!(job.queue_position(), None);
+        assert_eq!(job.start_bulk(), Err(JobError::IllegalTransition));
+    }
+
+    #[test]
+    fn enqueue_rejects_active_mutation_jobs() {
+        let mut job = job_ready_for_review();
+        job.start_canary().expect("canary starts");
+        assert_eq!(job.enqueue(1), Err(JobError::IllegalTransition));
+        job.pause_transfer().expect("pause");
+        job.enqueue(2).expect("paused job can queue");
+        assert_eq!(job.queue_position(), Some(2));
     }
 
     #[test]

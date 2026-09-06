@@ -50,6 +50,11 @@ pub fn run() {
             commands::job::export_dry_run,
             commands::job::start_canary,
             commands::job::continue_migration,
+            commands::job::pause_migration,
+            commands::job::resume_migration,
+            commands::job::cancel_migration,
+            commands::job::retry_failed_items,
+            commands::job::queue_job,
         ])
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
@@ -138,6 +143,10 @@ pub fn run() {
                 Arc::new(drive_client) as Arc<dyn application::DrivePort>,
                 Arc::clone(&token_provider),
             ));
+
+            tauri::async_runtime::block_on(job_service.reconcile_on_startup()).map_err(|e| {
+                format!("failed to reconcile unfinished migration jobs on startup: {e}")
+            })?;
 
             #[allow(unreachable_code)]
             let state = AppState::new(

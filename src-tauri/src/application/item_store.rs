@@ -92,4 +92,8 @@ pub trait ItemStorePort: Send + Sync {
     fn list_canary_cohort<'a>(&'a self, job_id: JobId) -> ItemStoreFuture<'a, Vec<MigrationItem>>;
 
     fn save_item<'a>(&'a self, item: &'a MigrationItem) -> ItemStoreFuture<'a, ()>;
+
+    fn cancel_unstarted_items<'a>(&'a self, job_id: JobId) -> ItemStoreFuture<'a, u64>;
+
+    fn retry_failed_items<'a>(&'a self, job_id: JobId) -> ItemStoreFuture<'a, u64>;
 }

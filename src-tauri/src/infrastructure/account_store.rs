@@ -207,6 +207,23 @@ impl SqliteAccountStore {
             tx.commit().await?;
         }
 
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT version FROM _schema_migrations WHERE version = 6")
+                .fetch_optional(&pool)
+                .await?;
+        if row.is_none() {
+            let mut tx = pool.begin().await?;
+            sqlx::raw_sql(include_str!("../../migrations/006_worker_leases.sql"))
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                "INSERT INTO _schema_migrations (version, applied_at) VALUES (6, datetime('now'))",
+            )
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+        }
+
         Ok(Self { pool })
     }
 
