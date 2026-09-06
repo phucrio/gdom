@@ -1,0 +1,12 @@
+[package]
+name = "gdom-logs"
+version = "0.1.0"
+description = "Redacted local file logging for GDOM"
+authors = ["phucrio"]
+license = "GPL-3.0-or-later"
+edition = "2024"
+
+[dependencies]
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "std"] }
