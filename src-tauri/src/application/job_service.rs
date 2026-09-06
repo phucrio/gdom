@@ -353,7 +353,7 @@ where
                 return;
             }
             if tokio::time::Instant::now() >= deadline {
-                return;
+                panic!("job {job_id} worker still in flight after 15s");
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
@@ -889,10 +889,14 @@ where
                         job.set_last_error(format!("quota lookup token failed: {err}"));
                     }
                 }
-                let _ = job.complete_scanning();
+                if let Err(err) = job.complete_scanning() {
+                    job.set_last_error(err.to_string());
+                }
             }
             Ok(ScanOutcome::Paused) => {
-                let _ = job.pause_scanning();
+                if let Err(err) = job.pause_scanning() {
+                    job.set_last_error(err.to_string());
+                }
             }
             Err(err) if err.is_retryable() => {
                 let mapped: JobServiceError = err.into();
@@ -904,7 +908,9 @@ where
                 return;
             }
             Err(err) => {
-                let _ = job.fail_scanning(err.to_string());
+                if let Err(fail_err) = job.fail_scanning(err.to_string()) {
+                    job.set_last_error(fail_err.to_string());
+                }
             }
         }
 
