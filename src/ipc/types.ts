@@ -115,6 +115,47 @@ export type ScanSummary = AssertNoSecrets<{
   skipped: number;
   ineligible: number;
   quotaWarning: boolean;
+  totalItems: number;
+  eligibleItems: number;
+  alreadyOwnedByTarget: number;
+  notOwnedBySource: number;
+  sharedDrive: number;
+  shortcuts: number;
+  trashed: number;
+  otherIneligible: number;
+  estimatedQuotaBytes: number;
+  targetUsageBytes: number;
+  targetLimitBytes: number | null;
+  targetRemainingBytes: number | null;
+}>;
+
+export const JOB_ITEM_FILTERS = ["all", "eligible", "skipped", "ineligible"] as const;
+
+export type JobItemFilter = (typeof JOB_ITEM_FILTERS)[number];
+
+export type JobItemDto = AssertNoSecrets<{
+  id: string;
+  jobId: string;
+  fileId: string;
+  name: string;
+  mimeType: string;
+  depth: number;
+  originalParentIds: string[];
+  state: string;
+  quotaBytesUsed: number | null;
+}>;
+
+export type JobItemsPage = AssertNoSecrets<{
+  items: JobItemDto[];
+  page: number;
+  pageSize: number;
+  total: number;
+}>;
+
+export type DryRunExport = AssertNoSecrets<{
+  path: string;
+  eligibleItems: number;
+  quotaWarning: boolean;
 }>;
 
 export type MigrationProgress = AssertNoSecrets<{

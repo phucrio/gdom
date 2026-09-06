@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { isCommandMissing, toIpcError } from "../ipc/errors.ts";
 import type { BackendPort } from "../ipc/port.ts";
-import { IPC_EVENTS, type AccountDto, type JobDto, type JobErrorEntry, type ScanSummary } from "../ipc/types.ts";
-import { QUOTA_WARNING } from "../legal/copy.ts";
+import { IPC_EVENTS, type AccountDto, type JobDto, type JobErrorEntry } from "../ipc/types.ts";
+import { DryRunReview } from "../dry-run/DryRunReview.tsx";
+import { emptyScanSummary } from "../dry-run/preflight.ts";
 import { WORKSPACE_SECTION_ID } from "../nav/copy.ts";
 import { accountDisplayLabel } from "../accounts/status.ts";
 import { jobRunPhase } from "../jobs/status.ts";
@@ -61,16 +62,6 @@ type LocalRoot = {
   folderId: string;
   input: string;
 };
-
-function emptyScan(): ScanSummary {
-  return {
-    files: 0,
-    folders: 0,
-    skipped: 0,
-    ineligible: 0,
-    quotaWarning: false,
-  };
-}
 
 export function MigrationWizard({
   backend,
@@ -498,7 +489,7 @@ export function MigrationWizard({
     onAnnounce("Migration cancelled.");
   }
 
-  const scan = job?.scan ?? emptyScan();
+  const scan = job?.scan ?? emptyScanSummary();
   const progress = job?.progress ?? { completed: 0, total: 0, currentPath: null };
   const errors = [...(job?.errors ?? []), ...localErrors];
   const progressMax = Math.max(progress.total, 1);
@@ -687,27 +678,14 @@ export function MigrationWizard({
               Resume scan
             </button>
           </div>
-          <div className="preflight" aria-label="Dry-run preflight dashboard">
-            <article>
-              <span className="metric-label">Files</span>
-              <strong>{scan.files}</strong>
-            </article>
-            <article>
-              <span className="metric-label">Folders</span>
-              <strong>{scan.folders}</strong>
-            </article>
-            <article>
-              <span className="metric-label">Skipped</span>
-              <strong>{scan.skipped}</strong>
-            </article>
-            <article>
-              <span className="metric-label">Ineligible</span>
-              <strong>{scan.ineligible}</strong>
-            </article>
-          </div>
-          <p className={scan.quotaWarning ? "warning" : "notice"} role="status">
-            {QUOTA_WARNING}
-          </p>
+          <DryRunReview
+            backend={backend}
+            job={job}
+            accounts={accounts}
+            scan={scan}
+            scanComplete={job !== null && scanAllowsCanary(job.status)}
+            onAnnounce={onAnnounce}
+          />
         </div>
       )}
 

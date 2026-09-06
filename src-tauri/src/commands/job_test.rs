@@ -488,7 +488,10 @@ mod tests {
         assert_eq!(scan.folders, 2);
         assert_eq!(scan.files, 1);
         assert!(scan.skipped >= 1);
+        assert!(scan.shortcuts >= 1);
+        assert_eq!(scan.eligible_items, scan.files + scan.folders);
         assert!(!scan.quota_warning);
+        assert!(scan.target_remaining_bytes.is_some());
 
         let page = list_job_items_inner(
             &state,
@@ -507,18 +510,55 @@ mod tests {
             &state,
             ListJobItemsInput {
                 job_id: job.id.clone(),
+                filter: Some("skipped".into()),
+                page: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(skipped.items.iter().any(|item| item.file_id == "short"));
+        assert!(
+            skipped
+                .items
+                .iter()
+                .any(|item| item.state == "SKIPPED_SHORTCUT_TARGET")
+        );
+
+        let shortcut = list_job_items_inner(
+            &state,
+            ListJobItemsInput {
+                job_id: job.id.clone(),
                 filter: Some("shortcut".into()),
                 page: Some(1),
             },
         )
         .await
         .unwrap();
-        assert_eq!(skipped.items.len(), 1);
-        assert_eq!(skipped.items[0].file_id, "short");
+        assert_eq!(shortcut.items.len(), 1);
+        assert_eq!(shortcut.items[0].file_id, "short");
 
-        let dest = std::path::PathBuf::from(
-            r"C:\Users\hihil\AppData\Local\Temp\grok-goal-279230ef2f13\implementer\dry-run-export.txt",
-        );
+        let ineligible = list_job_items_inner(
+            &state,
+            ListJobItemsInput {
+                job_id: job.id.clone(),
+                filter: Some("ineligible".into()),
+                page: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(ineligible.items.iter().all(|item| item.file_id != "short"));
+        assert!(ineligible.items.iter().all(|item| {
+            matches!(
+                item.state.as_str(),
+                "SKIPPED_NOT_OWNED_BY_SOURCE"
+                    | "SKIPPED_SHARED_DRIVE"
+                    | "SKIPPED_TRASHED"
+                    | "SKIPPED_INELIGIBLE"
+            )
+        }));
+
+        let dest = std::env::temp_dir().join("gdom-dry-run-export.txt");
         let exported = export_dry_run_inner(
             &state,
             ExportDryRunInput {
@@ -535,6 +575,23 @@ mod tests {
         assert!(!body.contains(SOURCE_TOKEN));
         assert!(!body.contains(TARGET_TOKEN));
         assert!(!body.to_ascii_lowercase().contains("bearer"));
+
+        let csv_dest = std::env::temp_dir().join("gdom-dry-run-export.csv");
+        let csv_exported = export_dry_run_inner(
+            &state,
+            ExportDryRunInput {
+                job_id: job.id.clone(),
+                destination: csv_dest.to_string_lossy().into_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(csv_exported.eligible_items, scan.files + scan.folders);
+        let csv_body = std::fs::read_to_string(&csv_dest).unwrap();
+        assert!(csv_body.starts_with("file_id,name,mime_type,depth,state,quota_bytes_used"));
+        assert!(csv_body.contains("short"));
+        assert!(!csv_body.contains(SOURCE_TOKEN));
+        assert!(!csv_body.contains(TARGET_TOKEN));
 
         tokio::time::sleep(std::time::Duration::from_millis(40)).await;
         let requests = captured.lock().unwrap().clone();

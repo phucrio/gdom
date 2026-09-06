@@ -1,7 +1,9 @@
 import type {
   AccountDto,
   AccountReferencesDto,
+  DryRunExport,
   JobDto,
+  JobItemsPage,
   ListJobsFilter,
   OAuthConfigDto,
   RootValidation,
@@ -34,6 +36,8 @@ export type BackendPort = {
   removeRoot(jobId: string, rootId: string): Promise<JobDto>;
   startScan(jobId: string): Promise<JobDto>;
   pauseScan(jobId: string): Promise<JobDto>;
+  listJobItems(jobId: string, filter?: string | null, page?: number): Promise<JobItemsPage>;
+  exportDryRun(jobId: string, destination: string): Promise<DryRunExport>;
   startCanary(jobId: string, confirmationEmail: string): Promise<JobDto>;
   continueMigration(jobId: string): Promise<JobDto>;
   pauseMigration(jobId: string): Promise<JobDto>;

@@ -15,7 +15,9 @@ use crate::application::entity_id::next_entity_id;
 use crate::application::item_store::{ItemPage, ItemStoreError, ItemStorePort};
 use crate::application::job_events::{JobEventSink, JobRuntimeEvent, NoopJobEventSink};
 use crate::application::job_store::{JobStorePort, JobStorePortError, MigrationEvent};
-use crate::application::preflight::PreflightSummary;
+use crate::application::preflight::{
+    DryRunCsvRow, PreflightSummary, destination_is_csv, render_items_csv,
+};
 use crate::application::root_parser::{RootParseError, parse_root_input};
 use crate::application::scanner::{ScanError, ScanOutcome, ScanRun, run_scan};
 use crate::application::time::iso_now;
@@ -1156,18 +1158,22 @@ where
         }
 
         let job = self.get_job(job_id).await?;
-        let summary = self.preflight(job_id).await?;
-        let roots: Vec<String> = job
-            .roots()
-            .iter()
-            .map(|root| root.root_name.clone())
-            .collect();
-        let report = summary.render_report(
-            &job.id().to_string(),
-            &job.snapshots().source.email,
-            &job.snapshots().target.email,
-            &roots,
-        );
+        let report = if destination_is_csv(destination) {
+            self.render_dry_run_csv(job_id).await?
+        } else {
+            let summary = self.preflight(job_id).await?;
+            let roots: Vec<String> = job
+                .roots()
+                .iter()
+                .map(|root| root.root_name.clone())
+                .collect();
+            summary.render_report(
+                &job.id().to_string(),
+                &job.snapshots().source.email,
+                &job.snapshots().target.email,
+                &roots,
+            )
+        };
 
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -1182,6 +1188,32 @@ where
         std::fs::write(path, report.as_bytes())
             .map_err(|e| JobServiceError::ExportFailed(e.to_string()))?;
         Ok(destination.to_string())
+    }
+
+    async fn render_dry_run_csv(&self, job_id: JobId) -> Result<String, JobServiceError> {
+        let mut page = 1_u32;
+        let mut items = Vec::new();
+        loop {
+            let chunk = self
+                .job_store
+                .list_items_page(job_id, None, page, 500)
+                .await?;
+            let chunk_len = chunk.items.len();
+            items.extend(chunk.items);
+            if items.len() as u64 >= chunk.total || chunk_len == 0 || page >= 10_000 {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(render_items_csv(items.iter().map(|item| DryRunCsvRow {
+            file_id: &item.file_id,
+            name: &item.name,
+            mime_type: &item.mime_type,
+            depth: item.depth,
+            state: item.state.as_str(),
+            quota_bytes_used: item.quota_bytes_used,
+        })))
     }
 
     pub async fn scan_summary(

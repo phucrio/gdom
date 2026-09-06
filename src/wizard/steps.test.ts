@@ -41,6 +41,18 @@ describe("wizard step order", () => {
     expect(result).toEqual({ ok: true, step: "add-roots" });
   });
 
+  it("keeps canary blocked until the dry-run Continue gate opens", () => {
+    const blocked = advanceWizard("scan-preflight", {
+      ...readyThroughScan,
+      preflightReady: false,
+    });
+    expect(blocked).toEqual({ ok: false, reason: "scan-incomplete" });
+    expect(advanceWizard("scan-preflight", readyThroughScan)).toEqual({
+      ok: true,
+      step: "canary-review",
+    });
+  });
+
   it("cannot skip the canary gate from scan-preflight to live-migration", () => {
     const skipped = moveToStep("scan-preflight", "live-migration", {
       ...readyThroughScan,

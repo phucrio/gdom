@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AccountDto, JobDto } from "../ipc/types.ts";
 import { JOB_LABEL_SEPARATOR, JOB_PAIR_ARROW } from "./copy.ts";
-import { jobPairLabel } from "./pairLabel.ts";
+import { jobPairLabel, jobSnapshotLabel } from "./pairLabel.ts";
 
 const job: JobDto = {
   id: "10",
@@ -55,6 +55,9 @@ describe("job pair label", () => {
   it("prefers the live local label but still uses snapshot emails", () => {
     expect(jobPairLabel(job, accounts)).toBe(
       `Personal A${JOB_LABEL_SEPARATOR}ada@gmail.com${JOB_PAIR_ARROW}Grace${JOB_LABEL_SEPARATOR}grace@gmail.com`,
+    );
+    expect(jobSnapshotLabel(job.sourceSnapshot, accounts)).toBe(
+      `Personal A${JOB_LABEL_SEPARATOR}ada@gmail.com`,
     );
   });
 });

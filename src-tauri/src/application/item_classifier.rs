@@ -17,7 +17,7 @@ impl ScanDisposition {
     pub const fn item_state(self) -> ItemState {
         match self {
             Self::EligibleFolder | Self::EligibleFile => ItemState::Eligible,
-            Self::Shortcut => ItemState::SkippedIneligible,
+            Self::Shortcut => ItemState::SkippedShortcutTarget,
             Self::AlreadyOwnedByTarget => ItemState::SkippedAlreadyOwnedByTarget,
             Self::NotOwnedBySource => ItemState::SkippedNotOwnedBySource,
             Self::SharedDrive => ItemState::SkippedSharedDrive,
@@ -154,7 +154,7 @@ mod tests {
         let disposition = classify_drive_child(&item, &source(), &target());
         assert_eq!(disposition, ScanDisposition::Shortcut);
         assert!(!disposition.should_recurse());
-        assert_eq!(disposition.item_state(), ItemState::SkippedIneligible);
+        assert_eq!(disposition.item_state(), ItemState::SkippedShortcutTarget);
     }
 
     #[test]

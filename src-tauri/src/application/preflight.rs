@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::application::drive_tree::StorageQuota;
 use crate::application::item_store::ItemAggregates;
 
@@ -112,6 +114,61 @@ impl PreflightSummary {
     }
 }
 
+pub fn destination_is_csv(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
+}
+
+pub struct DryRunCsvRow<'a> {
+    pub file_id: &'a str,
+    pub name: &'a str,
+    pub mime_type: &'a str,
+    pub depth: i64,
+    pub state: &'a str,
+    pub quota_bytes_used: Option<i64>,
+}
+
+pub fn csv_cell(value: &str) -> String {
+    let formula = value
+        .chars()
+        .next()
+        .is_some_and(|first| matches!(first, '=' | '+' | '-' | '@' | '\t' | '\r'));
+    let mut escaped = value.replace('"', "\"\"");
+    if formula {
+        escaped.insert(0, '\'');
+    }
+    if formula || escaped.contains(['"', ',', '\n', '\r']) {
+        format!("\"{escaped}\"")
+    } else {
+        escaped
+    }
+}
+
+pub fn render_items_csv<'a>(rows: impl IntoIterator<Item = DryRunCsvRow<'a>>) -> String {
+    let mut out = String::from("file_id,name,mime_type,depth,state,quota_bytes_used\n");
+    for row in rows {
+        let quota = row
+            .quota_bytes_used
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        out.push_str(&csv_cell(row.file_id));
+        out.push(',');
+        out.push_str(&csv_cell(row.name));
+        out.push(',');
+        out.push_str(&csv_cell(row.mime_type));
+        out.push(',');
+        out.push_str(&row.depth.to_string());
+        out.push(',');
+        out.push_str(&csv_cell(row.state));
+        out.push(',');
+        out.push_str(&csv_cell(&quota));
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +236,29 @@ mod tests {
         assert!(!report.to_ascii_lowercase().contains("bearer"));
         assert!(!report.contains("access_token"));
         assert!(!report.contains("refresh_token"));
+    }
+
+    #[test]
+    fn csv_cells_neutralize_formula_injection_and_omit_tokens() {
+        assert_eq!(csv_cell("=CMD()"), "\"'=CMD()\"");
+        assert_eq!(csv_cell("+1+1"), "\"'+1+1\"");
+        assert_eq!(csv_cell("-2"), "\"'-2\"");
+        assert_eq!(csv_cell("@SUM(A1)"), "\"'@SUM(A1)\"");
+        assert_eq!(csv_cell("plain"), "plain");
+        assert_eq!(csv_cell("quote\"name"), "\"quote\"\"name\"");
+        let csv = render_items_csv([DryRunCsvRow {
+            file_id: "file-1",
+            name: "=HYPERLINK(\"http://evil\")",
+            mime_type: "text/plain",
+            depth: 2,
+            state: "ELIGIBLE",
+            quota_bytes_used: Some(12),
+        }]);
+        assert!(csv.starts_with("file_id,name,mime_type,depth,state,quota_bytes_used\n"));
+        assert!(csv.contains("\"'=HYPERLINK(\"\"http://evil\"\")\""));
+        assert!(!csv.to_ascii_lowercase().contains("bearer"));
+        assert!(!csv.contains("access_token"));
+        assert!(destination_is_csv(r"C:\temp\gdom-dry-run.csv"));
+        assert!(!destination_is_csv(r"C:\temp\gdom-dry-run.txt"));
     }
 }

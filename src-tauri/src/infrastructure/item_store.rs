@@ -234,6 +234,42 @@ impl ItemStorePort for SqliteJobStore {
                     .map_err(|e| ItemStoreError::Database(e.to_string()))?;
                     (total, rows)
                 }
+                Some("ineligible") => {
+                    let total: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM migration_items
+                         WHERE job_id = ?1 AND state IN (
+                             'SKIPPED_NOT_OWNED_BY_SOURCE',
+                             'SKIPPED_SHARED_DRIVE',
+                             'SKIPPED_TRASHED',
+                             'SKIPPED_INELIGIBLE'
+                         )",
+                    )
+                    .bind(&job_id_str)
+                    .fetch_one(self.pool())
+                    .await
+                    .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+                    let rows = sqlx::query(
+                        "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
+                                original_owner_permission_id, quota_bytes_used, target_permission_id,
+                                state, created_at, updated_at, canary_selected
+                         FROM migration_items
+                         WHERE job_id = ?1 AND state IN (
+                             'SKIPPED_NOT_OWNED_BY_SOURCE',
+                             'SKIPPED_SHARED_DRIVE',
+                             'SKIPPED_TRASHED',
+                             'SKIPPED_INELIGIBLE'
+                         )
+                         ORDER BY depth DESC, name COLLATE NOCASE ASC
+                         LIMIT ?2 OFFSET ?3",
+                    )
+                    .bind(&job_id_str)
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(self.pool())
+                    .await
+                    .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+                    (total, rows)
+                }
                 Some("shortcut") | Some("shortcuts") => {
                     let total: i64 = sqlx::query_scalar(
                         "SELECT COUNT(*) FROM migration_items WHERE job_id = ?1 AND mime_type = ?2",
