@@ -128,10 +128,7 @@ impl ItemState {
     pub const fn is_unstarted_for_cancel(self) -> bool {
         matches!(
             self,
-            Self::Discovered
-                | Self::Eligible
-                | Self::PendingOwnerRequired
-                | Self::RetryableFailed
+            Self::Discovered | Self::Eligible | Self::PendingOwnerRequired | Self::RetryableFailed
         )
     }
 

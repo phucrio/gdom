@@ -1200,10 +1200,7 @@ mod tests {
         job.cancel_job("2026-09-05T03:00:00Z".to_string())
             .expect("paused job cancels");
         assert_eq!(job.status(), JobStatus::Cancelled);
-        assert_eq!(
-            job.cancel_job("2026-09-05T03:01:00Z".to_string()),
-            Ok(())
-        );
+        assert_eq!(job.cancel_job("2026-09-05T03:01:00Z".to_string()), Ok(()));
     }
 
     #[test]
