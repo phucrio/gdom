@@ -107,7 +107,8 @@ button:disabled {
 .job-actions button,
 .migration-controls button,
 .step-tab,
-.root-list button {
+.root-list button,
+.item-pager button {
   border-radius: 6px;
   border: 1px solid var(--field-border);
   background: var(--surface);
@@ -429,6 +430,91 @@ select {
   padding: 14px;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.dry-run {
+  display: grid;
+  gap: 18px;
+}
+
+.dry-run-meta,
+.dry-run-quota {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.dry-run-meta div,
+.dry-run-quota div {
+  margin: 0;
+}
+
+.dry-run-meta dt,
+.dry-run-quota dt {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.dry-run-meta dd,
+.dry-run-quota dd {
+  margin: 0;
+}
+
+.dry-run-items-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.item-table-wrap {
+  overflow: auto;
+}
+
+.item-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.item-table th,
+.item-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--field-border);
+  vertical-align: top;
+}
+
+.item-table th {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.item-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
 .metric-label {
   display: block;
   color: var(--muted);
@@ -521,6 +607,11 @@ code {
 
   .preflight {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .dry-run-meta,
+  .dry-run-quota {
+    grid-template-columns: 1fr;
   }
 
   .account-card,

@@ -177,6 +177,18 @@ pub struct ScanSummaryDto {
     pub skipped: u64,
     pub ineligible: u64,
     pub quota_warning: bool,
+    pub total_items: u64,
+    pub eligible_items: u64,
+    pub already_owned_by_target: u64,
+    pub not_owned_by_source: u64,
+    pub shared_drive: u64,
+    pub shortcuts: u64,
+    pub trashed: u64,
+    pub other_ineligible: u64,
+    pub estimated_quota_bytes: u64,
+    pub target_usage_bytes: u64,
+    pub target_limit_bytes: Option<u64>,
+    pub target_remaining_bytes: Option<u64>,
 }
 
 impl From<&crate::application::PreflightSummary> for ScanSummaryDto {
@@ -185,8 +197,23 @@ impl From<&crate::application::PreflightSummary> for ScanSummaryDto {
             files: summary.eligible_files,
             folders: summary.eligible_folders,
             skipped: summary.skipped_total(),
-            ineligible: summary.skipped_total(),
+            ineligible: summary.skipped_not_owned_by_source
+                + summary.skipped_shared_drive
+                + summary.skipped_trashed
+                + summary.skipped_ineligible,
             quota_warning: summary.quota_warning,
+            total_items: summary.total_items,
+            eligible_items: summary.eligible_items,
+            already_owned_by_target: summary.skipped_already_owned_by_target,
+            not_owned_by_source: summary.skipped_not_owned_by_source,
+            shared_drive: summary.skipped_shared_drive,
+            shortcuts: summary.skipped_shortcuts,
+            trashed: summary.skipped_trashed,
+            other_ineligible: summary.skipped_ineligible,
+            estimated_quota_bytes: summary.estimated_quota_bytes,
+            target_usage_bytes: summary.target_usage_bytes,
+            target_limit_bytes: summary.target_limit_bytes,
+            target_remaining_bytes: summary.target_remaining_bytes,
         }
     }
 }

@@ -494,7 +494,7 @@ async fn scan_dedupes_overlapping_roots_and_skips_ineligible_items() {
         .map(|item| (item.file_id.clone(), item.state))
         .collect();
     assert_eq!(by_id["file-1"], ItemState::Eligible);
-    assert_eq!(by_id["shortcut-1"], ItemState::SkippedIneligible);
+    assert_eq!(by_id["shortcut-1"], ItemState::SkippedShortcutTarget);
     assert_eq!(by_id["shared-1"], ItemState::SkippedSharedDrive);
     assert_eq!(by_id["other-1"], ItemState::SkippedNotOwnedBySource);
     assert_eq!(

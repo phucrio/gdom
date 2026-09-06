@@ -46,7 +46,9 @@ pub use job_service::{
     TransferProgress,
 };
 pub use job_store::{JobStoreFuture, JobStorePort, JobStorePortError, MigrationEvent, WorkerLease};
-pub use preflight::PreflightSummary;
+pub use preflight::{
+    DryRunCsvRow, PreflightSummary, csv_cell, destination_is_csv, render_items_csv,
+};
 pub use refresh_token_store::{RefreshToken, RefreshTokenStore, RefreshTokenStoreError};
 pub use root_parser::{RootParseError, parse_root_input};
 

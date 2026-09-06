@@ -9,7 +9,9 @@ import {
   JOB_COMMANDS,
   type AccountDto,
   type AccountReferencesDto,
+  type DryRunExport,
   type JobDto,
+  type JobItemsPage,
   type ListJobsFilter,
   type OAuthConfigDto,
   type RootValidation,
@@ -96,6 +98,14 @@ export function createTauriBackend(): BackendPort {
       invokeCommand<JobDto>(JOB_COMMANDS.startScan, { input: { jobId } }),
     pauseScan: (jobId) =>
       invokeCommand<JobDto>(JOB_COMMANDS.pauseScan, { input: { jobId } }),
+    listJobItems: (jobId, filter, page) =>
+      invokeCommand<JobItemsPage>(JOB_COMMANDS.listJobItems, {
+        input: { jobId, filter: filter ?? null, page: page ?? 1 },
+      }),
+    exportDryRun: (jobId, destination) =>
+      invokeCommand<DryRunExport>(JOB_COMMANDS.exportDryRun, {
+        input: { jobId, destination },
+      }),
     startCanary: (jobId, confirmationEmail) =>
       invokeCommand<JobDto>(JOB_COMMANDS.startCanary, {
         input: { jobId, confirmation: confirmationEmail },

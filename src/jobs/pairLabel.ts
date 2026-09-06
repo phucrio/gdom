@@ -19,7 +19,15 @@ function snapshotSide(snapshot: AccountSnapshotDto, accounts: readonly AccountDt
   return email.length > 0 ? email : snapshot.accountId;
 }
 
+/** Snapshot identity uses the job record, never the account currently selected in the registry. */
+export function jobSnapshotLabel(
+  snapshot: AccountSnapshotDto,
+  accounts: readonly AccountDto[] = [],
+): string {
+  return snapshotSide(snapshot, accounts);
+}
+
 /** Pair text uses job snapshots, never the account currently selected in the registry. */
 export function jobPairLabel(job: JobDto, accounts: readonly AccountDto[] = []): string {
-  return `${snapshotSide(job.sourceSnapshot, accounts)}${JOB_PAIR_ARROW}${snapshotSide(job.targetSnapshot, accounts)}`;
+  return `${jobSnapshotLabel(job.sourceSnapshot, accounts)}${JOB_PAIR_ARROW}${jobSnapshotLabel(job.targetSnapshot, accounts)}`;
 }

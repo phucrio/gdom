@@ -54,7 +54,8 @@ select`,
 .job-actions button,
 .migration-controls button,
 .step-tab,
-.root-list button`,
+.root-list button,
+.item-pager button`,
     );
     const border = resolveCssColor(declarationValue(controlRule, "border"), tokens);
     const page = tokens["ink"];
