@@ -68,4 +68,14 @@ select`,
     expect(contrastRatio(border, page)).toBeGreaterThanOrEqual(3);
     expect(contrastRatio(border, panel)).toBeGreaterThanOrEqual(3);
   });
+
+  it("keeps the Google sign-in button text and border at least 4.5:1 and 3:1", () => {
+    const rule = parseRuleBlock(css, `.google-sign-in`);
+    const border = resolveCssColor(declarationValue(rule, "border"), {});
+    const fill = resolveCssColor(declarationValue(rule, "background"), {});
+    const text = resolveCssColor(declarationValue(rule, "color"), {});
+
+    expect(contrastRatio(text, fill)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(border, fill)).toBeGreaterThanOrEqual(3);
+  });
 });

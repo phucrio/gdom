@@ -57,6 +57,17 @@ The UI targets WCAG 2.2 AA: 4.5:1 normal text contrast, 3:1 large text and compo
 4. Add idempotent pending-owner, acceptance, and verification phases with a mandatory canary.
 5. Add single-job scheduling, checkpoint recovery, reports, and UI workflows.
 
+## Public Desktop OAuth Client ID and SSO
+
+Desktop OAuth clients are public clients per RFC 8252. Google's token endpoint for the **Desktop app** client type still requires the console-issued `client_secret` (`invalid_request` / `client_secret is missing.`). That secret is not a refresh token, but it must not be committed to the open-source tree.
+
+The client ID is embedded in source. The secret is never in git and never enters the React WebView:
+
+1. Local testing: set `GDOM_GOOGLE_CLIENT_SECRET` (optional `GDOM_GOOGLE_CLIENT_ID`) in the process environment before `pnpm tauri dev`. Secret-only binds to the embedded client ID.
+2. Release / CI package: inject `GDOM_DEFAULT_CLIENT_SECRET` at compile time from the GitHub Actions repository secret of the same name (`option_env!`).
+
+There is no in-app JSON import. Enable the Google Drive API on the Cloud project and add test users on the OAuth consent screen before live sign-in.
+
 ## Validation rule
 
 Real OAuth/Drive integration tests are ignored unless an explicit environment variable enables them. No live transfer occurs during development without the user's direct confirmation.

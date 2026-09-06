@@ -13,7 +13,7 @@ import type {
 export type BackendPort = {
   listAccounts(): Promise<AccountDto[]>;
   getOAuthConfig(): Promise<OAuthConfigDto>;
-  configureOAuth(clientId: string): Promise<void>;
+  resetOAuthConfig(): Promise<OAuthConfigDto>;
   connectAccount(): Promise<AccountDto>;
   reauthenticateAccount(accountId: string): Promise<AccountDto>;
   updateAccountLabel(accountId: string, label: string | null): Promise<AccountDto>;

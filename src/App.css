@@ -589,6 +589,40 @@ code {
   padding-left: 12px;
 }
 
+.advanced-options {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+}
+
+.advanced-options summary {
+  cursor: pointer;
+}
+
+.advanced-options-form {
+  margin-top: 12px;
+}
+
+.google-sign-in {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 6px;
+  border: 1px solid #747775;
+  background: #ffffff;
+  color: #1f1f1f;
+  padding: 8px 14px;
+  font-weight: 600;
+}
+
+.google-mark {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 3px;

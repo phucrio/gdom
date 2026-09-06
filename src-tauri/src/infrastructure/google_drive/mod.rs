@@ -214,7 +214,15 @@ impl GoogleDriveClient {
     async fn error_from_response(response: reqwest::Response) -> GoogleDriveError {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        GoogleDriveError::from_status_and_body(status, &body)
+        let error = GoogleDriveError::from_status_and_body(status, &body);
+        let context = parse_google_error(&body);
+        tracing::warn!(
+            status = status.as_u16(),
+            google_status = context.status.as_deref().unwrap_or(""),
+            reasons = %context.reasons.join(","),
+            "Google Drive request was rejected"
+        );
+        error
     }
 }
 
@@ -231,14 +239,43 @@ fn parse_u64_string(value: Option<String>) -> Option<u64> {
     value.and_then(|raw| raw.parse().ok())
 }
 
-fn google_error_reason(body: &str) -> Option<String> {
-    let parsed: RawGoogleErrorBody = serde_json::from_str(body).ok()?;
-    parsed.error.and_then(|error| {
-        error
-            .errors
-            .into_iter()
-            .find_map(|item| item.reason.filter(|reason| !reason.is_empty()))
-    })
+struct GoogleErrorContext {
+    reasons: Vec<String>,
+    status: Option<String>,
+    message: Option<String>,
+}
+
+fn parse_google_error(body: &str) -> GoogleErrorContext {
+    let Ok(parsed) = serde_json::from_str::<RawGoogleErrorBody>(body) else {
+        return GoogleErrorContext {
+            reasons: Vec::new(),
+            status: None,
+            message: None,
+        };
+    };
+    let Some(error) = parsed.error else {
+        return GoogleErrorContext {
+            reasons: Vec::new(),
+            status: None,
+            message: None,
+        };
+    };
+    let mut reasons = Vec::new();
+    for item in error.errors {
+        if let Some(reason) = item.reason.filter(|reason| !reason.is_empty()) {
+            reasons.push(reason);
+        }
+    }
+    for detail in error.details {
+        if let Some(reason) = detail.reason.filter(|reason| !reason.is_empty()) {
+            reasons.push(reason);
+        }
+    }
+    GoogleErrorContext {
+        reasons,
+        status: error.status.filter(|value| !value.is_empty()),
+        message: error.message.filter(|value| !value.is_empty()),
+    }
 }
 
 fn drive_child_from_raw(raw: RawFileResponse) -> DriveChild {
@@ -368,6 +405,18 @@ struct RawGoogleErrorBody {
 struct RawGoogleErrorInner {
     #[serde(default)]
     errors: Vec<RawGoogleErrorItem>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    details: Vec<RawGoogleErrorDetail>,
+}
+
+#[derive(Deserialize)]
+struct RawGoogleErrorDetail {
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -413,6 +462,8 @@ impl DriveAccountIdentity {
 pub enum GoogleDriveError {
     Unauthorized,
     Forbidden,
+    ApiNotEnabled,
+    InsufficientScope,
     NotFound,
     RateLimited,
     SharingRateLimitExceeded,
@@ -436,12 +487,33 @@ impl GoogleDriveError {
     }
 
     fn from_status_and_body(status: StatusCode, body: &str) -> Self {
-        if let Some(reason) = google_error_reason(body) {
+        let context = parse_google_error(body);
+        for reason in &context.reasons {
             match reason.as_str() {
                 "sharingRateLimitExceeded" => return Self::SharingRateLimitExceeded,
                 "storageQuotaExceeded" => return Self::StorageQuotaExceeded,
                 "rateLimitExceeded" | "userRateLimitExceeded" => return Self::RateLimited,
+                "accessNotConfigured" | "SERVICE_DISABLED" | "API_DISABLED" => {
+                    return Self::ApiNotEnabled;
+                }
+                "ACCESS_TOKEN_SCOPE_INSUFFICIENT" | "insufficientPermissions" => {
+                    return Self::InsufficientScope;
+                }
                 _ => {}
+            }
+        }
+        if let Some(message) = context.message.as_deref() {
+            let lowered = message.to_ascii_lowercase();
+            if lowered.contains("has not been used")
+                || lowered.contains("is disabled")
+                || lowered.contains("access not configured")
+            {
+                return Self::ApiNotEnabled;
+            }
+            if lowered.contains("insufficient authentication scopes")
+                || lowered.contains("insufficient permissions")
+            {
+                return Self::InsufficientScope;
             }
         }
         Self::from_status(status)
@@ -453,6 +525,12 @@ impl fmt::Display for GoogleDriveError {
         match self {
             Self::Unauthorized => formatter.write_str("Google Drive rejected the access token"),
             Self::Forbidden => formatter.write_str("Google Drive denied this request"),
+            Self::ApiNotEnabled => formatter.write_str(
+                "Google Drive API is not enabled for this Cloud project. Enable Drive API in Google Cloud Console, wait a minute, then sign in again",
+            ),
+            Self::InsufficientScope => formatter.write_str(
+                "Google did not grant full Drive access. Allow Drive access on the consent screen, and add https://www.googleapis.com/auth/drive to the OAuth consent screen",
+            ),
             Self::NotFound => formatter.write_str("Google Drive file or folder not found"),
             Self::RateLimited => formatter.write_str("Google Drive rate limit reached"),
             Self::SharingRateLimitExceeded => {
@@ -539,7 +617,9 @@ impl From<GoogleDriveError> for DriveFolderLookupError {
     fn from(error: GoogleDriveError) -> Self {
         match error {
             GoogleDriveError::Unauthorized => Self::Unauthorized,
-            GoogleDriveError::Forbidden => Self::Forbidden,
+            GoogleDriveError::Forbidden
+            | GoogleDriveError::ApiNotEnabled
+            | GoogleDriveError::InsufficientScope => Self::Forbidden,
             GoogleDriveError::NotFound => Self::NotFound,
             GoogleDriveError::RateLimited | GoogleDriveError::SharingRateLimitExceeded => {
                 Self::RateLimited
@@ -585,6 +665,8 @@ impl From<GoogleDriveError> for IdentityLookupError {
         match error {
             GoogleDriveError::Unauthorized => Self::Unauthorized,
             GoogleDriveError::Forbidden => Self::Forbidden,
+            GoogleDriveError::ApiNotEnabled => Self::ApiNotEnabled,
+            GoogleDriveError::InsufficientScope => Self::InsufficientScope,
             GoogleDriveError::NotFound => Self::UnexpectedStatus(404),
             GoogleDriveError::RateLimited | GoogleDriveError::SharingRateLimitExceeded => {
                 Self::RateLimited

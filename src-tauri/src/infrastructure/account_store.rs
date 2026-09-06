@@ -431,6 +431,10 @@ impl SqliteAccountStore {
     pub async fn save_oauth_client_id(&self, client_id: &str) -> Result<(), AccountStoreError> {
         self.set_setting("oauth.client_id", client_id).await
     }
+
+    pub async fn clear_oauth_client_id(&self) -> Result<(), AccountStoreError> {
+        self.delete_setting("oauth.client_id").await
+    }
 }
 
 fn parse_account(stored: StoredAccountRow) -> Result<ConnectedAccount, AccountStoreError> {

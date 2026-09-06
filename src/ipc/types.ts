@@ -46,11 +46,8 @@ export type AccountDto = AssertNoSecrets<{
 export type OAuthConfigDto = AssertNoSecrets<{
   isConfigured: boolean;
   clientId: string | null;
-}>;
-
-/** Client-ID-only configure payload. Client secrets never enter the WebView. */
-export type ConfigureOAuthInput = AssertNoSecrets<{
-  clientId: string;
+  usingCustomOverride: boolean;
+  canSignIn: boolean;
 }>;
 
 export type AccountIdInput = AssertNoSecrets<{
@@ -217,6 +214,7 @@ export const ACCOUNT_COMMANDS = {
   listAccounts: "list_accounts",
   configureOAuth: "configure_oauth",
   getOAuthConfig: "get_oauth_config",
+  resetOAuthConfig: "reset_oauth_config",
   connectAccount: "connect_account",
   reauthenticateAccount: "reauthenticate_account",
   updateAccountLabel: "update_account_label",

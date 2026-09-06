@@ -18,6 +18,7 @@ Tracking: [issue #19](https://github.com/phucrio/gdom/issues/19).
 - A job has exactly one distinct source and target; the pair becomes immutable when scanning starts.
 - Only one job may issue ownership mutations at a time.
 - Consumer-account transfers require a source `pendingOwner` request and a target acceptance; every request must use the account-specific OAuth token.
+- Google sign-in uses a Desktop OAuth client (RFC 8252). The client ID is embedded; the client secret is never committed. Local testing sets `GDOM_GOOGLE_CLIENT_SECRET`; CI package builds inject `GDOM_DEFAULT_CLIENT_SECRET` from a repository secret.
 - OAuth tokens remain in the Rust backend; refresh tokens live in Windows Credential Manager.
 - Backend logs are written to the local app-data `logs/gdom.log` file, rotated at 10 MB and kept to five files. Tokens and secrets are redacted before a line is stored.
 - OAuth requests full Drive access because GDOM must list and transfer arbitrary existing items; the consent flow must justify this immediately before opening the system browser.
@@ -32,10 +33,15 @@ Durable product and architecture decisions are recorded in [docs/DECISIONS.md](d
 
 Install the Linux WebKit/RSVG prerequisites from the [Tauri guide](https://v2.tauri.app/start/prerequisites/), then run:
 
-```sh
+```powershell
 pnpm install
+$env:GDOM_GOOGLE_CLIENT_SECRET = "GOCSPX-your-desktop-client-secret"
 pnpm tauri dev
 ```
+
+Google's Desktop token endpoint requires that secret. Do not commit it. Enable the Google Drive API on the Cloud project and add your Gmail as an OAuth test user. If a leftover custom client ID is stored from an older build, use **Advanced → Use GDOM default**.
+
+Release installers are built on `main` / `workflow_dispatch` with `GDOM_DEFAULT_CLIENT_SECRET` from GitHub Actions repository secrets.
 
 For frontend-only work:
 

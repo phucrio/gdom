@@ -147,6 +147,26 @@ async fn exchange_code_maps_invalid_grant_error() {
 }
 
 #[tokio::test]
+async fn exchange_code_maps_invalid_request_missing_client_secret() {
+    // Given
+    let error_body =
+        r#"{"error":"invalid_request","error_description":"client_secret is missing."}"#;
+    let (base_url, _) = serve_once("400 Bad Request", error_body);
+    let client = GoogleTokenClient::for_test(base_url, CLIENT_ID.to_owned(), None)
+        .expect("test client builds");
+
+    // When
+    let error = timeout(Duration::from_secs(2), client.exchange_code(grant()))
+        .await
+        .expect("test completes before timeout")
+        .expect_err("missing client secret produces error");
+
+    // Then
+    assert_eq!(error, GoogleTokenError::InvalidRequest);
+    assert!(!format!("{error}").contains("400"));
+}
+
+#[tokio::test]
 async fn exchange_code_maps_invalid_client_error() {
     // Given
     let error_body = r#"{"error": "invalid_client", "error_description": "Unauthorized"}"#;

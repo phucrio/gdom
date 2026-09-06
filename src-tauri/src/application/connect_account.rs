@@ -60,6 +60,7 @@ impl TokenResponse {
 pub enum TokenExchangeError {
     InvalidGrant,
     InvalidClient,
+    InvalidRequest,
     RateLimited,
     Unavailable,
     Transport,
@@ -74,6 +75,9 @@ impl fmt::Display for TokenExchangeError {
             Self::InvalidClient => {
                 formatter.write_str("token exchange rejected client credentials")
             }
+            Self::InvalidRequest => formatter.write_str(
+                "Google rejected the token request. Desktop OAuth clients require a client secret stored in Windows Credential Manager, not in application source",
+            ),
             Self::RateLimited => formatter.write_str("token exchange rate limit reached"),
             Self::Unavailable => formatter.write_str("token service is unavailable"),
             Self::Transport => formatter.write_str("token exchange network request failed"),
@@ -129,6 +133,8 @@ impl AccountIdentity {
 pub enum IdentityLookupError {
     Unauthorized,
     Forbidden,
+    ApiNotEnabled,
+    InsufficientScope,
     RateLimited,
     Unavailable,
     Transport,
@@ -140,7 +146,15 @@ impl fmt::Display for IdentityLookupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unauthorized => formatter.write_str("identity service rejected access token"),
-            Self::Forbidden => formatter.write_str("identity service denied access"),
+            Self::Forbidden => formatter.write_str(
+                "Google Drive denied identity lookup. Enable the Drive API for this Cloud project, add the Drive scope on the OAuth consent screen, and add this Google account as a test user",
+            ),
+            Self::ApiNotEnabled => formatter.write_str(
+                "Google Drive API is not enabled for this Cloud project. Enable Drive API in Google Cloud Console (APIs & Services → Library → Google Drive API), wait a minute, then sign in again",
+            ),
+            Self::InsufficientScope => formatter.write_str(
+                "Google did not grant full Drive access. Allow Drive access on the consent screen, and add https://www.googleapis.com/auth/drive to the OAuth consent screen",
+            ),
             Self::RateLimited => formatter.write_str("identity service rate limit reached"),
             Self::Unavailable => formatter.write_str("identity service is unavailable"),
             Self::Transport => formatter.write_str("identity service request failed"),

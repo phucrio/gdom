@@ -43,10 +43,7 @@ export function createTauriBackend(): BackendPort {
   return {
     listAccounts: () => invokeCommand<AccountDto[]>(ACCOUNT_COMMANDS.listAccounts),
     getOAuthConfig: () => invokeCommand<OAuthConfigDto>(ACCOUNT_COMMANDS.getOAuthConfig),
-    configureOAuth: (clientId) =>
-      invokeCommand<void>(ACCOUNT_COMMANDS.configureOAuth, {
-        input: { clientId },
-      }),
+    resetOAuthConfig: () => invokeCommand<OAuthConfigDto>(ACCOUNT_COMMANDS.resetOAuthConfig),
     connectAccount: () => invokeCommand<AccountDto>(ACCOUNT_COMMANDS.connectAccount),
     reauthenticateAccount: (accountId) =>
       invokeCommand<AccountDto>(ACCOUNT_COMMANDS.reauthenticateAccount, {

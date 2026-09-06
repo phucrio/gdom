@@ -93,6 +93,10 @@ impl std::fmt::Debug for ConfigureOAuthInput {
 pub struct OAuthConfigDto {
     pub is_configured: bool,
     pub client_id: Option<String>,
+    pub using_custom_override: bool,
+    /// True when a Desktop client secret is available in the keychain, env, or
+    /// compile-time injection. The secret value itself never crosses IPC.
+    pub can_sign_in: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -477,11 +481,16 @@ mod tests {
         let dto = OAuthConfigDto {
             is_configured: true,
             client_id: Some("client-123".into()),
+            using_custom_override: false,
+            can_sign_in: true,
         };
         let json = serde_json::to_value(&dto).expect("serializes");
 
         assert_eq!(json["isConfigured"], true);
         assert_eq!(json["clientId"], "client-123");
+        assert_eq!(json["usingCustomOverride"], false);
+        assert_eq!(json["canSignIn"], true);
+        assert!(json.get("clientSecret").is_none());
     }
 
     #[test]
@@ -489,6 +498,8 @@ mod tests {
         let dto = OAuthConfigDto {
             is_configured: false,
             client_id: None,
+            using_custom_override: false,
+            can_sign_in: false,
         };
         let json = serde_json::to_value(&dto).expect("serializes");
 

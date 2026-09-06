@@ -14,10 +14,28 @@ use crate::application::RefreshTokenStore;
 // OAuthConfig
 // ---------------------------------------------------------------------------
 
+/// Public desktop OAuth client ID shipped for one-click Google sign-in.
+/// Override at compile time with `GDOM_DEFAULT_CLIENT_ID`.
+pub const DEFAULT_GOOGLE_CLIENT_ID: &str =
+    "1004841450211-1hhs43nbpqu8vklbe2d681t3rg2g9vso.apps.googleusercontent.com";
+
+/// Google's token endpoint currently requires the Desktop-app client secret.
+/// The secret must not live in git; import JSON, set `GDOM_GOOGLE_CLIENT_SECRET`,
+/// or inject `GDOM_DEFAULT_CLIENT_SECRET` at compile time for release builds.
+pub const DESKTOP_CLIENT_SECRET_REQUIRED: &str = "Google Desktop OAuth clients require a client secret. For local testing set GDOM_GOOGLE_CLIENT_SECRET in your shell before pnpm tauri dev. Release builds inject GDOM_DEFAULT_CLIENT_SECRET from CI. The secret is never committed or shown in the UI.";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OAuthClientSource {
+    CustomOverride,
+    Environment,
+    EmbeddedDefault,
+}
+
 /// Google OAuth client credentials loaded at startup.
 ///
 /// `client_secret` is deliberately redacted from `Debug` output to prevent
-/// accidental exposure in logs.
+/// accidental exposure in logs. Desktop clients are public and typically have
+/// no secret (RFC 8252).
 #[derive(Clone)]
 pub struct OAuthConfig {
     pub client_id: String,
@@ -41,21 +59,76 @@ impl OAuthConfig {
         }
     }
 
-    /// Build from environment variables. Returns `Some` when
-    /// `GDOM_GOOGLE_CLIENT_ID` is set and non-empty.
+    pub fn embedded_client_id() -> &'static str {
+        match option_env!("GDOM_DEFAULT_CLIENT_ID") {
+            Some(id) if !id.is_empty() => id,
+            _ => DEFAULT_GOOGLE_CLIENT_ID,
+        }
+    }
+
+    pub fn embedded_client_secret() -> Option<String> {
+        match option_env!("GDOM_DEFAULT_CLIENT_SECRET") {
+            Some(secret) if !secret.is_empty() => Some(secret.to_owned()),
+            _ => None,
+        }
+    }
+
+    pub fn default_config() -> Self {
+        Self::new(Self::embedded_client_id(), Self::embedded_client_secret())
+    }
+
+    pub fn has_client_secret(&self) -> bool {
+        self.client_secret
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    }
+
+    /// Custom SQLite override, then env, then the embedded default.
+    ///
+    /// `GDOM_GOOGLE_CLIENT_SECRET` may pair with an env client ID or, when the
+    /// client ID is unset, with the embedded public client ID. The secret is
+    /// never compiled into source unless `GDOM_DEFAULT_CLIENT_SECRET` is set at
+    /// build time.
+    pub fn resolve(
+        stored_client_id: Option<&str>,
+        stored_secret: Option<String>,
+        env_lookup: impl Fn(&str) -> Result<String, env::VarError>,
+    ) -> (Self, OAuthClientSource) {
+        if let Some(id) = stored_client_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return (
+                Self::new(id, stored_secret),
+                OAuthClientSource::CustomOverride,
+            );
+        }
+        if let Some(from_env) = Self::from_env_lookup(env_lookup) {
+            return (from_env, OAuthClientSource::Environment);
+        }
+        (Self::default_config(), OAuthClientSource::EmbeddedDefault)
+    }
+
     pub fn from_env() -> Option<Self> {
         Self::from_env_lookup(|key| env::var(key))
     }
 
     fn from_env_lookup(lookup: impl Fn(&str) -> Result<String, env::VarError>) -> Option<Self> {
-        let client_id = lookup("GDOM_GOOGLE_CLIENT_ID").ok()?;
-        if client_id.is_empty() {
-            return None;
-        }
+        let client_id = lookup("GDOM_GOOGLE_CLIENT_ID")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
         let client_secret = lookup("GDOM_GOOGLE_CLIENT_SECRET")
             .ok()
-            .filter(|s| !s.is_empty());
-        Some(Self::new(client_id, client_secret))
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        match (client_id, client_secret) {
+            (Some(client_id), client_secret) => Some(Self::new(client_id, client_secret)),
+            (None, Some(client_secret)) => {
+                Some(Self::new(Self::embedded_client_id(), Some(client_secret)))
+            }
+            (None, None) => None,
+        }
     }
 }
 
@@ -193,6 +266,18 @@ mod tests {
     }
 
     #[test]
+    fn from_env_secret_only_uses_embedded_client_id() {
+        let config = OAuthConfig::from_env_lookup(lookup(&[(
+            "GDOM_GOOGLE_CLIENT_SECRET",
+            "env-only-secret",
+        )]))
+        .expect("secret-only env should bind to the embedded client ID");
+        assert_eq!(config.client_id, OAuthConfig::embedded_client_id());
+        assert_eq!(config.client_secret.as_deref(), Some("env-only-secret"));
+        assert!(config.has_client_secret());
+    }
+
+    #[test]
     fn from_env_reads_id_and_secret() {
         let config = OAuthConfig::from_env_lookup(lookup(&[
             ("GDOM_GOOGLE_CLIENT_ID", "env-id"),
@@ -218,6 +303,31 @@ mod tests {
         let config = OAuthConfig::from_env_lookup(lookup(&[("GDOM_GOOGLE_CLIENT_ID", "env-id")]))
             .expect("should parse from env");
         assert!(config.client_secret.is_none());
+    }
+
+    #[test]
+    fn resolve_prefers_stored_override_then_env_then_embedded() {
+        let (stored, source) = OAuthConfig::resolve(
+            Some(" stored-id "),
+            None,
+            lookup(&[("GDOM_GOOGLE_CLIENT_ID", "env-id")]),
+        );
+        assert_eq!(stored.client_id, "stored-id");
+        assert_eq!(source, OAuthClientSource::CustomOverride);
+
+        let (from_env, source) =
+            OAuthConfig::resolve(None, None, lookup(&[("GDOM_GOOGLE_CLIENT_ID", "env-id")]));
+        assert_eq!(from_env.client_id, "env-id");
+        assert_eq!(source, OAuthClientSource::Environment);
+
+        let (embedded, source) = OAuthConfig::resolve(Some("  "), None, lookup(&[]));
+        assert_eq!(embedded.client_id, OAuthConfig::embedded_client_id());
+        assert_eq!(source, OAuthClientSource::EmbeddedDefault);
+        assert!(!embedded.client_id.is_empty());
+        assert_eq!(
+            embedded.client_secret,
+            OAuthConfig::embedded_client_secret()
+        );
     }
 
     // -- AppState -----------------------------------------------------------

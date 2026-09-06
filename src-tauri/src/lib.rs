@@ -31,6 +31,7 @@ pub fn run() {
             commands::account::list_accounts,
             commands::account::configure_oauth,
             commands::account::get_oauth_config,
+            commands::account::reset_oauth_config,
             commands::account::connect_account,
             commands::account::disconnect_account,
             commands::account::update_account_label,
@@ -101,12 +102,14 @@ pub fn run() {
                 .load_oauth_secret()
                 .map_err(|e| format!("failed to read oauth secret from credential store: {e}"))?;
 
-            let oauth_config = match (db_client_id, keychain_client_secret) {
-                (Some(id), secret) if !id.trim().is_empty() => {
-                    Some(OAuthConfig::new(id.trim(), secret))
-                }
-                _ => OAuthConfig::from_env(),
-            };
+            let oauth_config = Some(
+                OAuthConfig::resolve(
+                    db_client_id.as_deref(),
+                    keychain_client_secret,
+                    |key| std::env::var(key),
+                )
+                .0,
+            );
 
             let account_store = Arc::new(account_store);
             let shared_oauth_config = Arc::new(tokio::sync::RwLock::new(oauth_config));

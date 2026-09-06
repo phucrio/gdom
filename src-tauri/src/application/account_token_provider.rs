@@ -47,6 +47,7 @@ pub trait TokenRefreshPort: Send + Sync {
 pub enum TokenRefreshError {
     InvalidGrant,
     InvalidClient,
+    InvalidRequest,
     RateLimited,
     Unavailable,
     Transport,
@@ -59,6 +60,10 @@ impl fmt::Display for TokenRefreshError {
         match self {
             Self::InvalidGrant => write!(f, "refresh token is invalid or revoked"),
             Self::InvalidClient => write!(f, "invalid OAuth client credentials"),
+            Self::InvalidRequest => write!(
+                f,
+                "Google rejected the token request. Desktop OAuth clients require a client secret stored in Windows Credential Manager, not in application source"
+            ),
             Self::RateLimited => write!(f, "rate limit exceeded during token refresh"),
             Self::Unavailable => write!(f, "token service is unavailable"),
             Self::Transport => write!(f, "network failure during token refresh"),
