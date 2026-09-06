@@ -91,17 +91,71 @@ async fn configure_oauth_inner(
 }
 
 async fn get_oauth_config_inner(state: &AppState) -> Result<OAuthConfigDto, CommandError> {
+    let stored = state
+        .account_store
+        .get_setting("oauth.client_id")
+        .await
+        .map_err(|e| CommandError::Database(e.to_string()))?;
+    let using_custom_override = stored
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+
     let guard = state.oauth_config.read().await;
-    match guard.as_ref() {
-        Some(config) => Ok(OAuthConfigDto {
-            is_configured: true,
-            client_id: Some(config.client_id.clone()),
-        }),
-        None => Ok(OAuthConfigDto {
-            is_configured: false,
-            client_id: None,
-        }),
+    let client_id = match guard.as_ref() {
+        Some(config) => Some(config.client_id.clone()),
+        None => Some(OAuthConfig::embedded_client_id().to_owned()),
+    };
+
+    Ok(OAuthConfigDto {
+        is_configured: client_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()),
+        client_id,
+        using_custom_override,
+    })
+}
+
+async fn reset_oauth_config_inner(state: &AppState) -> Result<OAuthConfigDto, CommandError> {
+    let _lock = state.connect_account_lock.try_lock().map_err(|_| {
+        CommandError::OAuth(
+            "Cannot change OAuth configuration while an account connection is in progress".into(),
+        )
+    })?;
+
+    let next = OAuthConfig::from_env().unwrap_or_else(OAuthConfig::default_config);
+    let existing_accounts_count = state
+        .account_store
+        .account_count()
+        .await
+        .map_err(|e| CommandError::Database(e.to_string()))?;
+    if existing_accounts_count > 0 {
+        let guard = state.oauth_config.read().await;
+        if let Some(existing) = guard.as_ref()
+            && existing.client_id != next.client_id
+        {
+            return Err(CommandError::OAuth(
+                "Cannot change OAuth client ID while connected accounts exist. Disconnect all accounts first.".into(),
+            ));
+        }
     }
+
+    state
+        .account_store
+        .clear_oauth_client_id()
+        .await
+        .map_err(|e| CommandError::Database(e.to_string()))?;
+    state
+        .credential_store
+        .delete_oauth_secret()
+        .map_err(|e| CommandError::Keychain(e.to_string()))?;
+
+    {
+        let mut guard = state.oauth_config.write().await;
+        *guard = Some(next);
+    }
+
+    get_oauth_config_inner(state).await
 }
 
 pub(crate) fn parse_account_id(id_str: &str) -> Result<AccountId, CommandError> {
@@ -138,6 +192,13 @@ pub async fn get_oauth_config(
 }
 
 #[tauri::command]
+pub async fn reset_oauth_config(
+    state: tauri::State<'_, AppState>,
+) -> Result<OAuthConfigDto, CommandError> {
+    reset_oauth_config_inner(&state).await
+}
+
+#[tauri::command]
 pub async fn connect_account(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
@@ -148,9 +209,7 @@ pub async fn connect_account(
 
     let config = {
         let guard = state.oauth_config.read().await;
-        guard.clone().ok_or_else(|| {
-            CommandError::NotConfigured("OAuth client ID is not configured".into())
-        })?
+        guard.clone().unwrap_or_else(OAuthConfig::default_config)
     };
 
     let session = DesktopOAuthSession::start(&config.client_id)
@@ -286,9 +345,7 @@ pub async fn reauthenticate_account(
 
     let config = {
         let guard = state.oauth_config.read().await;
-        guard.clone().ok_or_else(|| {
-            CommandError::NotConfigured("OAuth client ID is not configured".into())
-        })?
+        guard.clone().unwrap_or_else(OAuthConfig::default_config)
     };
 
     let session = DesktopOAuthSession::start(&config.client_id)
@@ -357,7 +414,10 @@ mod tests {
         state::{AppState, OAuthConfig},
     };
 
-    use super::{configure_oauth_inner, get_oauth_config_inner, list_accounts_inner};
+    use super::{
+        configure_oauth_inner, get_oauth_config_inner, list_accounts_inner,
+        reset_oauth_config_inner,
+    };
 
     struct DummyConnectAccountUseCase;
 
@@ -507,6 +567,9 @@ mod tests {
             .expect("keychain read")
             .expect("secret exists");
         assert_eq!(stored_secret, "test-secret");
+
+        let dto = get_oauth_config_inner(&state).await.expect("dto");
+        assert!(dto.using_custom_override);
     }
 
     #[tokio::test]
@@ -584,12 +647,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_oauth_config_returns_not_configured_when_none() {
+    async fn get_oauth_config_returns_embedded_default_when_unset() {
         let state = test_state(None).await;
         let result = get_oauth_config_inner(&state).await.expect("succeeds");
 
-        assert!(!result.is_configured);
-        assert!(result.client_id.is_none());
+        assert!(result.is_configured);
+        assert_eq!(
+            result.client_id.as_deref(),
+            Some(OAuthConfig::embedded_client_id())
+        );
+        assert!(!result.using_custom_override);
     }
 
     #[tokio::test]
@@ -599,6 +666,40 @@ mod tests {
 
         assert!(result.is_configured);
         assert_eq!(result.client_id.as_deref(), Some("my-client-id"));
+        assert!(!result.using_custom_override);
+    }
+
+    #[tokio::test]
+    async fn reset_oauth_config_clears_override_and_restores_default() {
+        let state = test_state(Some(OAuthConfig::new("custom-id", Some("secret".into())))).await;
+        state
+            .account_store
+            .save_oauth_client_id("custom-id")
+            .await
+            .expect("store override");
+
+        let result = reset_oauth_config_inner(&state).await.expect("reset");
+        assert!(result.is_configured);
+        assert!(!result.using_custom_override);
+        assert_eq!(
+            result.client_id.as_deref(),
+            Some(OAuthConfig::embedded_client_id())
+        );
+        assert!(
+            state
+                .account_store
+                .get_setting("oauth.client_id")
+                .await
+                .expect("read")
+                .is_none()
+        );
+        assert!(
+            state
+                .credential_store
+                .load_oauth_secret()
+                .expect("keychain")
+                .is_none()
+        );
     }
 
     #[tokio::test]

@@ -9,6 +9,29 @@ import {
 } from "../legal/copy.ts";
 import { LegalDocument, legalDocumentTitle, type LegalDocumentId } from "../legal/LegalDialogs.tsx";
 import { Dialog } from "../ui/Dialog.tsx";
+import { GoogleMark } from "./GoogleMark.tsx";
+import {
+  CONNECT_ADVANCED_HELP,
+  CONNECT_ADVANCED_SUMMARY,
+  CONNECT_BACK,
+  CONNECT_BROWSER_ANNOUNCEMENT,
+  CONNECT_CANCEL,
+  CONNECT_CLIENT_ID_LABEL,
+  CONNECT_CLIENT_ID_REQUIRED,
+  CONNECT_CONFIG_LOAD_FAILED,
+  CONNECT_CONFIG_LOADING,
+  CONNECT_CUSTOM_SAVED,
+  CONNECT_FAILED,
+  CONNECT_READY_CUSTOM,
+  CONNECT_READY_DEFAULT,
+  CONNECT_RESET_ANNOUNCEMENT,
+  CONNECT_RESET_DEFAULT,
+  CONNECT_SAVE_CUSTOM,
+  CONNECT_SIGN_IN,
+  CONNECT_SIGN_IN_BUSY,
+  CONNECT_SUCCESS_ANNOUNCEMENT,
+  CONNECT_TITLE,
+} from "./copy.ts";
 
 type ConnectDialogProps = {
   backend: BackendPort;
@@ -38,13 +61,14 @@ export function ConnectDialog({
       .then((next) => {
         if (!cancelled) {
           setConfig(next);
+          setClientId(next.usingCustomOverride ? (next.clientId ?? "") : "");
           setConfigLoaded(true);
         }
       })
       .catch((caught: unknown) => {
         if (!cancelled) {
           setConfigLoaded(true);
-          setError(caught instanceof Error ? caught.message : "Could not read OAuth configuration.");
+          setError(caught instanceof Error ? caught.message : CONNECT_CONFIG_LOAD_FAILED);
         }
       });
 
@@ -53,35 +77,69 @@ export function ConnectDialog({
     };
   }, [backend]);
 
-  async function handleConnect(event: FormEvent) {
-    event.preventDefault();
+  function applyConfig(next: OAuthConfigDto) {
+    setConfig(next);
+    setClientId(next.usingCustomOverride ? (next.clientId ?? "") : "");
+  }
+
+  async function handleSignIn() {
     setBusy(true);
     setError(null);
 
     try {
       if (!configLoaded) {
-        setError("OAuth configuration is still loading.");
+        setError(CONNECT_CONFIG_LOADING);
         setBusy(false);
         return;
       }
-      const configured = config?.isConfigured === true;
-      if (!configured) {
-        const trimmed = clientId.trim();
-        if (trimmed.length === 0) {
-          setError("Enter a Google Cloud OAuth client ID before connecting.");
-          setBusy(false);
-          return;
-        }
-        await backend.configureOAuth(trimmed);
-      }
 
-      onAnnounce("Opening Google sign-in in the system browser.");
+      onAnnounce(CONNECT_BROWSER_ANNOUNCEMENT);
       await backend.connectAccount();
-      onAnnounce("Account connected.");
+      onAnnounce(CONNECT_SUCCESS_ANNOUNCEMENT);
       onConnected();
       onClose();
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "Could not connect the account.";
+      const message = caught instanceof Error ? caught.message : CONNECT_FAILED;
+      setError(message);
+      onAnnounce(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveCustom(event: FormEvent) {
+    event.preventDefault();
+    const trimmed = clientId.trim();
+    if (trimmed.length === 0) {
+      setError(CONNECT_CLIENT_ID_REQUIRED);
+      onAnnounce(CONNECT_CLIENT_ID_REQUIRED);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await backend.configureOAuth(trimmed);
+      const next = await backend.getOAuthConfig();
+      applyConfig(next);
+      onAnnounce(CONNECT_CUSTOM_SAVED);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : CONNECT_FAILED;
+      setError(message);
+      onAnnounce(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleResetDefault() {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await backend.resetOAuthConfig();
+      applyConfig(next);
+      onAnnounce(CONNECT_RESET_ANNOUNCEMENT);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : CONNECT_FAILED;
       setError(message);
       onAnnounce(message);
     } finally {
@@ -90,6 +148,7 @@ export function ConnectDialog({
   }
 
   const oauthConfigured = config?.isConfigured === true;
+  const usingCustom = config?.usingCustomOverride === true;
 
   if (legal !== null) {
     return (
@@ -98,7 +157,7 @@ export function ConnectDialog({
           <LegalDocument document={legal} />
           <div className="dialog-actions">
             <button type="button" className="ghost-button" onClick={() => setLegal(null)}>
-              Back
+              {CONNECT_BACK}
             </button>
           </div>
         </div>
@@ -107,8 +166,8 @@ export function ConnectDialog({
   }
 
   return (
-    <Dialog title="Connect a Google account" onClose={onClose} wide>
-      <form className="dialog-body" onSubmit={handleConnect}>
+    <Dialog title={CONNECT_TITLE} onClose={onClose} wide>
+      <div className="dialog-body">
         <p>{SYSTEM_BROWSER_OAUTH_EXPLANATION}</p>
         <p>{FULL_DRIVE_SCOPE_JUSTIFICATION}</p>
         <p className="limited-use">{LIMITED_USE_SENTENCE}</p>
@@ -122,29 +181,46 @@ export function ConnectDialog({
           </button>
         </p>
 
-        {!configLoaded && <p role="status">Checking OAuth configuration…</p>}
-
-        {configLoaded && !oauthConfigured && (
-          <div className="field">
-            <p className="notice" role="status">
-              OAuth is not configured. Enter the Google Cloud OAuth client ID for a desktop app.
-              GDOM stores the client ID locally. It never asks for or displays a client secret.
-            </p>
-            <label htmlFor="oauth-client-id">OAuth client ID</label>
-            <input
-              id="oauth-client-id"
-              name="clientId"
-              autoComplete="off"
-              value={clientId}
-              onChange={(event) => setClientId(event.target.value)}
-              disabled={busy}
-            />
-          </div>
+        {!configLoaded && (
+          <p role="status">{CONNECT_CONFIG_LOADING}</p>
         )}
 
-        {oauthConfigured && config !== null && config.clientId !== null && (
-          <p className="muted">Using OAuth client ID {config.clientId}.</p>
+        {configLoaded && oauthConfigured && (
+          <p className="muted" role="status">
+            {usingCustom ? CONNECT_READY_CUSTOM : CONNECT_READY_DEFAULT}
+          </p>
         )}
+
+        <details className="advanced-options">
+          <summary>{CONNECT_ADVANCED_SUMMARY}</summary>
+          <form className="advanced-options-form" onSubmit={(event) => void handleSaveCustom(event)}>
+            <p className="muted">{CONNECT_ADVANCED_HELP}</p>
+            <div className="field">
+              <label htmlFor="oauth-client-id">{CONNECT_CLIENT_ID_LABEL}</label>
+              <input
+                id="oauth-client-id"
+                name="clientId"
+                autoComplete="off"
+                value={clientId}
+                onChange={(event) => setClientId(event.target.value)}
+                disabled={busy}
+              />
+            </div>
+            <div className="dialog-actions">
+              <button type="submit" className="ghost-button" disabled={busy || !configLoaded}>
+                {CONNECT_SAVE_CUSTOM}
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={busy || !configLoaded || !usingCustom}
+                onClick={() => void handleResetDefault()}
+              >
+                {CONNECT_RESET_DEFAULT}
+              </button>
+            </div>
+          </form>
+        </details>
 
         {error !== null && (
           <p className="error" role="alert">
@@ -154,13 +230,19 @@ export function ConnectDialog({
 
         <div className="dialog-actions">
           <button type="button" className="ghost-button" onClick={onClose} disabled={busy}>
-            Cancel
+            {CONNECT_CANCEL}
           </button>
-          <button type="submit" className="primary-button" disabled={busy || !configLoaded}>
-            {busy ? "Waiting for browser…" : "Connect"}
+          <button
+            type="button"
+            className="google-sign-in"
+            disabled={busy || !configLoaded || !oauthConfigured}
+            onClick={() => void handleSignIn()}
+          >
+            <GoogleMark />
+            {busy ? CONNECT_SIGN_IN_BUSY : CONNECT_SIGN_IN}
           </button>
         </div>
-      </form>
+      </div>
     </Dialog>
   );
 }

@@ -27,6 +27,7 @@ const account: AccountDto = {
 const oauthConfig: OAuthConfigDto = {
   isConfigured: true,
   clientId: "desktop-client.apps.googleusercontent.com",
+  usingCustomOverride: false,
 };
 
 const job: JobDto = {

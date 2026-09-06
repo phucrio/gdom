@@ -57,6 +57,13 @@ The UI targets WCAG 2.2 AA: 4.5:1 normal text contrast, 3:1 large text and compo
 4. Add idempotent pending-owner, acceptance, and verification phases with a mandatory canary.
 5. Add single-job scheduling, checkpoint recovery, reports, and UI workflows.
 
+## Public Desktop OAuth Client ID and SSO
+
+Desktop OAuth clients are public clients per RFC 8252. The production client ID is pre-configured into the application so users experience seamless single-click Google Sign-In without manually creating Google Cloud projects or typing client IDs. Advanced users can supply a custom client ID via settings. The client ID resolution hierarchy is:
+1. Custom override stored in SQLite `app_settings`
+2. `GDOM_GOOGLE_CLIENT_ID` environment variable
+3. Embedded default desktop client ID
+
 ## Validation rule
 
 Real OAuth/Drive integration tests are ignored unless an explicit environment variable enables them. No live transfer occurs during development without the user's direct confirmation.

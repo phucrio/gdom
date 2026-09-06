@@ -93,6 +93,7 @@ impl std::fmt::Debug for ConfigureOAuthInput {
 pub struct OAuthConfigDto {
     pub is_configured: bool,
     pub client_id: Option<String>,
+    pub using_custom_override: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -477,11 +478,13 @@ mod tests {
         let dto = OAuthConfigDto {
             is_configured: true,
             client_id: Some("client-123".into()),
+            using_custom_override: false,
         };
         let json = serde_json::to_value(&dto).expect("serializes");
 
         assert_eq!(json["isConfigured"], true);
         assert_eq!(json["clientId"], "client-123");
+        assert_eq!(json["usingCustomOverride"], false);
     }
 
     #[test]
@@ -489,6 +492,7 @@ mod tests {
         let dto = OAuthConfigDto {
             is_configured: false,
             client_id: None,
+            using_custom_override: false,
         };
         let json = serde_json::to_value(&dto).expect("serializes");
 
