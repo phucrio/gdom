@@ -62,6 +62,7 @@ describe("job status gates", () => {
     expect(canResumeTransfer("SOURCE_RATE_LIMITED")).toBe(true);
     expect(canResumeTransfer("WAITING_FOR_QUOTA")).toBe(true);
     expect(canStartBulk("CANARY_REVIEW")).toBe(true);
+    expect(canStartBulk("QUEUED")).toBe(false);
     expect(canStartBulk("RUNNING_CANARY")).toBe(false);
     expect(canCancelTransfer("RUNNING")).toBe(true);
     expect(canCancelTransfer("COMPLETED")).toBe(false);

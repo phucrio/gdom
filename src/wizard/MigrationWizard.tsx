@@ -150,9 +150,18 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
       validRootCount: roots.length,
       preflightReady,
       canaryConfirmed,
+      canaryFinished: canaryReady,
       pairLocked,
     }),
-    [sourceAccountId, targetAccountId, roots.length, preflightReady, canaryConfirmed, pairLocked],
+    [
+      sourceAccountId,
+      targetAccountId,
+      roots.length,
+      preflightReady,
+      canaryConfirmed,
+      canaryReady,
+      pairLocked,
+    ],
   );
 
   function showError(message: string) {
@@ -529,7 +538,9 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
           role="status"
         >
           Job status: {jobStatusLabel(job.status)}
-          {job.lastError !== null && job.lastError.length > 0 ? ` — ${job.lastError}` : ""}
+          {haltDetail === null && job.lastError !== null && job.lastError.length > 0
+            ? ` — ${job.lastError}`
+            : ""}
         </p>
       )}
       {haltDetail !== null && (

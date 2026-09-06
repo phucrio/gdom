@@ -155,7 +155,7 @@ export function canResumeTransfer(status: JobStatus | null): boolean {
 }
 
 export function canStartBulk(status: JobStatus | null): boolean {
-  return status === "CANARY_REVIEW" || status === "QUEUED";
+  return status === "CANARY_REVIEW";
 }
 
 export function canCancelTransfer(status: JobStatus | null): boolean {

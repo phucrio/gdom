@@ -8,7 +8,7 @@ GDOM runs on Windows 11. It connects personal Gmail accounts (`@gmail.com` / `@g
 
 Backend waves 1–5 are in place: OAuth PKCE, account lifecycle, job persistence, recursive scan, dry-run preflight, idempotent pending-owner/accept/verify, canary, and a single global mutation lease.
 
-Scan, canary, and bulk run on background workers so Tauri commands return immediately. Remaining desktop E2E gaps are a Jobs list, live wizard pause/resume wiring, and a full dry-run item review. Live Drive mutation is not enabled in CI. Do not transfer production data; any live canary needs dedicated test accounts and explicit confirmation.
+Scan, canary, and bulk run on background workers so Tauri commands return immediately. The new-job wizard can pause and resume those workers and shows halt reasons as text. Remaining desktop E2E gaps are a Jobs list and a full dry-run item review. Live Drive mutation is not enabled in CI. Do not transfer production data; any live canary needs dedicated test accounts and explicit confirmation.
 
 Tracking: [issue #19](https://github.com/phucrio/gdom/issues/19).
 
