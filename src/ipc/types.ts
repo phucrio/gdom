@@ -215,7 +215,6 @@ export const ACCOUNT_COMMANDS = {
   configureOAuth: "configure_oauth",
   getOAuthConfig: "get_oauth_config",
   resetOAuthConfig: "reset_oauth_config",
-  importOAuthClient: "import_oauth_client",
   connectAccount: "connect_account",
   reauthenticateAccount: "reauthenticate_account",
   updateAccountLabel: "update_account_label",

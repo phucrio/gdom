@@ -399,6 +399,64 @@ async fn accept_ownership_patches_with_transfer_flag() {
 }
 
 #[tokio::test]
+async fn about_get_maps_drive_api_not_enabled() {
+    let body = r#"{
+        "error": {
+            "code": 403,
+            "message": "Google Drive API has not been used in project 123 before or it is disabled.",
+            "status": "PERMISSION_DENIED",
+            "details": [{"reason": "SERVICE_DISABLED"}]
+        }
+    }"#;
+    let (base_url, _) = serve_once("403 Forbidden", body);
+    let client = GoogleDriveClient::for_test(base_url).expect("test client");
+    let token = AccessToken::new(SECRET.to_owned());
+    let error = identify(&client, &token)
+        .await
+        .expect_err("disabled API is an error");
+    assert_eq!(error, GoogleDriveError::ApiNotEnabled);
+}
+
+#[tokio::test]
+async fn about_get_maps_insufficient_scope() {
+    let body = r#"{
+        "error": {
+            "code": 403,
+            "message": "Request had insufficient authentication scopes.",
+            "status": "PERMISSION_DENIED",
+            "details": [{"reason": "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]
+        }
+    }"#;
+    let (base_url, _) = serve_once("403 Forbidden", body);
+    let client = GoogleDriveClient::for_test(base_url).expect("test client");
+    let token = AccessToken::new(SECRET.to_owned());
+    let error = identify(&client, &token)
+        .await
+        .expect_err("missing Drive scope is an error");
+    assert_eq!(error, GoogleDriveError::InsufficientScope);
+}
+
+#[tokio::test]
+async fn identity_lookup_port_surfaces_drive_api_not_enabled() {
+    use crate::application::IdentityLookupError;
+    use crate::application::IdentityLookupPort;
+
+    let body = r#"{"error":{"message":"Google Drive API has not been used in project 1 before or it is disabled.","status":"PERMISSION_DENIED"}}"#;
+    let (base_url, _) = serve_once("403 Forbidden", body);
+    let client = GoogleDriveClient::for_test(base_url).expect("test client");
+    let token = AccessToken::new(SECRET.to_owned());
+    let error = timeout(
+        Duration::from_secs(2),
+        IdentityLookupPort::account_identity(&client, &token),
+    )
+    .await
+    .expect("completes")
+    .expect_err("disabled API is an identity error");
+    assert_eq!(error, IdentityLookupError::ApiNotEnabled);
+    assert!(error.to_string().contains("Drive API"));
+}
+
+#[tokio::test]
 async fn sharing_rate_limit_reason_is_distinct_from_generic_forbidden() {
     let body = r#"{"error":{"errors":[{"reason":"sharingRateLimitExceeded"}]}}"#;
     let (base_url, _) = serve_once("403 Forbidden", body);

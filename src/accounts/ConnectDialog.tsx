@@ -19,8 +19,6 @@ import {
   CONNECT_CONFIG_LOAD_FAILED,
   CONNECT_CONFIG_LOADING,
   CONNECT_FAILED,
-  CONNECT_IMPORT_JSON,
-  CONNECT_IMPORT_SAVED,
   CONNECT_READY_CUSTOM,
   CONNECT_READY_DEFAULT,
   CONNECT_RESET_ANNOUNCEMENT,
@@ -106,30 +104,6 @@ export function ConnectDialog({
     }
   }
 
-  async function handleImportJson() {
-    setBusy(true);
-    setError(null);
-    try {
-      const previousCanSignIn = config?.canSignIn === true;
-      const previousClientId = config?.clientId;
-      const next = await backend.importOAuthClient();
-      setConfig(next);
-      if (
-        next.canSignIn &&
-        next.usingCustomOverride &&
-        (next.clientId !== previousClientId || !previousCanSignIn)
-      ) {
-        onAnnounce(CONNECT_IMPORT_SAVED);
-      }
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : CONNECT_FAILED;
-      setError(message);
-      onAnnounce(message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function handleResetDefault() {
     setBusy(true);
     setError(null);
@@ -202,17 +176,9 @@ export function ConnectDialog({
           <div className="advanced-options-form">
             <p className="muted">{CONNECT_ADVANCED_HELP}</p>
             {usingCustom && config?.clientId ? (
-              <p className="muted">Using client ID {config.clientId}</p>
+              <p className="muted">Using stored client ID {config.clientId}</p>
             ) : null}
             <div className="dialog-actions">
-              <button
-                type="button"
-                className="ghost-button"
-                disabled={busy || !configLoaded}
-                onClick={() => void handleImportJson()}
-              >
-                {CONNECT_IMPORT_JSON}
-              </button>
               <button
                 type="button"
                 className="ghost-button"

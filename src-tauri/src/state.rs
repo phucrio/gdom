@@ -22,7 +22,7 @@ pub const DEFAULT_GOOGLE_CLIENT_ID: &str =
 /// Google's token endpoint currently requires the Desktop-app client secret.
 /// The secret must not live in git; import JSON, set `GDOM_GOOGLE_CLIENT_SECRET`,
 /// or inject `GDOM_DEFAULT_CLIENT_SECRET` at compile time for release builds.
-pub const DESKTOP_CLIENT_SECRET_REQUIRED: &str = "Google Desktop OAuth clients require a client secret. Import the Desktop client JSON from Google Cloud Console, or set GDOM_GOOGLE_CLIENT_SECRET. GDOM stores the secret in Windows Credential Manager; it is never kept in source or shown in the UI.";
+pub const DESKTOP_CLIENT_SECRET_REQUIRED: &str = "Google Desktop OAuth clients require a client secret. For local testing set GDOM_GOOGLE_CLIENT_SECRET in your shell before pnpm tauri dev. Release builds inject GDOM_DEFAULT_CLIENT_SECRET from CI. The secret is never committed or shown in the UI.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OAuthClientSource {

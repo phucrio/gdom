@@ -140,8 +140,8 @@ src-tauri/src/
 GDOM deals with highly sensitive permissions (full Google Drive access). The architecture enforces strict security controls:
 
 ### 4.1 Token Isolation & Keyring Storage
-- **Frontend Isolation**: OAuth access and refresh tokens **never** cross the IPC boundary to the React WebView. The frontend only receives opaque account IDs, permission IDs, emails, and display names. Google Desktop client secrets also stay out of the WebView; they are imported from JSON in Rust or read from the environment.
-- **Refresh Token Storage**: Refresh tokens are stored exclusively in the OS keychain (Windows Credential Manager for MVP) keyed by internal `AccountId` or `GooglePermissionId`. The OAuth Desktop client secret uses the same keychain, never git.
+- **Frontend Isolation**: OAuth access and refresh tokens **never** cross the IPC boundary to the React WebView. The frontend only receives opaque account IDs, permission IDs, emails, and display names. Google Desktop client secrets also stay out of the WebView; local runs read `GDOM_GOOGLE_CLIENT_SECRET`, and CI package builds inject `GDOM_DEFAULT_CLIENT_SECRET` at compile time.
+- **Refresh Token Storage**: Refresh tokens are stored exclusively in the OS keychain (Windows Credential Manager for MVP) keyed by internal `AccountId` or `GooglePermissionId`.
 - **Access Tokens**: Ephemeral access tokens are held strictly in memory and refreshed on-demand.
 - **Redaction**: Credentials, authorization codes, PKCE verifiers, and tokens implement custom `Debug` formats (e.g., `OAuthGrant([REDACTED])`) to prevent accidental log leaks.
 

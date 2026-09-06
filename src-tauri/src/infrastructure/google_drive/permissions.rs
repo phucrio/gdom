@@ -170,7 +170,9 @@ impl From<GoogleDriveError> for DriveTransferError {
     fn from(error: GoogleDriveError) -> Self {
         match error {
             GoogleDriveError::Unauthorized => Self::Unauthorized,
-            GoogleDriveError::Forbidden => Self::Forbidden,
+            GoogleDriveError::Forbidden
+            | GoogleDriveError::ApiNotEnabled
+            | GoogleDriveError::InsufficientScope => Self::Forbidden,
             GoogleDriveError::NotFound => Self::NotFound,
             GoogleDriveError::RateLimited => Self::RateLimited,
             GoogleDriveError::SharingRateLimitExceeded => Self::SharingRateLimitExceeded,

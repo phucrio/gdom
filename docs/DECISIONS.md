@@ -61,12 +61,12 @@ The UI targets WCAG 2.2 AA: 4.5:1 normal text contrast, 3:1 large text and compo
 
 Desktop OAuth clients are public clients per RFC 8252. Google's token endpoint for the **Desktop app** client type still requires the console-issued `client_secret` (`invalid_request` / `client_secret is missing.`). That secret is not a refresh token, but it must not be committed to the open-source tree.
 
-Sign-in therefore uses a client ID plus a secret that never enters git or the React WebView:
-1. Custom Desktop client JSON imported through a native file dialog (client ID in SQLite `app_settings`, secret in Windows Credential Manager)
-2. `GDOM_GOOGLE_CLIENT_ID` and/or `GDOM_GOOGLE_CLIENT_SECRET` environment variables (secret-only binds to the embedded client ID)
-3. Embedded default desktop client ID, with an optional compile-time `GDOM_DEFAULT_CLIENT_SECRET` for private release builds
+The client ID is embedded in source. The secret is never in git and never enters the React WebView:
 
-The client ID may stay in source. The secret stays in Credential Manager, the process environment, or a CI secret injected at compile time.
+1. Local testing: set `GDOM_GOOGLE_CLIENT_SECRET` (optional `GDOM_GOOGLE_CLIENT_ID`) in the process environment before `pnpm tauri dev`. Secret-only binds to the embedded client ID.
+2. Release / CI package: inject `GDOM_DEFAULT_CLIENT_SECRET` at compile time from the GitHub Actions repository secret of the same name (`option_env!`).
+
+There is no in-app JSON import. Enable the Google Drive API on the Cloud project and add test users on the OAuth consent screen before live sign-in.
 
 ## Validation rule
 
