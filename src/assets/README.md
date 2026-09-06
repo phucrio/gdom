@@ -15,7 +15,7 @@ pnpm icons:check
 pnpm test
 ```
 
-The generator invokes the installed Tauri CLI without a shell, works on Windows and Unix hosts, stages output in a temporary directory, and copies only desktop icon files. Mobile outputs are discarded. Commit the SVG and regenerated desktop icons together. Do not hand-edit individual PNG/ICO/ICNS files or add another copy of the master SVG.
+The generator invokes the installed Tauri CLI without a shell, works on Windows and Unix hosts, stages output in a temporary directory, and copies only desktop icon files. ICNS representation chunks are sorted before writing so container ordering does not create spurious diffs. Mobile outputs are discarded. Commit the SVG and regenerated desktop icons together. Do not hand-edit individual PNG/ICO/ICNS files or add another copy of the master SVG.
 
 `pnpm icons:check` regenerates into a temporary directory and checks the committed files byte-for-byte. It fails rather than rewriting stale assets. CI runs this check alongside tests for PNG format and dimensions, configured paths, ICO resolutions, and ICNS structure.
 

@@ -44,7 +44,6 @@ jobs:
           replace_once('src/App.tsx', '            {BRAND_MARK}', '            <img src={gdomIcon} width={24} height={24} alt="" />')
           replace_once('src/nav/copy.ts', 'export const BRAND_MARK = "G";\n\n', '\n')
           replace_once('index.html', '    <meta name="viewport"', '    <link rel="icon" type="image/svg+xml" href="/src/assets/gdom-icon.svg" />\n    <meta name="viewport"')
-          replace_once('.github/workflows/ci.yml', '      - run: pnpm lint\n', '      - run: pnpm icons:check\n      - run: pnpm lint\n')
           package = Path('package.json')
           data = json.loads(package.read_text(encoding='utf-8'))
           data['scripts']['icons'] = 'node scripts/generate-icons.mjs'
@@ -56,13 +55,12 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
-      - name: Commit generated assets and remove temporary workflow
+      - name: Commit generated desktop assets
         shell: pwsh
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm .github/workflows/generate-brand-icons.yml
-          git add src-tauri/icons src/App.tsx src/nav/copy.ts index.html package.json .github/workflows/ci.yml
+          git add src-tauri/icons src/App.tsx src/nav/copy.ts index.html package.json
           git diff --cached --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git commit -m 'feat(ui): apply approved GDOM branding and generated desktop icons'

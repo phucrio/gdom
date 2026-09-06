@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const iconFile = (name: string) => readFileSync(new URL(`../../src-tauri/icons/${name}`, import.meta.url));
 const pngSizes = [
   ["32x32.png", 32],
+  ["64x64.png", 64],
   ["128x128.png", 128],
   ["128x128@2x.png", 256],
   ["icon.png", 512],
@@ -75,16 +76,17 @@ describe("GDOM application icons", () => {
     expect(icns.toString("ascii", 0, 4)).toBe("icns");
     expect(icns.readUInt32BE(4)).toBe(icns.length);
     let offset = 8;
-    let chunks = 0;
+    const kinds: string[] = [];
     while (offset < icns.length) {
       expect(offset + 8).toBeLessThanOrEqual(icns.length);
       const length = icns.readUInt32BE(offset + 4);
       expect(length).toBeGreaterThan(8);
       expect(offset + length).toBeLessThanOrEqual(icns.length);
+      kinds.push(icns.toString("ascii", offset, offset + 4));
       offset += length;
-      chunks += 1;
     }
     expect(offset).toBe(icns.length);
-    expect(chunks).toBeGreaterThan(1);
+    expect(kinds.length).toBeGreaterThan(1);
+    expect(kinds).toEqual([...kinds].sort());
   });
 });
