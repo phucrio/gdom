@@ -9,6 +9,7 @@ pub mod drive_tree;
 pub mod entity_id;
 pub mod item_classifier;
 pub mod item_store;
+pub mod job_events;
 pub mod job_service;
 pub mod job_store;
 pub mod preflight;
@@ -39,7 +40,8 @@ pub use drive_tree::{
     StorageQuota,
 };
 pub use item_store::{ItemAggregates, ItemBatchCommit, ItemPage, ItemStoreError, ItemStorePort};
-pub use job_service::{JobService, JobServiceError};
+pub use job_events::{JobEventSink, JobRuntimeEvent, NoopJobEventSink, RecordingJobEventSink};
+pub use job_service::{ItemFailure, JobService, JobServiceError, TransferProgress};
 pub use job_store::{JobStoreFuture, JobStorePort, JobStorePortError, MigrationEvent, WorkerLease};
 pub use preflight::PreflightSummary;
 pub use refresh_token_store::{RefreshToken, RefreshTokenStore, RefreshTokenStoreError};

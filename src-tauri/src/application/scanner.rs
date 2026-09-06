@@ -9,6 +9,7 @@ use crate::application::drive_tree::{
 use crate::application::entity_id::next_entity_id;
 use crate::application::item_classifier::classify_drive_child;
 use crate::application::item_store::{ItemBatchCommit, ItemStoreError, ItemStorePort};
+use crate::application::job_events::{JobEventSink, JobRuntimeEvent};
 use crate::application::time::iso_now;
 use crate::domain::GooglePermissionId;
 use crate::domain::item::{ItemId, ItemState, MigrationItem, ScanCheckpoint};
@@ -90,6 +91,7 @@ pub struct ScanRun<'a> {
     pub target_permission_id: &'a GooglePermissionId,
     pub pause: &'a AtomicBool,
     pub concurrency: usize,
+    pub events: Option<Arc<dyn JobEventSink>>,
 }
 
 struct PageContext<'a> {
@@ -99,6 +101,7 @@ struct PageContext<'a> {
     target_permission_id: &'a GooglePermissionId,
     visited: &'a mut HashSet<String>,
     queue: &'a mut VecDeque<WorkItem>,
+    events: Option<&'a dyn JobEventSink>,
 }
 
 pub async fn run_scan(run: &ScanRun<'_>) -> Result<ScanOutcome, ScanError> {
@@ -120,6 +123,7 @@ pub async fn run_scan(run: &ScanRun<'_>) -> Result<ScanOutcome, ScanError> {
             &mut checkpoints,
         )
         .await?;
+        emit_scan_progress(run.store, run.events.as_deref(), run.job_id).await;
     }
 
     let mut queue: VecDeque<WorkItem> = checkpoints
@@ -173,6 +177,7 @@ pub async fn run_scan(run: &ScanRun<'_>) -> Result<ScanOutcome, ScanError> {
                     target_permission_id: run.target_permission_id,
                     visited: &mut visited,
                     queue: &mut queue,
+                    events: run.events.as_deref(),
                 },
                 folder_id,
                 depth,
@@ -365,5 +370,31 @@ async fn apply_page(
         });
     }
 
+    emit_scan_progress(ctx.store, ctx.events, ctx.job_id).await;
     Ok(())
+}
+
+async fn emit_scan_progress(
+    store: &dyn ItemStorePort,
+    events: Option<&dyn JobEventSink>,
+    job_id: JobId,
+) {
+    let Some(events) = events else {
+        return;
+    };
+    let Ok(aggregates) = store.item_aggregates(job_id).await else {
+        return;
+    };
+    let skipped = aggregates.skipped_already_owned_by_target
+        + aggregates.skipped_not_owned_by_source
+        + aggregates.skipped_shared_drive
+        + aggregates.skipped_shortcuts
+        + aggregates.skipped_trashed
+        + aggregates.skipped_ineligible;
+    events.emit(JobRuntimeEvent::ScanProgress {
+        job_id,
+        files: aggregates.eligible_files,
+        folders: aggregates.eligible_folders,
+        skipped,
+    });
 }

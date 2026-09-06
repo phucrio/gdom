@@ -117,6 +117,7 @@ struct Env {
     job_service: Arc<JobService<SqliteAccountStore, SqliteJobStore>>,
     captured: Arc<Mutex<Vec<String>>>,
     sleeper: Arc<RecordingSleeper>,
+    events: Arc<crate::application::RecordingJobEventSink>,
 }
 
 async fn seed_accounts(store: &SqliteAccountStore) {
@@ -203,6 +204,7 @@ where
     let (base_url, captured) = spawn_http_handler(handler);
     let drive = GoogleDriveClient::for_test(base_url).unwrap();
     let sleeper = Arc::new(RecordingSleeper::new());
+    let events = Arc::new(crate::application::RecordingJobEventSink::new());
     let job_service = Arc::new(
         JobService::new(
             account_store.clone(),
@@ -210,7 +212,8 @@ where
             Arc::new(drive) as Arc<dyn crate::application::DrivePort>,
             token_provider.clone(),
         )
-        .with_sleeper(sleeper.clone(), Arc::new(ZeroJitter)),
+        .with_sleeper(sleeper.clone(), Arc::new(ZeroJitter))
+        .with_event_sink(events.clone()),
     );
     Env {
         account_store,
@@ -218,6 +221,7 @@ where
         job_service,
         captured,
         sleeper,
+        events,
     }
 }
 
@@ -409,6 +413,7 @@ async fn second_start_canary_queues_without_mutations_or_auto_start() {
         .await
         .expect("explicit start after the previous holder released");
     assert_ne!(started.status(), JobStatus::Queued);
+    env.job_service.await_idle(job_b.id()).await;
     assert!(
         env.job_store
             .current_mutation_lease()
@@ -486,6 +491,7 @@ async fn resume_queued_job_after_holder_releases_does_not_stick_lease() {
         .await
         .expect("explicit resume of queued job after holder released");
     assert_ne!(resumed.status(), JobStatus::Queued);
+    env.job_service.await_idle(job_b.id()).await;
     assert!(
         env.job_store
             .current_mutation_lease()
@@ -702,12 +708,26 @@ async fn sharing_rate_limit_persists_without_fast_retry_and_releases_lease() {
         .await
         .unwrap();
 
-    let halted = env
+    let started = env
         .job_service
         .start_canary(job.id(), "target@gmail.com")
         .await
         .expect("rate limit is a persisted halt, not a command failure");
+    assert_ne!(started.status(), JobStatus::Queued);
+    env.job_service.await_idle(job.id()).await;
+    let halted = env.job_service.get_job(job.id()).await.unwrap();
     assert_eq!(halted.status(), JobStatus::SourceRateLimited);
+    let events = env.events.snapshot();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        crate::application::JobRuntimeEvent::JobStatusChanged { status, .. }
+            if status == JobStatus::RunningCanary.as_str()
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        crate::application::JobRuntimeEvent::JobStatusChanged { status, .. }
+            if status == JobStatus::SourceRateLimited.as_str()
+    )));
     assert!(env.sleeper.delays().is_empty());
     assert!(
         env.job_store
@@ -767,5 +787,6 @@ async fn pause_and_retry_drive_real_job_service_entry_points() {
         .await
         .expect("explicit retry resumes from the checkpoint");
     assert_ne!(retried.status(), JobStatus::Paused);
+    env.job_service.await_idle(job.id()).await;
     assert!(mutation_methods(&env.captured).is_empty());
 }

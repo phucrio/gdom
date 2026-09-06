@@ -146,6 +146,26 @@ pub struct JobDto {
     pub roots: Vec<RootDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scan: Option<ScanSummaryDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<MigrationProgressDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<Vec<JobErrorEntryDto>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationProgressDto {
+    pub completed: u64,
+    pub total: u64,
+    pub current_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobErrorEntryDto {
+    pub item_id: String,
+    pub message: String,
+    pub at: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -198,6 +218,8 @@ impl From<&crate::domain::job::MigrationJob> for JobDto {
             last_error: job.last_error().map(ToOwned::to_owned),
             roots: job.roots().iter().map(RootDto::from).collect(),
             scan: None,
+            progress: None,
+            errors: None,
         }
     }
 }

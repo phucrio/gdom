@@ -277,6 +277,7 @@ async fn execute_scan(
         target_permission_id: &target,
         pause,
         concurrency,
+        events: None,
     })
     .await
 }

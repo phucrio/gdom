@@ -99,6 +99,11 @@ mod tests {
         )
     }
 
+    async fn await_job_idle(state: &AppState, job_id: &str) {
+        let parsed = job_id.parse().expect("job id");
+        state.job_service.await_idle(parsed).await;
+    }
+
     async fn create_dummy_account(
         store: &SqliteAccountStore,
         id: u128,
@@ -347,7 +352,17 @@ mod tests {
             .await
             .unwrap();
 
-        let scanned = start_scan_inner(
+        let started = start_scan_inner(
+            &state,
+            JobIdInput {
+                job_id: job.id.clone(),
+            },
+        )
+        .await
+        .expect("scan starts");
+        assert_eq!(started.status, "SCANNING");
+        await_job_idle(&state, &job.id).await;
+        let scanned = get_job_inner(
             &state,
             JobIdInput {
                 job_id: job.id.clone(),
@@ -512,11 +527,15 @@ mod tests {
             .await
             .unwrap();
 
-        let state_scan = std::sync::Arc::clone(&state);
-        let job_id_str = job.id.clone();
-        let handle = tokio::spawn(async move {
-            start_scan_inner(&state_scan, JobIdInput { job_id: job_id_str }).await
-        });
+        let started_job = start_scan_inner(
+            &state,
+            JobIdInput {
+                job_id: job.id.clone(),
+            },
+        )
+        .await
+        .expect("scan starts");
+        assert_eq!(started_job.status, "SCANNING");
 
         let wait_started = std::time::Instant::now();
         while !started.load(std::sync::atomic::Ordering::SeqCst) {
@@ -534,7 +553,15 @@ mod tests {
         .await
         .unwrap();
         let _ = go_tx.send(());
-        let scanned = handle.await.unwrap().unwrap();
+        await_job_idle(&state, &job.id).await;
+        let scanned = get_job_inner(
+            &state,
+            JobIdInput {
+                job_id: job.id.clone(),
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(scanned.status, "PAUSED");
         let items = list_job_items_inner(
             &state,
@@ -647,17 +674,15 @@ mod tests {
         );
         let (job_id_str, _) = seed_job_ready_to_scan(&state, true).await;
 
-        let state_scan = std::sync::Arc::clone(&state);
-        let job_for_scan = job_id_str.clone();
-        let handle = tokio::spawn(async move {
-            start_scan_inner(
-                &state_scan,
-                JobIdInput {
-                    job_id: job_for_scan,
-                },
-            )
-            .await
-        });
+        let started_job = start_scan_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id_str.clone(),
+            },
+        )
+        .await
+        .expect("scan starts");
+        assert_eq!(started_job.status, "SCANNING");
 
         let wait_started = std::time::Instant::now();
         while !started.load(std::sync::atomic::Ordering::SeqCst) {
@@ -677,7 +702,10 @@ mod tests {
         assert!(matches!(overlap, Err(CommandError::ScanInProgress(_))));
 
         let _ = go_tx.send(());
-        let finished = handle.await.unwrap().unwrap();
+        await_job_idle(&state, &job_id_str).await;
+        let finished = get_job_inner(&state, JobIdInput { job_id: job_id_str })
+            .await
+            .unwrap();
         assert_eq!(finished.status, "READY_FOR_REVIEW");
     }
 
@@ -792,15 +820,16 @@ mod tests {
         let state = build_state_with_drive(GoogleDriveClient::for_test(base_url).unwrap()).await;
         let (job_id_str, _) = seed_job_ready_to_scan(&state, true).await;
 
-        let err = start_scan_inner(
+        let started = start_scan_inner(
             &state,
             JobIdInput {
                 job_id: job_id_str.clone(),
             },
         )
         .await
-        .expect_err("429 is retryable");
-        assert!(matches!(err, CommandError::RateLimited(_)));
+        .expect("scan starts");
+        assert_eq!(started.status, "SCANNING");
+        await_job_idle(&state, &job_id_str).await;
 
         let after_429 = get_job_inner(
             &state,
@@ -815,6 +844,16 @@ mod tests {
         assert_ne!(after_429.status, "SCANNING");
 
         let resumed = start_scan_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id_str.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.status, "SCANNING");
+        await_job_idle(&state, &job_id_str).await;
+        let resumed = get_job_inner(
             &state,
             JobIdInput {
                 job_id: job_id_str.clone(),
@@ -850,15 +889,16 @@ mod tests {
         let state = build_state_with_drive(GoogleDriveClient::for_test(base_url).unwrap()).await;
         let (job_id_str, _) = seed_job_ready_to_scan(&state, true).await;
 
-        let err = start_scan_inner(
+        let started = start_scan_inner(
             &state,
             JobIdInput {
                 job_id: job_id_str.clone(),
             },
         )
         .await
-        .expect_err("503 is retryable");
-        assert!(matches!(err, CommandError::Internal(_)));
+        .expect("scan starts");
+        assert_eq!(started.status, "SCANNING");
+        await_job_idle(&state, &job_id_str).await;
 
         let job = get_job_inner(&state, JobIdInput { job_id: job_id_str })
             .await
@@ -1178,6 +1218,7 @@ mod tests {
         .await
         .expect("queued job starts after the previous mutation job is no longer running");
         assert_ne!(started.status, "QUEUED");
+        await_job_idle(&state, &job_b.id).await;
         let lease = state.job_store.current_mutation_lease().await.unwrap();
         assert!(
             lease.is_none(),

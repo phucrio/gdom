@@ -5,10 +5,11 @@ use crate::application::backoff::{JitterSource, MAX_RETRY_ATTEMPTS, Sleeper, bac
 use crate::application::drive_folder::DriveFolderOwner;
 use crate::application::drive_transfer::{DrivePermission, DriveTransferError, DriveTransferPort};
 use crate::application::item_store::{ItemStoreError, ItemStorePort};
+use crate::application::job_events::{JobEventSink, JobRuntimeEvent};
 use crate::application::time::iso_now;
 use crate::domain::GooglePermissionId;
 use crate::domain::item::{ItemError, ItemState, MigrationItem};
-use crate::domain::job::{JobError, MigrationJob};
+use crate::domain::job::{JobError, JobId, MigrationJob};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TransferPhase {
@@ -79,6 +80,9 @@ pub struct TransferRun<'a> {
     pub target_email: &'a str,
     pub pause: Option<&'a AtomicBool>,
     pub cancel: Option<&'a AtomicBool>,
+    pub job_id: JobId,
+    pub events: Option<&'a dyn JobEventSink>,
+    pub progress_total: u64,
 }
 
 pub async fn execute_canary(
@@ -188,6 +192,7 @@ pub async fn transfer_items(
             Err(StepError::Failed) => failed += 1,
             Err(StepError::Fatal(err)) => return Err(err),
         }
+        emit_transfer_progress(run, verified, Some(item.name.clone()));
     }
     Ok(TransferHalt::Exhausted { verified, failed })
 }
@@ -497,11 +502,41 @@ async fn persist(run: &TransferRun<'_>, item: &MigrationItem) -> Result<(), Step
     run.store
         .save_item(item)
         .await
-        .map_err(|err| StepError::Fatal(TransferError::Store(err)))
+        .map_err(|err| StepError::Fatal(TransferError::Store(err)))?;
+    emit_item_state(run, item);
+    Ok(())
 }
 
 async fn persist_outcome(run: &TransferRun<'_>, item: &MigrationItem) -> Result<(), StepOutcome> {
-    run.store.save_item(item).await.map_err(StepOutcome::Store)
+    run.store
+        .save_item(item)
+        .await
+        .map_err(StepOutcome::Store)?;
+    emit_item_state(run, item);
+    Ok(())
+}
+
+fn emit_item_state(run: &TransferRun<'_>, item: &MigrationItem) {
+    let Some(events) = run.events else {
+        return;
+    };
+    events.emit(JobRuntimeEvent::ItemStateChanged {
+        job_id: run.job_id,
+        item_id: item.file_id.clone(),
+        state: item.state.as_str().to_string(),
+    });
+}
+
+fn emit_transfer_progress(run: &TransferRun<'_>, completed: usize, current_path: Option<String>) {
+    let Some(events) = run.events else {
+        return;
+    };
+    events.emit(JobRuntimeEvent::MigrationProgress {
+        job_id: run.job_id,
+        completed: completed as u64,
+        total: run.progress_total,
+        current_path,
+    });
 }
 
 async fn finalize_step(

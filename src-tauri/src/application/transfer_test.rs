@@ -384,6 +384,9 @@ fn run_of<'a>(fixture: &'a Fixture) -> TransferRun<'a> {
         target_email: &fixture.target_email,
         pause: None,
         cancel: None,
+        job_id: fixture.job.id(),
+        events: None,
+        progress_total: 0,
     }
 }
 

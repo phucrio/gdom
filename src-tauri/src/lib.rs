@@ -2,7 +2,7 @@ pub mod application;
 pub mod commands;
 pub use gdom_migration as domain;
 pub mod infrastructure;
-mod runtime;
+pub mod runtime;
 pub mod state;
 
 #[cfg(test)]
@@ -137,12 +137,17 @@ pub fn run() {
                 Arc::clone(&account_store),
             ));
 
-            let job_service = Arc::new(application::JobService::new(
-                Arc::clone(&account_store),
-                Arc::clone(&job_store),
-                Arc::new(drive_client) as Arc<dyn application::DrivePort>,
-                Arc::clone(&token_provider),
-            ));
+            let job_service = Arc::new(
+                application::JobService::new(
+                    Arc::clone(&account_store),
+                    Arc::clone(&job_store),
+                    Arc::new(drive_client) as Arc<dyn application::DrivePort>,
+                    Arc::clone(&token_provider),
+                )
+                .with_event_sink(Arc::new(runtime::TauriJobEventSink::new(
+                    app.handle().clone(),
+                ))),
+            );
 
             tauri::async_runtime::block_on(job_service.reconcile_on_startup()).map_err(|e| {
                 format!("failed to reconcile unfinished migration jobs on startup: {e}")
