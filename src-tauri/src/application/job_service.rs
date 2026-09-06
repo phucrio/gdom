@@ -193,6 +193,7 @@ impl From<JobStorePortError> for JobServiceError {
             JobStorePortError::RootsLocked => Self::RootsLocked,
             JobStorePortError::Database(msg) => Self::StoreError(msg),
             JobStorePortError::MutationLeaseHeld => Self::TransferInProgress,
+            JobStorePortError::NotDraftJob(_) => Self::IllegalTransition,
         }
     }
 }
@@ -257,6 +258,78 @@ impl Drop for TransferLeaseGuard {
             *lease = None;
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccountJobRole {
+    Source,
+    Target,
+}
+
+impl AccountJobRole {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Target => "target",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JobRunPhase {
+    Scan,
+    Canary,
+    Bulk,
+}
+
+impl JobRunPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Scan => "scan",
+            Self::Canary => "canary",
+            Self::Bulk => "bulk",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccountJobReference {
+    pub job_id: JobId,
+    pub status: JobStatus,
+    pub role: AccountJobRole,
+}
+
+impl AccountJobReference {
+    fn from_job(job: &crate::domain::job::MigrationJob, account_id: AccountId) -> Option<Self> {
+        let role = if job.source_account_id() == account_id {
+            AccountJobRole::Source
+        } else if job.target_account_id() == account_id {
+            AccountJobRole::Target
+        } else {
+            return None;
+        };
+        Some(Self {
+            job_id: job.id(),
+            status: job.status(),
+            role,
+        })
+    }
+}
+
+fn job_matches_list_filter(
+    job: &crate::domain::job::MigrationJob,
+    status: Option<JobStatus>,
+    account_id: Option<AccountId>,
+) -> bool {
+    let status_ok = match status {
+        Some(expected) => job.status() == expected,
+        None => true,
+    };
+    let account_ok = match account_id {
+        Some(id) => job.source_account_id() == id || job.target_account_id() == id,
+        None => true,
+    };
+    status_ok && account_ok
 }
 
 pub struct JobService<A, J>
@@ -676,6 +749,7 @@ where
 
         let job = MigrationJob::new(job_id, source, target, created_at)?;
         self.job_store.create_job(&job).await?;
+        self.emit(JobRuntimeEvent::JobListChanged { job_id: job.id() });
         Ok(job)
     }
 
@@ -720,6 +794,93 @@ where
 
     pub async fn list_jobs(&self) -> Result<Vec<MigrationJob>, JobServiceError> {
         self.job_store.list_jobs().await.map_err(Into::into)
+    }
+
+    pub async fn list_jobs_filtered(
+        &self,
+        status: Option<JobStatus>,
+        account_id: Option<AccountId>,
+    ) -> Result<Vec<MigrationJob>, JobServiceError> {
+        let jobs = self.list_jobs().await?;
+        Ok(jobs
+            .into_iter()
+            .filter(|job| job_matches_list_filter(job, status, account_id))
+            .collect())
+    }
+
+    pub async fn job_run_phase(
+        &self,
+        job: &crate::domain::job::MigrationJob,
+    ) -> Result<JobRunPhase, JobServiceError> {
+        match job.status() {
+            JobStatus::Draft | JobStatus::Scanning | JobStatus::ReadyForReview => {
+                Ok(JobRunPhase::Scan)
+            }
+            JobStatus::RunningCanary | JobStatus::CanaryReview => Ok(JobRunPhase::Canary),
+            JobStatus::Running | JobStatus::Pausing | JobStatus::Cancelling => {
+                Ok(JobRunPhase::Bulk)
+            }
+            JobStatus::Queued => {
+                if self.should_resume_as_canary(job).await? {
+                    Ok(JobRunPhase::Canary)
+                } else {
+                    Ok(JobRunPhase::Bulk)
+                }
+            }
+            JobStatus::Paused => {
+                if !self.looks_like_transfer_pause(job).await? {
+                    Ok(JobRunPhase::Scan)
+                } else if self.should_resume_as_canary(job).await? {
+                    Ok(JobRunPhase::Canary)
+                } else {
+                    Ok(JobRunPhase::Bulk)
+                }
+            }
+            JobStatus::AuthRequired
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota
+            | JobStatus::Cancelled
+            | JobStatus::Completed
+            | JobStatus::CompletedWithErrors
+            | JobStatus::Failed => {
+                if self.should_resume_as_canary(job).await? {
+                    Ok(JobRunPhase::Canary)
+                } else if self.looks_like_transfer_pause(job).await?
+                    || self.bulk_mutation_has_started(job).await?
+                {
+                    Ok(JobRunPhase::Bulk)
+                } else {
+                    Ok(JobRunPhase::Scan)
+                }
+            }
+        }
+    }
+
+    pub async fn delete_draft_job(&self, job_id: JobId) -> Result<(), JobServiceError> {
+        let job = self.get_job(job_id).await?;
+        if job.status() != JobStatus::Draft {
+            return Err(JobServiceError::IllegalTransition);
+        }
+        self.job_store.delete_draft_job(job_id).await?;
+        self.emit(JobRuntimeEvent::JobListChanged { job_id });
+        Ok(())
+    }
+
+    pub async fn account_references(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Vec<AccountJobReference>, JobServiceError> {
+        self.account_store
+            .find_by_id(account_id)
+            .await
+            .map_err(|e| JobServiceError::StoreError(e.to_string()))?
+            .ok_or(JobServiceError::SourceAccountNotFound(account_id))?;
+
+        let jobs = self.list_jobs().await?;
+        Ok(jobs
+            .into_iter()
+            .filter_map(|job| AccountJobReference::from_job(&job, account_id))
+            .collect())
     }
 
     pub async fn validate_root(
@@ -1317,6 +1478,13 @@ where
 
         let jobs = self.job_store.list_jobs().await?;
         for mut job in jobs {
+            if job.status() == JobStatus::Scanning {
+                let previous = job.status().as_str().to_string();
+                job.pause_scanning()?;
+                self.persist_status(&job, Some(&previous), "STARTUP_RECONCILE")
+                    .await?;
+                continue;
+            }
             if !job.status().is_unfinished_mutation() {
                 continue;
             }

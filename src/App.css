@@ -104,6 +104,7 @@ button:disabled {
 .primary-button,
 .danger-button,
 .account-actions button,
+.job-actions button,
 .migration-controls button,
 .step-tab,
 .root-list button {
@@ -156,6 +157,11 @@ button:disabled {
   gap: 28px;
   padding: 28px;
   max-width: 1280px;
+}
+
+.workspace-single {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 960px;
 }
 
 .nav-link {
@@ -241,6 +247,7 @@ h3 {
 }
 
 .account-list,
+.job-list,
 .root-list,
 .error-log,
 .wizard-steps {
@@ -250,6 +257,7 @@ h3 {
 }
 
 .account-card,
+.job-card,
 .wizard-panel,
 .preflight article,
 .dialog {
@@ -277,11 +285,45 @@ h3 {
   font-size: 14px;
 }
 
-.account-actions {
+.account-actions,
+.job-actions {
   grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.job-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 16px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.job-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.job-meta {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.job-group {
+  margin-top: 24px;
+}
+
+.job-group h3 {
+  margin-bottom: 12px;
+}
+
+.account-identity .link-button {
+  justify-self: start;
+  width: fit-content;
+  font-size: 14px;
 }
 
 .wizard-steps {
@@ -481,7 +523,8 @@ code {
     grid-template-columns: 1fr 1fr;
   }
 
-  .account-card {
+  .account-card,
+  .job-card {
     grid-template-columns: 1fr;
   }
 }

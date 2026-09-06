@@ -394,6 +394,32 @@ impl JobStorePort for SqliteJobStore {
         })
     }
 
+    fn delete_draft_job<'a>(&'a self, job_id: JobId) -> JobStoreFuture<'a, ()> {
+        Box::pin(async move {
+            let id = job_id.value().to_string();
+            let result = sqlx::query("DELETE FROM migration_jobs WHERE id = ?1 AND status = ?2")
+                .bind(&id)
+                .bind(JobStatus::Draft.as_str())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+            if result.rows_affected() == 0 {
+                let existing = sqlx::query_scalar::<_, String>(
+                    "SELECT status FROM migration_jobs WHERE id = ?1",
+                )
+                .bind(&id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+                return match existing {
+                    None => Err(JobStorePortError::JobNotFound(job_id)),
+                    Some(_) => Err(JobStorePortError::NotDraftJob(job_id)),
+                };
+            }
+            Ok(())
+        })
+    }
+
     fn add_root<'a>(&'a self, root: &'a MigrationRoot) -> JobStoreFuture<'a, ()> {
         Box::pin(async move {
             let id = root.id.value().to_string();

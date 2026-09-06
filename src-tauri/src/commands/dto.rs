@@ -144,6 +144,7 @@ pub struct JobDto {
     pub completed_at: Option<String>,
     pub last_error: Option<String>,
     pub roots: Vec<RootDto>,
+    pub phase: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scan: Option<ScanSummaryDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -217,6 +218,7 @@ impl From<&crate::domain::job::MigrationJob> for JobDto {
             completed_at: job.completed_at().map(ToOwned::to_owned),
             last_error: job.last_error().map(ToOwned::to_owned),
             roots: job.roots().iter().map(RootDto::from).collect(),
+            phase: crate::application::JobRunPhase::Scan.as_str().to_string(),
             scan: None,
             progress: None,
             errors: None,
@@ -317,6 +319,22 @@ pub struct JobIdInput {
 #[serde(rename_all = "camelCase")]
 pub struct ListJobsFilter {
     pub status: Option<String>,
+    pub account_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountJobReferenceDto {
+    pub job_id: String,
+    pub status: String,
+    pub role: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountReferencesDto {
+    pub account_id: String,
+    pub jobs: Vec<AccountJobReferenceDto>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]

@@ -1,3 +1,5 @@
+import type { JobDto } from "../ipc/types.ts";
+import { jobRunPhase } from "../jobs/status.ts";
 import { selectAccountPair } from "./accountPair.ts";
 
 export const WIZARD_STEP_ORDER = [
@@ -106,6 +108,42 @@ export function moveToStep(
 
 export function advanceWizard(from: WizardStepId, gate: WizardGate): StepMoveResult {
   return canLeaveStep(from, gate);
+}
+
+export function wizardStepForJob(job: JobDto): WizardStepId {
+  switch (job.status) {
+    case "DRAFT":
+      return job.roots.length > 0 ? "add-roots" : "select-accounts";
+    case "SCANNING":
+    case "READY_FOR_REVIEW":
+      return "scan-preflight";
+    case "PAUSED": {
+      const phase = jobRunPhase(job);
+      if (phase === "canary") {
+        return "canary-review";
+      }
+      if (phase === "bulk") {
+        return "live-migration";
+      }
+      return "scan-preflight";
+    }
+    case "RUNNING_CANARY":
+    case "CANARY_REVIEW":
+      return "canary-review";
+    case "QUEUED":
+      return jobRunPhase(job) === "bulk" ? "live-migration" : "canary-review";
+    case "RUNNING":
+    case "PAUSING":
+    case "CANCELLING":
+    case "CANCELLED":
+    case "COMPLETED":
+    case "COMPLETED_WITH_ERRORS":
+    case "FAILED":
+    case "AUTH_REQUIRED":
+    case "SOURCE_RATE_LIMITED":
+    case "WAITING_FOR_QUOTA":
+      return "live-migration";
+  }
 }
 
 export function wizardAdvanceErrorMessage(reason: WizardAdvanceError): string {

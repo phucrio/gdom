@@ -7,10 +7,10 @@
 use tauri::{AppHandle, Emitter};
 
 use crate::application::job_events::{
-    EVENT_CANARY_COMPLETED, EVENT_ITEM_STATE_CHANGED, EVENT_JOB_STATUS_CHANGED,
-    EVENT_MIGRATION_COMPLETED, EVENT_MIGRATION_PROGRESS, EVENT_SCAN_PROGRESS,
-    ItemStateChangedPayload, JobEventSink, JobIdPayload, JobRuntimeEvent, JobStatusChangedPayload,
-    MigrationProgressPayload, ScanProgressPayload, job_id_key,
+    EVENT_CANARY_COMPLETED, EVENT_ITEM_STATE_CHANGED, EVENT_JOB_LIST_CHANGED,
+    EVENT_JOB_STATUS_CHANGED, EVENT_MIGRATION_COMPLETED, EVENT_MIGRATION_PROGRESS,
+    EVENT_SCAN_PROGRESS, ItemStateChangedPayload, JobEventSink, JobIdPayload, JobRuntimeEvent,
+    JobStatusChangedPayload, MigrationProgressPayload, ScanProgressPayload, job_id_key,
 };
 
 pub struct TauriJobEventSink {
@@ -31,6 +31,12 @@ impl JobEventSink for TauriJobEventSink {
                 JobStatusChangedPayload {
                     job_id: job_id_key(job_id),
                     status,
+                },
+            ),
+            JobRuntimeEvent::JobListChanged { job_id } => self.app.emit(
+                EVENT_JOB_LIST_CHANGED,
+                JobIdPayload {
+                    job_id: job_id_key(job_id),
                 },
             ),
             JobRuntimeEvent::ScanProgress {
@@ -93,13 +99,15 @@ impl JobEventSink for TauriJobEventSink {
 #[cfg(test)]
 mod tests {
     use super::{
-        EVENT_CANARY_COMPLETED, EVENT_ITEM_STATE_CHANGED, EVENT_JOB_STATUS_CHANGED,
-        EVENT_MIGRATION_COMPLETED, EVENT_MIGRATION_PROGRESS, EVENT_SCAN_PROGRESS,
+        EVENT_CANARY_COMPLETED, EVENT_ITEM_STATE_CHANGED, EVENT_JOB_LIST_CHANGED,
+        EVENT_JOB_STATUS_CHANGED, EVENT_MIGRATION_COMPLETED, EVENT_MIGRATION_PROGRESS,
+        EVENT_SCAN_PROGRESS,
     };
 
     #[test]
     fn event_names_match_plan_and_frontend_contract() {
         assert_eq!(EVENT_JOB_STATUS_CHANGED, "job-status-changed");
+        assert_eq!(EVENT_JOB_LIST_CHANGED, "job-list-changed");
         assert_eq!(EVENT_SCAN_PROGRESS, "scan-progress");
         assert_eq!(EVENT_MIGRATION_PROGRESS, "migration-progress");
         assert_eq!(EVENT_ITEM_STATE_CHANGED, "item-state-changed");

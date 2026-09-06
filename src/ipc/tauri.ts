@@ -8,7 +8,9 @@ import {
   ACCOUNT_COMMANDS,
   JOB_COMMANDS,
   type AccountDto,
+  type AccountReferencesDto,
   type JobDto,
+  type ListJobsFilter,
   type OAuthConfigDto,
   type RootValidation,
 } from "./types.ts";
@@ -73,7 +75,15 @@ export function createTauriBackend(): BackendPort {
       invokeCommand<JobDto>(JOB_COMMANDS.updateDraftJobAccounts, {
         input: { jobId, sourceAccountId, targetAccountId },
       }),
+    listJobs: (filter?: ListJobsFilter) =>
+      invokeCommand<JobDto[]>(JOB_COMMANDS.listJobs, { filter: filter ?? null }),
     getJob: (jobId) => invokeCommand<JobDto>(JOB_COMMANDS.getJob, { input: { jobId } }),
+    deleteDraftJob: (jobId) =>
+      invokeCommand<void>(JOB_COMMANDS.deleteDraftJob, { input: { jobId } }),
+    getAccountReferences: (accountId) =>
+      invokeCommand<AccountReferencesDto>(ACCOUNT_COMMANDS.getAccountReferences, {
+        input: { accountId },
+      }),
     validateRoot: (jobId, input) =>
       invokeCommand<RootValidation>(JOB_COMMANDS.validateRoot, {
         input: { jobId, input },

@@ -2,14 +2,15 @@ use tauri::State;
 
 use crate::application::job_service::JobServiceError;
 use crate::commands::dto::{
-    CreateJobInput, DryRunExportDto, ExportDryRunInput, JobDto, JobErrorEntryDto, JobIdInput,
-    JobItemDto, JobItemsPageDto, ListJobItemsInput, ListJobsFilter, MigrationProgressDto,
-    QueueJobInput, RemoveRootInput, RootFolderInput, ScanSummaryDto, StartCanaryInput,
-    UpdateDraftJobAccountsInput, ValidateRootResultDto,
+    AccountJobReferenceDto, AccountReferencesDto, CreateJobInput, DryRunExportDto,
+    ExportDryRunInput, JobDto, JobErrorEntryDto, JobIdInput, JobItemDto, JobItemsPageDto,
+    ListJobItemsInput, ListJobsFilter, MigrationProgressDto, QueueJobInput, RemoveRootInput,
+    RootFolderInput, ScanSummaryDto, StartCanaryInput, UpdateDraftJobAccountsInput,
+    ValidateRootResultDto,
 };
 use crate::commands::error::CommandError;
 use crate::domain::AccountId;
-use crate::domain::job::{JobId, RootId};
+use crate::domain::job::{JobId, JobStatus, RootId};
 use crate::state::AppState;
 
 fn parse_account_id(raw: &str) -> Result<AccountId, CommandError> {
@@ -120,6 +121,13 @@ async fn job_dto_with_scan(
     job: crate::domain::job::MigrationJob,
 ) -> Result<JobDto, CommandError> {
     let mut dto = JobDto::from(&job);
+    dto.phase = state
+        .job_service
+        .job_run_phase(&job)
+        .await
+        .map_err(map_job_service_error)?
+        .as_str()
+        .to_string();
     if let Ok(Some(summary)) = state.job_service.scan_summary(job.id()).await {
         dto.scan = Some(ScanSummaryDto::from(&summary));
     }
@@ -197,25 +205,68 @@ pub(crate) async fn list_jobs_inner(
     state: &AppState,
     filter: Option<ListJobsFilter>,
 ) -> Result<Vec<JobDto>, CommandError> {
+    let account_id = match filter.as_ref().and_then(|f| f.account_id.as_ref()) {
+        Some(raw) if !raw.trim().is_empty() => Some(parse_account_id(raw)?),
+        _ => None,
+    };
+    let status = match filter
+        .as_ref()
+        .and_then(|f| f.status.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(raw) => Some(raw.parse::<JobStatus>().map_err(|_| {
+            CommandError::IllegalJobTransition(format!("Unknown job status filter: {raw}"))
+        })?),
+        None => None,
+    };
+
     let jobs = state
         .job_service
-        .list_jobs()
+        .list_jobs_filtered(status, account_id)
         .await
         .map_err(map_job_service_error)?;
 
-    let dtos: Vec<JobDto> = jobs
-        .into_iter()
-        .filter(|j| {
-            if let Some(st) = filter.as_ref().and_then(|f| f.status.as_ref()) {
-                j.status().as_str().eq_ignore_ascii_case(st)
-            } else {
-                true
-            }
-        })
-        .map(|j| JobDto::from(&j))
-        .collect();
-
+    let mut dtos = Vec::with_capacity(jobs.len());
+    for job in jobs {
+        dtos.push(job_dto_with_scan(state, job).await?);
+    }
     Ok(dtos)
+}
+
+pub(crate) async fn delete_draft_job_inner(
+    state: &AppState,
+    input: JobIdInput,
+) -> Result<(), CommandError> {
+    let job_id = parse_job_id(&input.job_id)?;
+    state
+        .job_service
+        .delete_draft_job(job_id)
+        .await
+        .map_err(map_job_service_error)
+}
+
+pub(crate) async fn get_account_references_inner(
+    state: &AppState,
+    account_id: AccountId,
+) -> Result<AccountReferencesDto, CommandError> {
+    let jobs = state
+        .job_service
+        .account_references(account_id)
+        .await
+        .map_err(map_job_service_error)?;
+
+    Ok(AccountReferencesDto {
+        account_id: account_id.value().to_string(),
+        jobs: jobs
+            .into_iter()
+            .map(|reference| AccountJobReferenceDto {
+                job_id: reference.job_id.to_string(),
+                status: reference.status.as_str().to_string(),
+                role: reference.role.as_str().to_string(),
+            })
+            .collect(),
+    })
 }
 
 pub(crate) async fn validate_root_inner(
@@ -363,6 +414,23 @@ pub async fn list_jobs(
     filter: Option<ListJobsFilter>,
 ) -> Result<Vec<JobDto>, CommandError> {
     list_jobs_inner(&state, filter).await
+}
+
+#[tauri::command]
+pub async fn delete_draft_job(
+    state: State<'_, AppState>,
+    input: JobIdInput,
+) -> Result<(), CommandError> {
+    delete_draft_job_inner(&state, input).await
+}
+
+#[tauri::command]
+pub async fn get_account_references(
+    state: State<'_, AppState>,
+    input: crate::commands::dto::AccountIdInput,
+) -> Result<AccountReferencesDto, CommandError> {
+    let account_id = parse_account_id(&input.account_id)?;
+    get_account_references_inner(&state, account_id).await
 }
 
 #[tauri::command]

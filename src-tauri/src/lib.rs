@@ -41,6 +41,8 @@ pub fn run() {
             commands::job::update_draft_job_accounts,
             commands::job::get_job,
             commands::job::list_jobs,
+            commands::job::delete_draft_job,
+            commands::job::get_account_references,
             commands::job::validate_root,
             commands::job::add_root,
             commands::job::remove_root,

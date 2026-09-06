@@ -4,7 +4,10 @@ import { isCommandMissing, toIpcError } from "../ipc/errors.ts";
 import type { BackendPort } from "../ipc/port.ts";
 import { IPC_EVENTS, type AccountDto, type JobDto, type JobErrorEntry, type ScanSummary } from "../ipc/types.ts";
 import { QUOTA_WARNING } from "../legal/copy.ts";
+import { WORKSPACE_SECTION_ID } from "../nav/copy.ts";
 import { accountDisplayLabel } from "../accounts/status.ts";
+import { jobRunPhase } from "../jobs/status.ts";
+import { hydrateWizardFromJob } from "./hydrate.ts";
 import { accountPairErrorMessage, selectAccountPair } from "./accountPair.ts";
 import { type BackendCall } from "./backendCall.ts";
 import { confirmCanaryEmail } from "./canary.ts";
@@ -31,6 +34,13 @@ import {
   scanAllowsCanary,
 } from "./jobStatus.ts";
 import {
+  WIZARD_EYEBROW,
+  WIZARD_NEW_TITLE,
+  WIZARD_OPENED_TITLE,
+  WIZARD_REFRESH_FAILED,
+  WIZARD_TITLE_ID,
+} from "./copy.ts";
+import {
   WIZARD_STEP_ORDER,
   WIZARD_STEP_TITLES,
   advanceWizard,
@@ -44,6 +54,7 @@ type MigrationWizardProps = {
   backend: BackendPort;
   accounts: AccountDto[];
   onAnnounce: (message: string) => void;
+  openedJob?: JobDto | null;
 };
 
 type LocalRoot = {
@@ -61,13 +72,23 @@ function emptyScan(): ScanSummary {
   };
 }
 
-export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWizardProps) {
-  const [step, setStep] = useState<WizardStepId>("select-accounts");
-  const [sourceAccountId, setSourceAccountId] = useState<string | null>(null);
-  const [targetAccountId, setTargetAccountId] = useState<string | null>(null);
+export function MigrationWizard({
+  backend,
+  accounts,
+  onAnnounce,
+  openedJob = null,
+}: MigrationWizardProps) {
+  const hydrated = openedJob !== null ? hydrateWizardFromJob(openedJob) : null;
+  const [step, setStep] = useState<WizardStepId>(hydrated?.step ?? "select-accounts");
+  const [sourceAccountId, setSourceAccountId] = useState<string | null>(
+    hydrated?.sourceAccountId ?? null,
+  );
+  const [targetAccountId, setTargetAccountId] = useState<string | null>(
+    hydrated?.targetAccountId ?? null,
+  );
   const [rootDraft, setRootDraft] = useState("");
-  const [roots, setRoots] = useState<LocalRoot[]>([]);
-  const [job, setJob] = useState<JobDto | null>(null);
+  const [roots, setRoots] = useState<LocalRoot[]>(hydrated?.roots ?? []);
+  const [job, setJob] = useState<JobDto | null>(openedJob);
   const [scanCommandMissing, setScanCommandMissing] = useState(false);
   const [canaryCommandMissing, setCanaryCommandMissing] = useState(false);
   const [jobEngineUnavailable, setJobEngineUnavailable] = useState(false);
@@ -83,11 +104,13 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
   const canaryConfirmed = confirmCanaryEmail(canaryEmail, snapshotTargetEmail);
   const liveParse: FolderParseResult = parseFolderInput(rootDraft);
   const jobId = job?.id ?? null;
+  const phase = jobRunPhase(job);
   const draftOpen = job === null || isDraftJob(job.status);
   const pairLocked = job !== null && !isDraftJob(job.status);
   const preflightReady = scanCommandMissing || (job !== null && scanAllowsCanary(job.status));
   const canaryReady =
-    canaryConfirmed && (canaryCommandMissing || (job !== null && canaryAllowsBulk(job.status)));
+    canaryConfirmed &&
+    (canaryCommandMissing || (job !== null && canaryAllowsBulk(job.status, phase)));
 
   useEffect(() => {
     if (jobId === null) {
@@ -108,7 +131,7 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
           const ipcError = toIpcError(caught, "get_job");
           if (!cancelled && !isCommandMissing(ipcError)) {
             const message =
-              caught instanceof Error ? caught.message : "Could not refresh the job.";
+              caught instanceof Error ? caught.message : WIZARD_REFRESH_FAILED;
             setError(message);
             onAnnounce(message);
           }
@@ -490,11 +513,11 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
     jobStatus === "PAUSED";
 
   return (
-    <section id="migration-wizard" className="wizard" aria-labelledby="wizard-title" tabIndex={-1}>
+    <section id={WORKSPACE_SECTION_ID.wizard} className="wizard" aria-labelledby={WIZARD_TITLE_ID} tabIndex={-1}>
       <div className="section-heading">
         <div>
-          <p className="eyebrow">Migration job</p>
-          <h2 id="wizard-title">New job wizard</h2>
+          <p className="eyebrow">{WIZARD_EYEBROW}</p>
+          <h2 id={WIZARD_TITLE_ID}>{openedJob !== null ? WIZARD_OPENED_TITLE : WIZARD_NEW_TITLE}</h2>
         </div>
       </div>
 
@@ -659,7 +682,7 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
             <button
               type="button"
               onClick={() => void handleResumeScan()}
-              disabled={busy || !canResumeScan(jobStatus)}
+              disabled={busy || !canResumeScan(jobStatus, phase)}
             >
               Resume scan
             </button>
@@ -737,7 +760,7 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
               disabled={
                 !canaryConfirmed ||
                 busy ||
-                !(canStartCanary(jobStatus) || canaryCommandMissing || scanCommandMissing)
+                !(canStartCanary(jobStatus, phase) || canaryCommandMissing || scanCommandMissing)
               }
               onClick={() => void handleStartCanary()}
             >
@@ -752,7 +775,7 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
             </button>
             <button
               type="button"
-              disabled={busy || !canResumeTransfer(jobStatus)}
+              disabled={busy || !canResumeTransfer(jobStatus, phase)}
               onClick={() => void handleResume()}
             >
               Resume
@@ -795,7 +818,7 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
               type="button"
               className="primary-button"
               onClick={() => void handleContinueMigration()}
-              disabled={busy || !canStartBulk(jobStatus)}
+              disabled={busy || !canStartBulk(jobStatus, phase)}
             >
               Start
             </button>
@@ -809,7 +832,7 @@ export function MigrationWizard({ backend, accounts, onAnnounce }: MigrationWiza
             <button
               type="button"
               onClick={() => void handleResume()}
-              disabled={busy || !canResumeTransfer(jobStatus)}
+              disabled={busy || !canResumeTransfer(jobStatus, phase)}
             >
               Resume
             </button>
