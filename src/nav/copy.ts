@@ -1,5 +1,4 @@
 export const BRAND_NAME = "GDOM";
-export const BRAND_MARK = "G";
 
 export const PRIMARY_NAV_LABEL = "Primary";
 export const PRIMARY_NAV_ACCOUNTS = "Accounts";
