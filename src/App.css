@@ -367,6 +367,11 @@ select {
   border: 1px solid var(--rule);
 }
 
+.job-run-status {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
 .warning {
   color: var(--notice);
   border-color: #7a6424;
