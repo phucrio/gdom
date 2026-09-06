@@ -1,6 +1,6 @@
 use crate::names::{
-    BEARER_PREFIX, GOOGLE_ACCESS_PREFIX, GOOGLE_AUTH_CODE_PREFIX, GOOGLE_REFRESH_PREFIX,
-    REDACTED, SECRET_KEYS,
+    BEARER_PREFIX, GOOGLE_ACCESS_PREFIX, GOOGLE_AUTH_CODE_PREFIX, GOOGLE_REFRESH_PREFIX, REDACTED,
+    SECRET_KEYS,
 };
 
 pub fn redact_secrets(input: &str) -> String {
@@ -65,7 +65,10 @@ fn is_token_left_boundary(previous: Option<char>) -> bool {
         None => true,
         Some(c) => {
             c.is_whitespace()
-                || matches!(c, '"' | '\'' | '=' | ':' | ',' | '{' | '[' | '(' | '?' | '&')
+                || matches!(
+                    c,
+                    '"' | '\'' | '=' | ':' | ',' | '{' | '[' | '(' | '?' | '&'
+                )
         }
     }
 }
@@ -125,11 +128,13 @@ fn redact_one_key(input: &str, key: &str) -> String {
 }
 
 fn is_key_boundary(lower: &str, key_start: usize, key_len: usize) -> bool {
-    let before_ok = key_start == 0
-        || !lower.as_bytes()[key_start - 1].is_ascii_alphanumeric();
+    let before_ok = key_start == 0 || !lower.as_bytes()[key_start - 1].is_ascii_alphanumeric();
     let after_index = key_start + key_len;
     let after_ok = after_index >= lower.len()
-        || !lower.as_bytes().get(after_index).is_some_and(u8::is_ascii_alphanumeric);
+        || !lower
+            .as_bytes()
+            .get(after_index)
+            .is_some_and(u8::is_ascii_alphanumeric);
     before_ok && after_ok
 }
 

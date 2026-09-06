@@ -2,9 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::EnvFilter;
 #[cfg(debug_assertions)]
 use tracing_subscriber::fmt::writer::MakeWriterExt;
-use tracing_subscriber::EnvFilter;
 
 use crate::error::LogError;
 use crate::names::{DEFAULT_ENV_FILTER, LOG_FILE_NAME};

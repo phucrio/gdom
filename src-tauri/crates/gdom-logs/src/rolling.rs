@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::names::{LOG_FILE_NAME, MAX_LOG_FILES, MAX_LOG_FILE_BYTES};
+use crate::names::{LOG_FILE_NAME, MAX_LOG_FILE_BYTES, MAX_LOG_FILES};
 
 pub(crate) struct SizeRollingFile {
     directory: PathBuf,

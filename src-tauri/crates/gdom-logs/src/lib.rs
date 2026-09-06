@@ -12,6 +12,6 @@ mod rolling;
 mod writer;
 
 pub use error::LogError;
-pub use init::{init_file_logging, log_file_path, LogGuard};
-pub use names::{LOG_DIR_NAME, LOG_FILE_NAME, MAX_LOG_FILES, MAX_LOG_FILE_BYTES, REDACTED};
+pub use init::{LogGuard, init_file_logging, log_file_path};
+pub use names::{LOG_DIR_NAME, LOG_FILE_NAME, MAX_LOG_FILE_BYTES, MAX_LOG_FILES, REDACTED};
 pub use redact::redact_secrets;
