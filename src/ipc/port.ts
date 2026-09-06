@@ -1,6 +1,8 @@
 import type {
   AccountDto,
+  AccountReferencesDto,
   JobDto,
+  ListJobsFilter,
   OAuthConfigDto,
   RootValidation,
 } from "./types.ts";
@@ -23,7 +25,10 @@ export type BackendPort = {
     sourceAccountId: string,
     targetAccountId: string,
   ): Promise<JobDto>;
+  listJobs(filter?: ListJobsFilter): Promise<JobDto[]>;
   getJob(jobId: string): Promise<JobDto>;
+  deleteDraftJob(jobId: string): Promise<void>;
+  getAccountReferences(accountId: string): Promise<AccountReferencesDto>;
   validateRoot(jobId: string, input: string): Promise<RootValidation>;
   addRoot(jobId: string, input: string): Promise<JobDto>;
   removeRoot(jobId: string, rootId: string): Promise<JobDto>;

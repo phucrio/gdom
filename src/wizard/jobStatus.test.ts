@@ -50,19 +50,25 @@ describe("job status gates", () => {
     expect(canPauseScan("SCANNING")).toBe(true);
     expect(canPauseScan("READY_FOR_REVIEW")).toBe(false);
     expect(canResumeScan("PAUSED")).toBe(true);
+    expect(canResumeScan("PAUSED", "bulk")).toBe(false);
     expect(isScanRunning("SCANNING")).toBe(true);
   });
 
   it("enables canary and bulk controls without holding the whole run busy", () => {
     expect(canStartCanary("READY_FOR_REVIEW")).toBe(true);
     expect(canStartCanary("RUNNING_CANARY")).toBe(false);
+    expect(canStartCanary("QUEUED", "canary")).toBe(true);
+    expect(canStartCanary("QUEUED", "bulk")).toBe(false);
     expect(canPauseTransfer("RUNNING_CANARY")).toBe(true);
     expect(canPauseTransfer("RUNNING")).toBe(true);
-    expect(canResumeTransfer("PAUSED")).toBe(true);
+    expect(canResumeTransfer("PAUSED")).toBe(false);
+    expect(canResumeTransfer("PAUSED", "canary")).toBe(true);
+    expect(canResumeTransfer("PAUSED", "bulk")).toBe(true);
     expect(canResumeTransfer("SOURCE_RATE_LIMITED")).toBe(true);
     expect(canResumeTransfer("WAITING_FOR_QUOTA")).toBe(true);
     expect(canStartBulk("CANARY_REVIEW")).toBe(true);
     expect(canStartBulk("QUEUED")).toBe(false);
+    expect(canStartBulk("QUEUED", "bulk")).toBe(true);
     expect(canStartBulk("RUNNING_CANARY")).toBe(false);
     expect(canCancelTransfer("RUNNING")).toBe(true);
     expect(canCancelTransfer("COMPLETED")).toBe(false);

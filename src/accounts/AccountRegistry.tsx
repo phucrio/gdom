@@ -4,6 +4,8 @@ import type { BackendPort } from "../ipc/port.ts";
 import type { AccountDto } from "../ipc/types.ts";
 import { Dialog } from "../ui/Dialog.tsx";
 import { ConnectDialog } from "./ConnectDialog.tsx";
+import { WORKSPACE_SECTION_ID } from "../nav/copy.ts";
+import { referencingJobsLabel } from "./copy.ts";
 import { accountDisplayLabel, accountStatusBadge, connectedAccountCount } from "./status.ts";
 
 type AccountRegistryProps = {
@@ -11,6 +13,8 @@ type AccountRegistryProps = {
   accounts: AccountDto[];
   loading: boolean;
   loadError: string | null;
+  jobCounts?: Record<string, number>;
+  onShowJobs?: (accountId: string) => void;
   onRefresh: () => void;
   onAnnounce: (message: string) => void;
 };
@@ -25,6 +29,8 @@ export function AccountRegistry({
   accounts,
   loading,
   loadError,
+  jobCounts = {},
+  onShowJobs,
   onRefresh,
   onAnnounce,
 }: AccountRegistryProps) {
@@ -51,7 +57,7 @@ export function AccountRegistry({
   }
 
   return (
-    <section id="account-registry" className="registry" aria-labelledby="registry-title" tabIndex={-1}>
+    <section id={WORKSPACE_SECTION_ID.accounts} className="registry" aria-labelledby="registry-title" tabIndex={-1}>
       <div className="section-heading">
         <div>
           <p className="eyebrow">Account registry</p>
@@ -82,11 +88,21 @@ export function AccountRegistry({
         <ul className="account-list">
           {accounts.map((account) => {
             const badge = accountStatusBadge(account.authStatus);
+            const referencing = jobCounts[account.id] ?? 0;
             return (
               <li key={account.id} className="account-card">
                 <div className="account-identity">
                   <strong>{accountDisplayLabel(account)}</strong>
                   <span className="account-email">{account.email}</span>
+                  {onShowJobs !== undefined && (
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => onShowJobs(account.id)}
+                    >
+                      {referencingJobsLabel(referencing)}
+                    </button>
+                  )}
                 </div>
                 <span className={`status-badge status-${account.authStatus.toLowerCase()}`}>
                   {badge}

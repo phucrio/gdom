@@ -1,6 +1,7 @@
 use crate::domain::job::JobId;
 
 pub const EVENT_JOB_STATUS_CHANGED: &str = "job-status-changed";
+pub const EVENT_JOB_LIST_CHANGED: &str = "job-list-changed";
 pub const EVENT_SCAN_PROGRESS: &str = "scan-progress";
 pub const EVENT_MIGRATION_PROGRESS: &str = "migration-progress";
 pub const EVENT_ITEM_STATE_CHANGED: &str = "item-state-changed";
@@ -51,6 +52,9 @@ pub enum JobRuntimeEvent {
     JobStatusChanged {
         job_id: JobId,
         status: String,
+    },
+    JobListChanged {
+        job_id: JobId,
     },
     ScanProgress {
         job_id: JobId,

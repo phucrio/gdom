@@ -89,6 +89,10 @@ export const JOB_STATUSES = [
 
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
+export const JOB_RUN_PHASES = ["scan", "canary", "bulk"] as const;
+
+export type JobRunPhase = (typeof JOB_RUN_PHASES)[number];
+
 export type AccountSnapshotDto = AssertNoSecrets<{
   accountId: string;
   email: string;
@@ -125,6 +129,24 @@ export type JobErrorEntry = AssertNoSecrets<{
   at: string;
 }>;
 
+export type ListJobsFilter = AssertNoSecrets<{
+  status?: JobStatus;
+  accountId?: string;
+}>;
+
+export type AccountJobRole = "source" | "target";
+
+export type AccountJobReferenceDto = AssertNoSecrets<{
+  jobId: string;
+  status: JobStatus;
+  role: AccountJobRole;
+}>;
+
+export type AccountReferencesDto = AssertNoSecrets<{
+  accountId: string;
+  jobs: AccountJobReferenceDto[];
+}>;
+
 export type JobDto = AssertNoSecrets<{
   id: string;
   sourceAccountId: string;
@@ -139,6 +161,7 @@ export type JobDto = AssertNoSecrets<{
   completedAt: string | null;
   lastError: string | null;
   roots: JobRoot[];
+  phase?: JobRunPhase;
   scan?: ScanSummary | null;
   progress?: MigrationProgress | null;
   errors?: JobErrorEntry[];
@@ -159,6 +182,7 @@ export const ACCOUNT_COMMANDS = {
   disconnectAccount: "disconnect_account",
   removeAccount: "remove_account",
   deleteLocalAccountData: "delete_local_account_data",
+  getAccountReferences: "get_account_references",
 } as const;
 
 export const JOB_COMMANDS = {
@@ -186,6 +210,7 @@ export const JOB_COMMANDS = {
 export const IPC_EVENTS = {
   accountRegistryChanged: "account-registry-changed",
   jobStatusChanged: "job-status-changed",
+  jobListChanged: "job-list-changed",
   scanProgress: "scan-progress",
   migrationProgress: "migration-progress",
   itemStateChanged: "item-state-changed",

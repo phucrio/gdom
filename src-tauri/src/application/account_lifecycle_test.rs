@@ -218,6 +218,10 @@ impl JobStorePort for EmptyJobStore {
         Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
     }
 
+    fn delete_draft_job<'a>(&'a self, _job_id: JobId) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
     fn add_root<'a>(&'a self, _root: &'a MigrationRoot) -> JobStoreFuture<'a, ()> {
         Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
     }

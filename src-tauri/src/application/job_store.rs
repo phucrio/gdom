@@ -38,6 +38,7 @@ pub enum JobStorePortError {
     AccountPairLocked,
     RootsLocked,
     MutationLeaseHeld,
+    NotDraftJob(JobId),
     Database(String),
 }
 
@@ -63,6 +64,9 @@ impl fmt::Display for JobStorePortError {
             Self::MutationLeaseHeld => {
                 write!(f, "another migration job already holds the mutation lease")
             }
+            Self::NotDraftJob(id) => {
+                write!(f, "job {id} is not a draft and cannot be deleted")
+            }
             Self::Database(msg) => write!(f, "database error: {msg}"),
         }
     }
@@ -79,6 +83,7 @@ pub trait JobStorePort: Send + Sync {
     fn update_draft_job<'a>(&'a self, job: &'a MigrationJob) -> JobStoreFuture<'a, ()>;
     fn find_job_by_id<'a>(&'a self, job_id: JobId) -> JobStoreFuture<'a, Option<MigrationJob>>;
     fn list_jobs<'a>(&'a self) -> JobStoreFuture<'a, Vec<MigrationJob>>;
+    fn delete_draft_job<'a>(&'a self, job_id: JobId) -> JobStoreFuture<'a, ()>;
     fn add_root<'a>(&'a self, root: &'a MigrationRoot) -> JobStoreFuture<'a, ()>;
     fn remove_root<'a>(&'a self, job_id: JobId, root_id: RootId) -> JobStoreFuture<'a, ()>;
     fn list_roots_for_job<'a>(&'a self, job_id: JobId) -> JobStoreFuture<'a, Vec<MigrationRoot>>;

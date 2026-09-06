@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { AccountDto, JobDto, OAuthConfigDto } from "./types.ts";
+import type { AccountDto, AccountReferencesDto, JobDto, OAuthConfigDto } from "./types.ts";
 import { assertNoSecretFields, fieldNameLooksLikeSecret, secretFieldsInRecord } from "./secrets.ts";
 
 const account: AccountDto = {
@@ -65,14 +65,21 @@ const job: JobDto = {
   errors: [],
 };
 
+const references: AccountReferencesDto = {
+  accountId: "1",
+  jobs: [{ jobId: "job-1", status: "DRAFT", role: "source" }],
+};
+
 describe("IPC DTO secret isolation", () => {
   it("does not treat account, OAuth config, or job DTO fields as secrets", () => {
     expect(secretFieldsInRecord(account)).toEqual([]);
     expect(secretFieldsInRecord(oauthConfig)).toEqual([]);
     expect(secretFieldsInRecord(job)).toEqual([]);
+    expect(secretFieldsInRecord(references)).toEqual([]);
     expect(() => assertNoSecretFields(account)).not.toThrow();
     expect(() => assertNoSecretFields(oauthConfig)).not.toThrow();
     expect(() => assertNoSecretFields(job)).not.toThrow();
+    expect(() => assertNoSecretFields(references)).not.toThrow();
   });
 
   it("flags access tokens, refresh tokens, PKCE verifiers, auth codes, and client secrets", () => {

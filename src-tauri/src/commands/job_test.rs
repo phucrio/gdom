@@ -10,15 +10,15 @@ mod tests {
         JobStorePort,
     };
     use crate::commands::dto::{
-        CreateJobInput, ExportDryRunInput, JobIdInput, ListJobItemsInput, QueueJobInput,
-        StartCanaryInput, UpdateDraftJobAccountsInput,
+        CreateJobInput, ExportDryRunInput, JobIdInput, ListJobItemsInput, ListJobsFilter,
+        QueueJobInput, StartCanaryInput, UpdateDraftJobAccountsInput,
     };
     use crate::commands::error::CommandError;
     use crate::commands::job::{
-        cancel_migration_inner, create_job_inner, export_dry_run_inner, get_job_inner,
-        list_job_items_inner, list_jobs_inner, pause_migration_inner, pause_scan_inner,
-        queue_job_inner, retry_failed_items_inner, start_canary_inner, start_scan_inner,
-        update_draft_job_accounts_inner,
+        cancel_migration_inner, create_job_inner, delete_draft_job_inner, export_dry_run_inner,
+        get_account_references_inner, get_job_inner, list_job_items_inner, list_jobs_inner,
+        pause_migration_inner, pause_scan_inner, queue_job_inner, retry_failed_items_inner,
+        start_canary_inner, start_scan_inner, update_draft_job_accounts_inner,
     };
     use crate::domain::job::{MigrationRoot, RootId, RootValidationStatus};
     use crate::domain::{AccountId, ConnectedAccount, GooglePermissionId};
@@ -228,6 +228,119 @@ mod tests {
         assert!(matches!(
             delete_historical,
             Err(crate::application::AccountLifecycleError::ActiveJobsPreventRemoval)
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_filter_account_references_and_draft_delete() {
+        let state = build_test_state().await;
+        create_dummy_account(
+            &state.account_store,
+            1,
+            "source@gmail.com",
+            "Source User",
+            "perm-source-1",
+        )
+        .await;
+        create_dummy_account(
+            &state.account_store,
+            2,
+            "target@gmail.com",
+            "Target User",
+            "perm-target-2",
+        )
+        .await;
+        create_dummy_account(
+            &state.account_store,
+            3,
+            "other@gmail.com",
+            "Other User",
+            "perm-other-3",
+        )
+        .await;
+
+        let first = create_job_inner(
+            &state,
+            CreateJobInput {
+                source_account_id: "1".to_string(),
+                target_account_id: "2".to_string(),
+            },
+        )
+        .await
+        .expect("first job");
+        let second = create_job_inner(
+            &state,
+            CreateJobInput {
+                source_account_id: "3".to_string(),
+                target_account_id: "2".to_string(),
+            },
+        )
+        .await
+        .expect("second job");
+
+        let filtered = list_jobs_inner(
+            &state,
+            Some(ListJobsFilter {
+                status: None,
+                account_id: Some("1".to_string()),
+            }),
+        )
+        .await
+        .expect("filtered list");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, first.id);
+        assert_eq!(filtered[0].source_snapshot.email, "source@gmail.com");
+        assert_eq!(filtered[0].target_snapshot.email, "target@gmail.com");
+
+        let references = get_account_references_inner(&state, AccountId::new(2))
+            .await
+            .expect("target references");
+        assert_eq!(references.account_id, "2");
+        assert_eq!(references.jobs.len(), 2);
+        assert!(
+            references
+                .jobs
+                .iter()
+                .all(|job| job.role == "target" && job.status == "DRAFT")
+        );
+
+        delete_draft_job_inner(
+            &state,
+            JobIdInput {
+                job_id: first.id.clone(),
+            },
+        )
+        .await
+        .expect("draft deleted");
+
+        let after_delete = list_jobs_inner(&state, None)
+            .await
+            .expect("list after delete");
+        assert_eq!(after_delete.len(), 1);
+        assert_eq!(after_delete[0].id, second.id);
+
+        sqlx::query("UPDATE migration_jobs SET status = 'SCANNING' WHERE id = ?1")
+            .bind(&second.id)
+            .execute(state.account_store.pool())
+            .await
+            .unwrap();
+
+        let scanned_delete = delete_draft_job_inner(
+            &state,
+            JobIdInput {
+                job_id: second.id.clone(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            scanned_delete,
+            Err(CommandError::IllegalJobTransition(_))
+        ));
+
+        let missing_account = get_account_references_inner(&state, AccountId::new(99)).await;
+        assert!(matches!(
+            missing_account,
+            Err(CommandError::AccountNotFound(_))
         ));
     }
 

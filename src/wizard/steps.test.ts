@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import type { JobDto } from "../ipc/types.ts";
 import { confirmCanaryEmail } from "./canary.ts";
-import { advanceWizard, moveToStep, type WizardGate } from "./steps.ts";
+import { advanceWizard, moveToStep, wizardStepForJob, type WizardGate } from "./steps.ts";
 
 const readyThroughScan: WizardGate = {
   sourceAccountId: "src",
@@ -81,6 +82,49 @@ describe("wizard step order", () => {
       canaryConfirmed: true,
     });
     expect(skipped).toEqual({ ok: false, reason: "cannot-skip-step" });
+  });
+
+  it("reopens a persisted job on the step that matches its status", () => {
+    const base: JobDto = {
+      id: "1",
+      sourceAccountId: "1",
+      targetAccountId: "2",
+      sourceSnapshot: {
+        accountId: "1",
+        email: "a@gmail.com",
+        displayName: "A",
+        permissionId: "p1",
+      },
+      targetSnapshot: {
+        accountId: "2",
+        email: "b@gmail.com",
+        displayName: "B",
+        permissionId: "p2",
+      },
+      status: "DRAFT",
+      queuePosition: null,
+      canarySize: 5,
+      createdAt: "2026-09-06T00:00:00Z",
+      startedAt: null,
+      completedAt: null,
+      lastError: null,
+      roots: [],
+    };
+    expect(wizardStepForJob(base)).toBe("select-accounts");
+    expect(wizardStepForJob({ ...base, status: "READY_FOR_REVIEW" })).toBe("scan-preflight");
+    expect(wizardStepForJob({ ...base, status: "CANARY_REVIEW" })).toBe("canary-review");
+    expect(wizardStepForJob({ ...base, status: "AUTH_REQUIRED" })).toBe("live-migration");
+    expect(wizardStepForJob({ ...base, status: "QUEUED", phase: "canary" })).toBe("canary-review");
+    expect(wizardStepForJob({ ...base, status: "QUEUED", phase: "bulk" })).toBe("live-migration");
+    expect(wizardStepForJob({ ...base, status: "PAUSED", phase: "scan" })).toBe("scan-preflight");
+    expect(
+      wizardStepForJob({
+        ...base,
+        status: "PAUSED",
+        phase: "scan",
+        progress: { completed: 0, total: 4, currentPath: null },
+      }),
+    ).toBe("scan-preflight");
   });
 
   it("blocks the live-migration step tab until canary has finished", () => {

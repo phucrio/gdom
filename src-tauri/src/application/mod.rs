@@ -41,7 +41,10 @@ pub use drive_tree::{
 };
 pub use item_store::{ItemAggregates, ItemBatchCommit, ItemPage, ItemStoreError, ItemStorePort};
 pub use job_events::{JobEventSink, JobRuntimeEvent, NoopJobEventSink, RecordingJobEventSink};
-pub use job_service::{ItemFailure, JobService, JobServiceError, TransferProgress};
+pub use job_service::{
+    AccountJobReference, AccountJobRole, ItemFailure, JobRunPhase, JobService, JobServiceError,
+    TransferProgress,
+};
 pub use job_store::{JobStoreFuture, JobStorePort, JobStorePortError, MigrationEvent, WorkerLease};
 pub use preflight::PreflightSummary;
 pub use refresh_token_store::{RefreshToken, RefreshTokenStore, RefreshTokenStoreError};
