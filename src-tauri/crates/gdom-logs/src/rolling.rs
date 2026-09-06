@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::names::{LOG_FILE_NAME, MAX_LOG_FILE_BYTES, MAX_LOG_FILES};
+use crate::names::{LOG_FILE_NAME, MAX_LOG_FILES, MAX_LOG_FILE_BYTES};
 
 pub(crate) struct SizeRollingFile {
     directory: PathBuf,
@@ -15,12 +15,7 @@ pub(crate) struct SizeRollingFile {
 
 impl SizeRollingFile {
     pub fn open(directory: impl AsRef<Path>) -> io::Result<Self> {
-        Self::with_limits(
-            directory,
-            LOG_FILE_NAME,
-            MAX_LOG_FILE_BYTES,
-            MAX_LOG_FILES,
-        )
+        Self::with_limits(directory, LOG_FILE_NAME, MAX_LOG_FILE_BYTES, MAX_LOG_FILES)
     }
 
     pub(crate) fn with_limits(
@@ -73,13 +68,13 @@ impl SizeRollingFile {
             let from = generation_path(&self.directory, &self.file_name, generation);
             if from.exists() {
                 let to = generation_path(&self.directory, &self.file_name, generation + 1);
-                fs::rename(&from, &to)?;
+                rename_replace(&from, &to)?;
             }
         }
         let current_path = generation_path(&self.directory, &self.file_name, 0);
         if current_path.exists() {
             let first_archive = generation_path(&self.directory, &self.file_name, 1);
-            fs::rename(&current_path, &first_archive)?;
+            rename_replace(&current_path, &first_archive)?;
         }
         Ok(())
     }
@@ -112,9 +107,10 @@ impl Write for SizeRollingFile {
         if self.current.is_none() {
             self.open_current(false)?;
         }
-        let file = self.current.as_mut().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotConnected, "log file is not open")
-        })?;
+        let file = self
+            .current
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "log file is not open"))?;
         let written = file.write(buf)?;
         self.written = self.written.saturating_add(written as u64);
         Ok(written)
@@ -126,6 +122,13 @@ impl Write for SizeRollingFile {
             None => Ok(()),
         }
     }
+}
+
+fn rename_replace(from: &Path, to: &Path) -> io::Result<()> {
+    if to.exists() {
+        fs::remove_file(to)?;
+    }
+    fs::rename(from, to)
 }
 
 pub(crate) fn generation_path(directory: &Path, file_name: &str, generation: u32) -> PathBuf {
@@ -146,11 +149,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
-        std::env::temp_dir().join(format!(
-            "gdom-logs-roll-{}-{}",
-            std::process::id(),
-            stamp
-        ))
+        std::env::temp_dir().join(format!("gdom-logs-roll-{}-{}", std::process::id(), stamp))
     }
 
     #[test]
@@ -174,10 +173,7 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert!(
-            names.len() as u32 <= MAX_LOG_FILES,
-            "retained {names:?}"
-        );
+        assert!(names.len() as u32 <= MAX_LOG_FILES, "retained {names:?}");
         assert!(names.iter().any(|name| name == LOG_FILE_NAME));
         let first_archive = format!("{LOG_FILE_NAME}.1");
         assert!(names.iter().any(|name| name == &first_archive));
@@ -202,9 +198,9 @@ mod tests {
             log.flush().expect("flush");
         }
         let count = fs::read_dir(&dir).expect("read dir").count();
-        assert!(count as u32 <= MAX_LOG_FILES);
-        assert!(!generation_path(&dir, LOG_FILE_NAME, MAX_LOG_FILES).exists());
+        assert_eq!(count as u32, MAX_LOG_FILES);
         assert!(generation_path(&dir, LOG_FILE_NAME, MAX_LOG_FILES - 1).exists());
+        assert!(!generation_path(&dir, LOG_FILE_NAME, MAX_LOG_FILES).exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -26,6 +26,7 @@ pub(crate) const SECRET_KEYS: &[&str] = &[
 pub(crate) const BEARER_PREFIX: &str = "bearer ";
 pub(crate) const GOOGLE_ACCESS_PREFIX: &str = "ya29.";
 pub(crate) const GOOGLE_REFRESH_PREFIX: &str = "1//";
+pub(crate) const GOOGLE_AUTH_CODE_PREFIX: &str = "code=4/";
 
 #[cfg(test)]
 mod tests {

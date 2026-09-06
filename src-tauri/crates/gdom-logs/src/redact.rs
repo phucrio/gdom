@@ -1,5 +1,6 @@
 use crate::names::{
-    BEARER_PREFIX, GOOGLE_ACCESS_PREFIX, GOOGLE_REFRESH_PREFIX, REDACTED, SECRET_KEYS,
+    BEARER_PREFIX, GOOGLE_ACCESS_PREFIX, GOOGLE_AUTH_CODE_PREFIX, GOOGLE_REFRESH_PREFIX,
+    REDACTED, SECRET_KEYS,
 };
 
 pub fn redact_secrets(input: &str) -> String {
@@ -30,19 +31,25 @@ fn redact_prefixed_tokens(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
     while !rest.is_empty() {
-        if let Some(stripped) = rest.strip_prefix(GOOGLE_ACCESS_PREFIX) {
-            out.push_str(GOOGLE_ACCESS_PREFIX);
-            let consumed = token_char_len(stripped);
-            out.push_str(REDACTED);
-            rest = &stripped[consumed..];
-            continue;
-        }
-        if let Some(stripped) = rest.strip_prefix(GOOGLE_REFRESH_PREFIX) {
-            out.push_str(GOOGLE_REFRESH_PREFIX);
-            let consumed = token_char_len(stripped);
-            out.push_str(REDACTED);
-            rest = &stripped[consumed..];
-            continue;
+        if is_token_left_boundary(out.chars().last()) {
+            if let Some(consumed) = take_prefixed_secret(rest, GOOGLE_ACCESS_PREFIX) {
+                out.push_str(GOOGLE_ACCESS_PREFIX);
+                out.push_str(REDACTED);
+                rest = &rest[consumed..];
+                continue;
+            }
+            if let Some(consumed) = take_prefixed_secret(rest, GOOGLE_REFRESH_PREFIX) {
+                out.push_str(GOOGLE_REFRESH_PREFIX);
+                out.push_str(REDACTED);
+                rest = &rest[consumed..];
+                continue;
+            }
+            if let Some(consumed) = take_prefixed_secret(rest, GOOGLE_AUTH_CODE_PREFIX) {
+                out.push_str(GOOGLE_AUTH_CODE_PREFIX);
+                out.push_str(REDACTED);
+                rest = &rest[consumed..];
+                continue;
+            }
         }
         let Some(next) = rest.chars().next() else {
             break;
@@ -51,6 +58,25 @@ fn redact_prefixed_tokens(input: &str) -> String {
         rest = &rest[next.len_utf8()..];
     }
     out
+}
+
+fn is_token_left_boundary(previous: Option<char>) -> bool {
+    match previous {
+        None => true,
+        Some(c) => {
+            c.is_whitespace()
+                || matches!(c, '"' | '\'' | '=' | ':' | ',' | '{' | '[' | '(' | '?' | '&')
+        }
+    }
+}
+
+fn take_prefixed_secret(input: &str, prefix: &str) -> Option<usize> {
+    let head = input.get(..prefix.len())?;
+    if !head.eq_ignore_ascii_case(prefix) {
+        return None;
+    }
+    let consumed = token_char_len(&input[prefix.len()..]);
+    Some(prefix.len() + consumed)
 }
 
 fn token_char_len(input: &str) -> usize {
@@ -158,10 +184,21 @@ mod tests {
 
     #[test]
     fn redacts_google_refresh_prefix_without_touching_http_urls() {
-        let input = "token=1//0refresh http://example.com/file";
+        let input = "token=1//0refresh http://127.0.0.1//callback http://example.com/file";
         let redacted = redact_secrets(input);
         assert!(!redacted.contains("0refresh"));
+        assert!(redacted.contains("http://127.0.0.1//callback"));
         assert!(redacted.contains("http://example.com/file"));
+    }
+
+    #[test]
+    fn redacts_google_authorization_code_query() {
+        let input = "redirect ?code=4/0Asecret-value&state=xyz encode=4/not-a-code code=200";
+        let redacted = redact_secrets(input);
+        assert!(!redacted.contains("0Asecret-value"));
+        assert!(redacted.contains("encode=4/not-a-code"));
+        assert!(redacted.contains("code=200"));
+        assert!(redacted.contains("state=xyz"));
     }
 
     #[test]
