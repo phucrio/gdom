@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
+import { URL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-const iconFile = (name: string) => readFileSync(new URL(`../../src-tauri/icons/${name}`, import.meta.url));
+const iconFile = (name) => readFileSync(new URL(`../../src-tauri/icons/${name}`, import.meta.url));
 const pngSizes = [
   ["32x32.png", 32],
   ["64x64.png", 64],
@@ -19,7 +20,7 @@ const pngSizes = [
   ["Square284x284Logo.png", 284],
   ["Square310x310Logo.png", 310],
   ["StoreLogo.png", 50],
-] as const;
+];
 
 describe("GDOM application icons", () => {
   it("keeps the master SVG self-contained", () => {
@@ -28,6 +29,16 @@ describe("GDOM application icons", () => {
     expect(source).toContain("<title>GDOM</title>");
     expect(source).not.toMatch(/<(?:script|image|foreignObject)\b/i);
     expect(source).not.toMatch(/(?:href|src)=["'](?:https?:|data:|\/\/)/i);
+  });
+
+  it("uses external SVG assets without relaxing the image CSP", () => {
+    const app = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
+    const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
+    const config = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+    expect(app).toContain('import gdomIcon from "./assets/gdom-icon.svg?no-inline"');
+    expect(html).toContain('href="/src/assets/gdom-icon.svg?no-inline"');
+    expect(config.app.security.csp).toMatch(/img-src 'self' asset:;/);
+    expect(config.app.security.csp).not.toContain("data:");
   });
 
   it.each(pngSizes)("%s has the required square RGBA8 dimensions", (name, size) => {
@@ -41,9 +52,7 @@ describe("GDOM application icons", () => {
   });
 
   it("bundles every configured icon", () => {
-    const config = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8")) as {
-      bundle: { icon: string[] };
-    };
+    const config = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
     for (const path of config.bundle.icon) {
       expect(readFileSync(new URL(`../../src-tauri/${path}`, import.meta.url)).length).toBeGreaterThan(0);
     }
@@ -56,7 +65,7 @@ describe("GDOM application icons", () => {
     const count = ico.readUInt16LE(4);
     expect(count).toBeGreaterThanOrEqual(6);
     expect(ico[6]).toBe(32);
-    const sizes: number[] = [];
+    const sizes = [];
     for (let index = 0; index < count; index += 1) {
       const entry = 6 + index * 16;
       const width = ico[entry] || 256;
@@ -76,7 +85,7 @@ describe("GDOM application icons", () => {
     expect(icns.toString("ascii", 0, 4)).toBe("icns");
     expect(icns.readUInt32BE(4)).toBe(icns.length);
     let offset = 8;
-    const kinds: string[] = [];
+    const kinds = [];
     while (offset < icns.length) {
       expect(offset + 8).toBeLessThanOrEqual(icns.length);
       const length = icns.readUInt32BE(offset + 4);

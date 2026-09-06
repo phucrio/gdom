@@ -6,7 +6,7 @@ on:
     paths:
       - src/assets/gdom-icon.svg
       - scripts/generate-icons.mjs
-      - src/assets/icons.test.ts
+      - src/assets/icons.test.mjs
       - .github/workflows/generate-brand-icons.yml
 
 permissions:
@@ -39,11 +39,11 @@ jobs:
               assert content.count(old) == 1, f'Unexpected content in {name}'
               path.write_text(content.replace(old, new), encoding='utf-8', newline='\n')
 
-          replace_once('src/App.tsx', 'import type { BackendPort }', 'import gdomIcon from "./assets/gdom-icon.svg";\nimport type { BackendPort }')
+          replace_once('src/App.tsx', 'import type { BackendPort }', 'import gdomIcon from "./assets/gdom-icon.svg?no-inline";\nimport type { BackendPort }')
           replace_once('src/App.tsx', '  BRAND_MARK,\n  BRAND_NAME,', '  BRAND_NAME,')
           replace_once('src/App.tsx', '            {BRAND_MARK}', '            <img src={gdomIcon} width={24} height={24} alt="" />')
           replace_once('src/nav/copy.ts', 'export const BRAND_MARK = "G";\n\n', '\n')
-          replace_once('index.html', '    <meta name="viewport"', '    <link rel="icon" type="image/svg+xml" href="/src/assets/gdom-icon.svg" />\n    <meta name="viewport"')
+          replace_once('index.html', '    <meta name="viewport"', '    <link rel="icon" type="image/svg+xml" href="/src/assets/gdom-icon.svg?no-inline" />\n    <meta name="viewport"')
           package = Path('package.json')
           data = json.loads(package.read_text(encoding='utf-8'))
           data['scripts']['icons'] = 'node scripts/generate-icons.mjs'
@@ -55,6 +55,18 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
+      - name: Verify built branding respects the existing CSP
+        shell: python
+        run: |
+          from pathlib import Path
+          html = Path('dist/index.html').read_text(encoding='utf-8')
+          icons = list(Path('dist/assets').glob('gdom-icon-*.svg'))
+          assert len(icons) == 1, 'Expected one emitted master SVG'
+          asset = '/assets/' + icons[0].name
+          assert asset in html, 'Favicon must reference the emitted SVG'
+          assert 'data:image/svg' not in html, 'Favicon must not use a data URI'
+          assert any(asset in path.read_text(encoding='utf-8') for path in Path('dist/assets').glob('*.js')), 'Header must reference the emitted SVG'
+          print('Verified header and favicon share one external SVG; CSP unchanged.')
       - name: Commit generated desktop assets
         shell: pwsh
         run: |
