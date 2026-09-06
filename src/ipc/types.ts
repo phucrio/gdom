@@ -188,4 +188,7 @@ export const IPC_EVENTS = {
   jobStatusChanged: "job-status-changed",
   scanProgress: "scan-progress",
   migrationProgress: "migration-progress",
+  itemStateChanged: "item-state-changed",
+  canaryCompleted: "canary-completed",
+  migrationCompleted: "migration-completed",
 } as const;

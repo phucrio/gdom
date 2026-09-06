@@ -2,10 +2,10 @@ use tauri::State;
 
 use crate::application::job_service::JobServiceError;
 use crate::commands::dto::{
-    CreateJobInput, DryRunExportDto, ExportDryRunInput, JobDto, JobIdInput, JobItemDto,
-    JobItemsPageDto, ListJobItemsInput, ListJobsFilter, QueueJobInput, RemoveRootInput,
-    RootFolderInput, ScanSummaryDto, StartCanaryInput, UpdateDraftJobAccountsInput,
-    ValidateRootResultDto,
+    CreateJobInput, DryRunExportDto, ExportDryRunInput, JobDto, JobErrorEntryDto, JobIdInput,
+    JobItemDto, JobItemsPageDto, ListJobItemsInput, ListJobsFilter, MigrationProgressDto,
+    QueueJobInput, RemoveRootInput, RootFolderInput, ScanSummaryDto, StartCanaryInput,
+    UpdateDraftJobAccountsInput, ValidateRootResultDto,
 };
 use crate::commands::error::CommandError;
 use crate::domain::AccountId;
@@ -123,6 +123,25 @@ async fn job_dto_with_scan(
     if let Ok(Some(summary)) = state.job_service.scan_summary(job.id()).await {
         dto.scan = Some(ScanSummaryDto::from(&summary));
     }
+    if let Ok((progress, errors)) = state.job_service.live_progress(job.id()).await {
+        dto.progress = progress.map(|progress| MigrationProgressDto {
+            completed: progress.completed,
+            total: progress.total,
+            current_path: progress.current_path,
+        });
+        if !errors.is_empty() {
+            dto.errors = Some(
+                errors
+                    .into_iter()
+                    .map(|entry| JobErrorEntryDto {
+                        item_id: entry.item_id,
+                        message: entry.message,
+                        at: entry.at,
+                    })
+                    .collect(),
+            );
+        }
+    }
     Ok(dto)
 }
 
@@ -171,7 +190,7 @@ pub(crate) async fn get_job_inner(
         .await
         .map_err(map_job_service_error)?;
 
-    Ok(JobDto::from(&job))
+    job_dto_with_scan(state, job).await
 }
 
 pub(crate) async fn list_jobs_inner(

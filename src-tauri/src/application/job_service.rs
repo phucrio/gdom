@@ -13,6 +13,7 @@ use crate::application::drive_transfer::DriveTransferPort;
 use crate::application::drive_tree::{DEFAULT_SCAN_CONCURRENCY, DrivePort};
 use crate::application::entity_id::next_entity_id;
 use crate::application::item_store::{ItemPage, ItemStoreError, ItemStorePort};
+use crate::application::job_events::{JobEventSink, JobRuntimeEvent, NoopJobEventSink};
 use crate::application::job_store::{JobStorePort, JobStorePortError, MigrationEvent};
 use crate::application::preflight::PreflightSummary;
 use crate::application::root_parser::{RootParseError, parse_root_input};
@@ -196,6 +197,20 @@ impl From<JobStorePortError> for JobServiceError {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferProgress {
+    pub completed: u64,
+    pub total: u64,
+    pub current_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemFailure {
+    pub item_id: String,
+    pub message: String,
+    pub at: String,
+}
+
 struct ScanInFlightGuard {
     slots: Arc<std::sync::Mutex<HashSet<JobId>>>,
     job_id: JobId,
@@ -253,14 +268,39 @@ where
     job_store: Arc<J>,
     drive: Arc<dyn DrivePort>,
     token_provider: Arc<AccountTokenProvider<A>>,
-    scan_pause_flags: tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>,
+    scan_pause_flags: Arc<tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>>,
     scan_in_flight: Arc<std::sync::Mutex<HashSet<JobId>>>,
     transfer_lease: Arc<std::sync::Mutex<Option<JobId>>>,
-    transfer_pause_flags: tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>,
-    transfer_cancel_flags: tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>,
+    transfer_pause_flags: Arc<tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>>,
+    transfer_cancel_flags: Arc<tokio::sync::Mutex<HashMap<JobId, Arc<AtomicBool>>>>,
     sleeper: Arc<dyn Sleeper>,
     jitter: Arc<dyn JitterSource>,
     instance_id: String,
+    events: Arc<dyn JobEventSink>,
+}
+
+impl<A, J> Clone for JobService<A, J>
+where
+    A: AccountStorePort + Send + Sync + 'static,
+    J: JobStorePort + ItemStorePort + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            account_store: Arc::clone(&self.account_store),
+            job_store: Arc::clone(&self.job_store),
+            drive: Arc::clone(&self.drive),
+            token_provider: Arc::clone(&self.token_provider),
+            scan_pause_flags: Arc::clone(&self.scan_pause_flags),
+            scan_in_flight: Arc::clone(&self.scan_in_flight),
+            transfer_lease: Arc::clone(&self.transfer_lease),
+            transfer_pause_flags: Arc::clone(&self.transfer_pause_flags),
+            transfer_cancel_flags: Arc::clone(&self.transfer_cancel_flags),
+            sleeper: Arc::clone(&self.sleeper),
+            jitter: Arc::clone(&self.jitter),
+            instance_id: self.instance_id.clone(),
+            events: Arc::clone(&self.events),
+        }
+    }
 }
 
 impl<A, J> JobService<A, J>
@@ -279,14 +319,15 @@ where
             job_store,
             drive,
             token_provider,
-            scan_pause_flags: tokio::sync::Mutex::new(HashMap::new()),
+            scan_pause_flags: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             scan_in_flight: Arc::new(std::sync::Mutex::new(HashSet::new())),
             transfer_lease: Arc::new(std::sync::Mutex::new(None)),
-            transfer_pause_flags: tokio::sync::Mutex::new(HashMap::new()),
-            transfer_cancel_flags: tokio::sync::Mutex::new(HashMap::new()),
+            transfer_pause_flags: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            transfer_cancel_flags: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             sleeper: Arc::new(TokioSleeper),
             jitter: Arc::new(SystemJitter),
             instance_id: format!("gdom-{}", next_entity_id()),
+            events: Arc::new(NoopJobEventSink),
         }
     }
 
@@ -298,6 +339,45 @@ where
         self.sleeper = sleeper;
         self.jitter = jitter;
         self
+    }
+
+    pub fn with_event_sink(mut self, events: Arc<dyn JobEventSink>) -> Self {
+        self.events = events;
+        self
+    }
+
+    pub async fn await_idle(&self, job_id: JobId) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if !self.scan_is_in_flight(job_id) && !self.transfer_is_in_flight(job_id) {
+                return;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
+    fn emit(&self, event: JobRuntimeEvent) {
+        self.events.emit(event);
+    }
+
+    fn emit_status(&self, job: &crate::domain::job::MigrationJob) {
+        let status = job.status();
+        self.emit(JobRuntimeEvent::JobStatusChanged {
+            job_id: job.id(),
+            status: status.as_str().to_string(),
+        });
+        match status {
+            JobStatus::CanaryReview => {
+                self.emit(JobRuntimeEvent::CanaryCompleted { job_id: job.id() })
+            }
+            JobStatus::Completed | JobStatus::CompletedWithErrors => {
+                self.emit(JobRuntimeEvent::MigrationCompleted { job_id: job.id() });
+            }
+            _ => {}
+        }
     }
 
     fn try_acquire_scan(&self, job_id: JobId) -> Result<ScanInFlightGuard, JobServiceError> {
@@ -388,10 +468,63 @@ where
         event_type: &str,
     ) -> Result<(), JobServiceError> {
         let event = Self::status_event(job, previous, event_type);
-        self.job_store
-            .persist_job_with_event(job, &event)
-            .await
-            .map_err(Into::into)
+        self.job_store.persist_job_with_event(job, &event).await?;
+        self.emit_status(job);
+        Ok(())
+    }
+
+    pub async fn live_progress(
+        &self,
+        job_id: JobId,
+    ) -> Result<(Option<TransferProgress>, Vec<ItemFailure>), JobServiceError> {
+        let items = self.job_store.list_items_for_transfer(job_id).await?;
+        let progress = if items.is_empty() {
+            None
+        } else {
+            let completed = items
+                .iter()
+                .filter(|item| {
+                    item.state == crate::domain::item::ItemState::Verified
+                        || item.state == crate::domain::item::ItemState::Transferred
+                })
+                .count() as u64;
+            let current_path = items
+                .iter()
+                .find(|item| item.state.is_transfer_active() && !item.state.is_eligible())
+                .or_else(|| items.iter().find(|item| item.state.is_eligible()))
+                .map(|item| item.name.clone());
+            Some(TransferProgress {
+                completed,
+                total: items.len() as u64,
+                current_path,
+            })
+        };
+        let mut errors: Vec<ItemFailure> = items
+            .iter()
+            .filter(|item| item.state == crate::domain::item::ItemState::RetryableFailed)
+            .map(|item| ItemFailure {
+                item_id: item.file_id.clone(),
+                message: item.state.as_str().to_string(),
+                at: item.updated_at.clone(),
+            })
+            .collect();
+        if let Ok(job) = self.get_job(job_id).await
+            && let Some(message) = job.last_error()
+        {
+            errors.insert(
+                0,
+                ItemFailure {
+                    item_id: "job".to_string(),
+                    message: message.to_string(),
+                    at: job
+                        .completed_at()
+                        .or(job.started_at())
+                        .unwrap_or(job.created_at())
+                        .to_string(),
+                },
+            );
+        }
+        Ok((progress, errors))
     }
 
     async fn set_control_flag(
@@ -442,6 +575,11 @@ where
         let target_email = job.snapshots().target.email.clone();
         let pause = Self::get_or_init_flag(&self.transfer_pause_flags, job.id()).await;
         let cancel = Self::get_or_init_flag(&self.transfer_cancel_flags, job.id()).await;
+        let progress_total = self
+            .job_store
+            .list_items_for_transfer(job.id())
+            .await?
+            .len() as u64;
         let run = TransferRun {
             drive: self.drive.as_ref() as &dyn DriveTransferPort,
             store: &*self.job_store,
@@ -454,6 +592,9 @@ where
             target_email: &target_email,
             pause: Some(pause.as_ref()),
             cancel: Some(cancel.as_ref()),
+            job_id: job.id(),
+            events: Some(self.events.as_ref()),
+            progress_total,
         };
         if canary {
             Ok(execute_canary(&run, job).await?)
@@ -663,7 +804,7 @@ where
         if job.status() == JobStatus::Paused && self.looks_like_transfer_pause(&job).await? {
             return Err(JobServiceError::IllegalTransition);
         }
-        let _lease = self.try_acquire_scan(job_id)?;
+        let lease = self.try_acquire_scan(job_id)?;
 
         let pause = {
             let mut flags = self.scan_pause_flags.lock().await;
@@ -675,13 +816,14 @@ where
         };
 
         let source_id = job.source_account_id();
-        let target_id = job.target_account_id();
         let source_token = match self.token_provider.get_access_token(source_id).await {
             Ok(token) => token,
             Err(err) => {
+                drop(lease);
                 if job.status() == JobStatus::Scanning {
                     self.persist_paused(job_id, format!("failed to obtain OAuth token: {err}"))
                         .await?;
+                    self.emit_status(&self.get_job(job_id).await?);
                 }
                 return Err(JobServiceError::TokenError(err.to_string()));
             }
@@ -689,7 +831,27 @@ where
 
         job.start_scanning(iso_now())?;
         self.job_store.update_job(&job).await?;
+        self.emit_status(&job);
 
+        let worker = self.clone();
+        tokio::spawn(async move {
+            let _lease = lease;
+            worker.execute_scan(job_id, source_token, pause).await;
+        });
+
+        Ok(job)
+    }
+
+    async fn execute_scan(
+        &self,
+        job_id: JobId,
+        source_token: crate::application::AccessToken,
+        pause: Arc<AtomicBool>,
+    ) {
+        let Ok(job) = self.get_job(job_id).await else {
+            return;
+        };
+        let target_id = job.target_account_id();
         let source_perm = job.snapshots().source.permission_id.clone();
         let target_perm = job.snapshots().target.permission_id.clone();
         let roots = job.roots().to_vec();
@@ -704,10 +866,17 @@ where
             target_permission_id: &target_perm,
             pause: &pause,
             concurrency: DEFAULT_SCAN_CONCURRENCY,
+            events: Some(Arc::clone(&self.events)),
         })
         .await;
 
-        let mut job = self.get_job(job_id).await?;
+        let mut job = match self.get_job(job_id).await {
+            Ok(job) => job,
+            Err(_) => {
+                self.scan_pause_flags.lock().await.remove(&job_id);
+                return;
+            }
+        };
         match outcome {
             Ok(ScanOutcome::Completed) => {
                 match self.token_provider.get_access_token(target_id).await {
@@ -720,29 +889,28 @@ where
                         job.set_last_error(format!("quota lookup token failed: {err}"));
                     }
                 }
-                job.complete_scanning()?;
+                let _ = job.complete_scanning();
             }
             Ok(ScanOutcome::Paused) => {
-                job.pause_scanning()?;
+                let _ = job.pause_scanning();
             }
             Err(err) if err.is_retryable() => {
                 let mapped: JobServiceError = err.into();
-                self.persist_paused(job_id, mapped.to_string()).await?;
+                let _ = self.persist_paused(job_id, mapped.to_string()).await;
                 self.scan_pause_flags.lock().await.remove(&job_id);
-                return Err(mapped);
+                if let Ok(paused) = self.get_job(job_id).await {
+                    self.emit_status(&paused);
+                }
+                return;
             }
             Err(err) => {
-                let message = err.to_string();
-                let _ = job.fail_scanning(message.clone());
-                self.job_store.update_job(&job).await?;
-                self.scan_pause_flags.lock().await.remove(&job_id);
-                return Err(err.into());
+                let _ = job.fail_scanning(err.to_string());
             }
         }
 
-        self.job_store.update_job(&job).await?;
+        let _ = self.job_store.update_job(&job).await;
+        self.emit_status(&job);
         self.scan_pause_flags.lock().await.remove(&job_id);
-        self.get_job(job_id).await
     }
 
     pub async fn pause_scan(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
@@ -934,7 +1102,15 @@ where
             self.release_durable_lease(job_id).await;
             return Err(err);
         }
-        self.run_mutation(job_id, job, canary, lease).await
+        let started = job.clone();
+        let worker = self.clone();
+        tokio::spawn(async move {
+            let mut running = started;
+            let _ = worker
+                .run_mutation(job_id, &mut running, canary, lease)
+                .await;
+        });
+        Ok(job.clone())
     }
 
     async fn run_mutation(
@@ -1190,6 +1366,9 @@ where
             target_email: &target_email,
             pause: None,
             cancel: None,
+            job_id: job.id(),
+            events: None,
+            progress_total: items.len() as u64,
         };
         crate::application::transfer::reconcile_checkpoint(&run, &items).await?;
         Ok(())
