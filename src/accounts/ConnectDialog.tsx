@@ -9,6 +9,7 @@ import {
 } from "../legal/copy.ts";
 import { LegalDocument, legalDocumentTitle, type LegalDocumentId } from "../legal/LegalDialogs.tsx";
 import { Dialog } from "../ui/Dialog.tsx";
+import { useAccountConnection } from "./useAccountConnection.ts";
 import { GoogleMark } from "./GoogleMark.tsx";
 import {
   CONNECT_ADVANCED_HELP,
@@ -43,9 +44,11 @@ export function ConnectDialog({
   onConnected,
   onAnnounce,
 }: ConnectDialogProps) {
+  const connection = useAccountConnection(backend, onAnnounce);
   const [config, setConfig] = useState<OAuthConfigDto | null>(null);
   const [configLoaded, setConfigLoaded] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [resetBusy, setBusy] = useState(false);
+  const busy = resetBusy || connection.busy;
   const [error, setError] = useState<string | null>(null);
   const [legal, setLegal] = useState<LegalDocumentId | null>(null);
 
@@ -73,25 +76,23 @@ export function ConnectDialog({
   }, [backend]);
 
   async function handleSignIn() {
-    setBusy(true);
     setError(null);
 
     try {
       if (!configLoaded) {
         setError(CONNECT_CONFIG_LOADING);
-        setBusy(false);
         return;
       }
 
       if (config?.canSignIn !== true) {
         setError(CONNECT_SECRET_REQUIRED);
         onAnnounce(CONNECT_SECRET_REQUIRED);
-        setBusy(false);
         return;
       }
 
       onAnnounce(CONNECT_BROWSER_ANNOUNCEMENT);
-      await backend.connectAccount();
+      const account = await connection.connect();
+      if (!account) return;
       onAnnounce(CONNECT_SUCCESS_ANNOUNCEMENT);
       onConnected();
       onClose();
@@ -99,8 +100,15 @@ export function ConnectDialog({
       const message = caught instanceof Error ? caught.message : CONNECT_FAILED;
       setError(message);
       onAnnounce(message);
-    } finally {
-      setBusy(false);
+    }
+  }
+
+  async function handleClose() {
+    try {
+      await connection.cancel();
+      onClose();
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : "Could not cancel sign-in. Please try again.");
     }
   }
 
@@ -140,7 +148,7 @@ export function ConnectDialog({
   }
 
   return (
-    <Dialog title={CONNECT_TITLE} onClose={onClose} wide>
+    <Dialog title={CONNECT_TITLE} onClose={() => { if (!connection.cancelling) void handleClose(); }} wide>
       <div className="dialog-body">
         <p>{SYSTEM_BROWSER_OAUTH_EXPLANATION}</p>
         <p>{FULL_DRIVE_SCOPE_JUSTIFICATION}</p>
@@ -198,13 +206,13 @@ export function ConnectDialog({
         )}
 
         <div className="dialog-actions">
-          <button type="button" className="ghost-button" onClick={onClose} disabled={busy}>
-            {CONNECT_CANCEL}
+          <button type="button" className="ghost-button" onClick={() => void handleClose()} disabled={connection.cancelling}>
+            {connection.cancelling ? "Cancelling…" : CONNECT_CANCEL}
           </button>
           <button
             type="button"
             className="google-sign-in"
-            disabled={busy || !configLoaded || !oauthConfigured || !canSignIn}
+            disabled={busy || connection.cancelling || !configLoaded || !oauthConfigured || !canSignIn}
             onClick={() => void handleSignIn()}
           >
             <GoogleMark />

@@ -19,7 +19,9 @@ export type BackendPort = {
   listAccounts(): Promise<AccountDto[]>;
   getOAuthConfig(): Promise<OAuthConfigDto>;
   resetOAuthConfig(): Promise<OAuthConfigDto>;
-  connectAccount(): Promise<AccountDto>;
+  beginAccountConnection(attemptId: string): Promise<void>;
+  cancelAccountConnection(attemptId: string): Promise<void>;
+  connectAccount(attemptId: string): Promise<AccountDto>;
   reauthenticateAccount(accountId: string): Promise<AccountDto>;
   updateAccountLabel(accountId: string, label: string | null): Promise<AccountDto>;
   disconnectAccount(accountId: string): Promise<void>;

@@ -214,6 +214,8 @@ export type RootValidation = AssertNoSecrets<{
 }>;
 
 export const ACCOUNT_COMMANDS = {
+  beginAccountConnection: "begin_account_connection",
+  cancelAccountConnection: "cancel_account_connection",
   listAccounts: "list_accounts",
   configureOAuth: "configure_oauth",
   getOAuthConfig: "get_oauth_config",
