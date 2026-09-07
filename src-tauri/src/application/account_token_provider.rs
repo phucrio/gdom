@@ -373,7 +373,7 @@ mod tests {
         let account = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-1"),
-            AccountProfile::new("a@gmail.com", "A"),
+            AccountProfile::new("a@gmail.com", "A", None),
         );
         store.connect(&account).await.unwrap();
 
@@ -419,12 +419,12 @@ mod tests {
         let acc1 = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-1"),
-            AccountProfile::new("a@gmail.com", "A"),
+            AccountProfile::new("a@gmail.com", "A", None),
         );
         let acc2 = ConnectedAccount::new(
             AccountId::new(2),
             GooglePermissionId::new("perm-2"),
-            AccountProfile::new("b@gmail.com", "B"),
+            AccountProfile::new("b@gmail.com", "B", None),
         );
         store.connect(&acc1).await.unwrap();
         store.connect(&acc2).await.unwrap();
@@ -469,7 +469,7 @@ mod tests {
         let mut account = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-1"),
-            AccountProfile::new("a@gmail.com", "A"),
+            AccountProfile::new("a@gmail.com", "A", None),
         );
         account.set_auth_status(AuthStatus::Disconnected);
         store.connect(&account).await.unwrap();
@@ -500,7 +500,7 @@ mod tests {
         let account = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-1"),
-            AccountProfile::new("a@gmail.com", "A"),
+            AccountProfile::new("a@gmail.com", "A", None),
         );
         store.connect(&account).await.unwrap();
         store
@@ -530,7 +530,7 @@ mod tests {
         let account = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-1"),
-            AccountProfile::new("a@gmail.com", "A"),
+            AccountProfile::new("a@gmail.com", "A", None),
         );
         store.connect(&account).await.unwrap();
 
@@ -569,7 +569,7 @@ mod tests {
         let account = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-1"),
-            AccountProfile::new("a@gmail.com", "A"),
+            AccountProfile::new("a@gmail.com", "A", None),
         );
         store.connect(&account).await.unwrap();
 

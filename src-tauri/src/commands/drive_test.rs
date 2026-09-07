@@ -102,6 +102,7 @@ mod tests {
             GooglePermissionId::new(perm),
             email,
             name,
+            None,
         )
         .unwrap();
         store.connect(&acc).await.unwrap();

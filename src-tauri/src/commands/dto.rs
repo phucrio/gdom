@@ -17,6 +17,7 @@ pub struct AccountDto {
     pub last_authenticated_at: String,
     pub updated_at: String,
     pub removed_at: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 impl From<&ConnectedAccount> for AccountDto {
@@ -35,6 +36,7 @@ impl From<&ConnectedAccount> for AccountDto {
             last_authenticated_at: account.last_authenticated_at().to_owned(),
             updated_at: account.updated_at().to_owned(),
             removed_at: account.removed_at().map(ToOwned::to_owned),
+            avatar_url: account.avatar_url().map(ToOwned::to_owned),
         }
     }
 }
@@ -406,7 +408,11 @@ mod tests {
         ConnectedAccount::new(
             AccountId::new(42),
             GooglePermissionId::new("perm-abc123"),
-            AccountProfile::new("user@gmail.com", "Test User"),
+            AccountProfile::new(
+                "user@gmail.com",
+                "Test User",
+                Some("https://example.com/photo.jpg".into()),
+            ),
         )
     }
 
@@ -445,6 +451,7 @@ mod tests {
             last_authenticated_at: "2026-09-05T00:00:00Z".into(),
             updated_at: "2026-09-05T00:00:00Z".into(),
             removed_at: None,
+            avatar_url: Some("https://example.com/photo.jpg".into()),
         };
         let json = serde_json::to_value(&dto).expect("serializes");
 
@@ -454,6 +461,7 @@ mod tests {
         assert_eq!(json["displayName"], "A B");
         assert_eq!(json["label"], "My Label");
         assert_eq!(json["authStatus"], "CONNECTED");
+        assert_eq!(json["avatarUrl"], "https://example.com/photo.jpg");
     }
 
     #[test]
@@ -469,6 +477,7 @@ mod tests {
             last_authenticated_at: "2026-09-05T00:00:00Z".into(),
             updated_at: "2026-09-05T00:00:00Z".into(),
             removed_at: None,
+            avatar_url: None,
         };
         let json = serde_json::to_string(&dto).expect("serializes");
         let restored: AccountDto = serde_json::from_str(&json).expect("deserializes");

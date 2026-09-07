@@ -132,6 +132,7 @@ async fn seed_accounts(store: &SqliteAccountStore) {
             GooglePermissionId::new(perm),
             email,
             format!("User {id}"),
+            None,
         )
         .unwrap();
         store.connect(&acc).await.unwrap();

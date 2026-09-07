@@ -17,7 +17,7 @@ use crate::{
 
 const API_BASE_URL: &str = "https://www.googleapis.com";
 const ABOUT_PATH: &str =
-    "/drive/v3/about?fields=user%28permissionId%2CemailAddress%2CdisplayName%29";
+    "/drive/v3/about?fields=user%28permissionId%2CemailAddress%2CdisplayName%2CphotoLink%29";
 const ABOUT_QUOTA_PATH: &str = "/drive/v3/about?fields=storageQuota";
 const LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress),driveId,size,quotaBytesUsed,trashed,shortcutDetails,capabilities,modifiedTime,webViewLink)";
 const BROWSE_LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress),driveId,size,quotaBytesUsed,trashed,shortcutDetails,capabilities,modifiedTime,webViewLink)";
@@ -78,6 +78,7 @@ impl GoogleDriveClient {
             permission_id: GooglePermissionId::new(response.user.permission_id),
             email: response.user.email_address,
             display_name: response.user.display_name,
+            avatar_url: response.user.photo_link,
         })
     }
 
@@ -551,6 +552,7 @@ pub struct DriveAccountIdentity {
     permission_id: GooglePermissionId,
     email: String,
     display_name: String,
+    avatar_url: Option<String>,
 }
 
 impl DriveAccountIdentity {
@@ -558,11 +560,13 @@ impl DriveAccountIdentity {
         permission_id: GooglePermissionId,
         email: impl Into<String>,
         display_name: impl Into<String>,
+        avatar_url: Option<String>,
     ) -> Self {
         Self {
             permission_id,
             email: email.into(),
             display_name: display_name.into(),
+            avatar_url,
         }
     }
 
@@ -576,6 +580,10 @@ impl DriveAccountIdentity {
 
     pub fn display_name(&self) -> &str {
         &self.display_name
+    }
+
+    pub fn avatar_url(&self) -> Option<&str> {
+        self.avatar_url.as_deref()
     }
 }
 
@@ -765,6 +773,7 @@ struct AboutUser {
     permission_id: String,
     email_address: String,
     display_name: String,
+    photo_link: Option<String>,
 }
 
 impl IdentityLookupPort for GoogleDriveClient {
@@ -777,6 +786,7 @@ impl IdentityLookupPort for GoogleDriveClient {
             identity.permission_id().clone(),
             identity.email(),
             identity.display_name(),
+            identity.avatar_url().map(ToOwned::to_owned),
         ))
     }
 }
