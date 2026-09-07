@@ -25,47 +25,103 @@ impl SqliteJobStore {
     }
 }
 
+async fn insert_job(
+    connection: &mut sqlx::SqliteConnection,
+    job: &MigrationJob,
+) -> Result<(), JobStorePortError> {
+    let id = job.id().value().to_string();
+    let source_acc = job.source_account_id().value().to_string();
+    let target_acc = job.target_account_id().value().to_string();
+    let source_snap = &job.snapshots().source;
+    let target_snap = &job.snapshots().target;
+    let status = job.status().as_str();
+    let canary_size = job.canary_size() as i64;
+    let created_at = job.created_at();
+
+    sqlx::query(
+        "INSERT INTO migration_jobs (
+            id, source_account_id, target_account_id,
+            source_email_snapshot, target_email_snapshot,
+            source_display_name_snapshot, target_display_name_snapshot,
+            source_permission_id_snapshot, target_permission_id_snapshot,
+            status, queue_position, canary_size, created_at, started_at, completed_at, last_error
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+    )
+    .bind(id)
+    .bind(source_acc)
+    .bind(target_acc)
+    .bind(&source_snap.email)
+    .bind(&target_snap.email)
+    .bind(&source_snap.display_name)
+    .bind(&target_snap.display_name)
+    .bind(source_snap.permission_id.as_str())
+    .bind(target_snap.permission_id.as_str())
+    .bind(status)
+    .bind(job.queue_position())
+    .bind(canary_size)
+    .bind(created_at)
+    .bind(job.started_at())
+    .bind(job.completed_at())
+    .bind(job.last_error())
+    .execute(connection)
+    .await
+    .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+
+    Ok(())
+}
+
 impl JobStorePort for SqliteJobStore {
+    fn create_seeded_scan<'a>(
+        &'a self,
+        job: &'a MigrationJob,
+        roots: &'a crate::application::item_store::ItemBatchCommit,
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(async move {
+            if job.status() != JobStatus::Scanning {
+                return Err(JobStorePortError::Database(
+                    "seeded scan must be locked".into(),
+                ));
+            }
+            let mut transaction = self
+                .pool
+                .begin()
+                .await
+                .map_err(|error| JobStorePortError::Database(error.to_string()))?;
+            insert_job(&mut transaction, job).await?;
+            for root in job.roots() {
+                sqlx::query(
+                    "INSERT INTO migration_roots (id, job_id, root_file_id, root_name, validation_status, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .bind(root.id.value().to_string())
+                .bind(job.id().value().to_string())
+                .bind(&root.root_file_id)
+                .bind(&root.root_name)
+                .bind(root.validation_status.as_str())
+                .bind(&root.created_at)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| JobStorePortError::Database(error.to_string()))?;
+            }
+            super::item_store::insert_scan_batch(&mut transaction, job.id(), roots)
+                .await
+                .map_err(|error| JobStorePortError::Database(error.to_string()))?;
+            transaction
+                .commit()
+                .await
+                .map_err(|error| JobStorePortError::Database(error.to_string()))?;
+            Ok(())
+        })
+    }
+
     fn create_job<'a>(&'a self, job: &'a MigrationJob) -> JobStoreFuture<'a, ()> {
         Box::pin(async move {
-            let id = job.id().value().to_string();
-            let source_acc = job.source_account_id().value().to_string();
-            let target_acc = job.target_account_id().value().to_string();
-            let source_snap = &job.snapshots().source;
-            let target_snap = &job.snapshots().target;
-            let status = job.status().as_str();
-            let canary_size = job.canary_size() as i64;
-            let created_at = job.created_at();
-
-            sqlx::query(
-                "INSERT INTO migration_jobs (
-                    id, source_account_id, target_account_id,
-                    source_email_snapshot, target_email_snapshot,
-                    source_display_name_snapshot, target_display_name_snapshot,
-                    source_permission_id_snapshot, target_permission_id_snapshot,
-                    status, queue_position, canary_size, created_at, started_at, completed_at, last_error
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-            )
-            .bind(id)
-            .bind(source_acc)
-            .bind(target_acc)
-            .bind(&source_snap.email)
-            .bind(&target_snap.email)
-            .bind(&source_snap.display_name)
-            .bind(&target_snap.display_name)
-            .bind(source_snap.permission_id.as_str())
-            .bind(target_snap.permission_id.as_str())
-            .bind(status)
-            .bind(job.queue_position())
-            .bind(canary_size)
-            .bind(created_at)
-            .bind(job.started_at())
-            .bind(job.completed_at())
-            .bind(job.last_error())
-            .execute(&self.pool)
-            .await
-            .map_err(|e| JobStorePortError::Database(e.to_string()))?;
-
+            let mut connection = self
+                .pool
+                .acquire()
+                .await
+                .map_err(|e| JobStorePortError::Database(e.to_string()))?;
+            insert_job(&mut connection, job).await?;
             Ok(())
         })
     }

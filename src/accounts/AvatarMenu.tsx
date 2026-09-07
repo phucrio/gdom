@@ -70,7 +70,7 @@ export function AvatarMenu({
 
   const displayName = accountDisplayLabel(activeAccount);
   const initials = getInitials(displayName);
-  const isNeedsReconnect = activeAccount.authStatus === "REAUTH_REQUIRED";
+  const isNeedsReconnect = (activeAccount.authStatus === "REAUTH_REQUIRED" || activeAccount.authStatus === "DISCONNECTED");
 
   async function handleDisconnect() {
     if (!activeAccount) return;
@@ -194,7 +194,7 @@ export function AvatarMenu({
               const isActive = acc.id === activeAccount.id;
               const accName = accountDisplayLabel(acc);
               const accInitials = getInitials(accName);
-              const needsReauth = acc.authStatus === "REAUTH_REQUIRED";
+              const needsReauth = (acc.authStatus === "REAUTH_REQUIRED" || acc.authStatus === "DISCONNECTED");
               return (
                 <button
                   key={acc.id}

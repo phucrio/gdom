@@ -1,3 +1,4 @@
+import { progressCounts } from "../browser/progress.ts";
 import { useState } from "react";
 
 import { accountDisplayLabel } from "../accounts/status.ts";
@@ -118,10 +119,7 @@ export function JobsList({
                 const halt = isHaltStatus(job.status)
                   ? haltStatusDetail(job.status, job.lastError)
                   : null;
-                const total = job.progress?.total ?? job.scan?.totalItems ?? 0;
-                const completed = job.progress?.completed ?? 0;
-                const skipped = job.scan?.skipped ?? 0;
-                const failed = job.errors?.length ?? 0;
+                const { total, processed: completed, skipped, failed } = progressCounts(job);
                 const dateInfo = formatDate(job.completedAt ?? job.startedAt ?? job.createdAt);
 
                 const rootSummary =

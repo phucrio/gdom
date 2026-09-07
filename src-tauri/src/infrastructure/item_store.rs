@@ -12,6 +12,79 @@ use crate::domain::item::{ItemId, ItemState, MigrationItem, ScanCheckpoint};
 use crate::domain::job::JobId;
 use crate::infrastructure::job_store::SqliteJobStore;
 
+pub(super) async fn insert_scan_batch(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    job_id: JobId,
+    batch: &ItemBatchCommit,
+) -> Result<(), ItemStoreError> {
+    let job_id_str = job_id.value().to_string();
+    for item in &batch.items {
+        let parents = serde_json::to_string(&item.original_parent_ids)
+            .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+        sqlx::query(
+            "INSERT INTO migration_items (
+                id, job_id, file_id, name, mime_type, depth,
+                original_parent_ids_json, original_owner_permission_id,
+                quota_bytes_used, target_permission_id, state,
+                created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            ON CONFLICT(job_id, file_id) DO NOTHING",
+        )
+        .bind(item.id.value().to_string())
+        .bind(&job_id_str)
+        .bind(&item.file_id)
+        .bind(&item.name)
+        .bind(&item.mime_type)
+        .bind(item.depth)
+        .bind(parents)
+        .bind(
+            item.original_owner_permission_id
+                .as_ref()
+                .map(|id| id.as_str().to_string()),
+        )
+        .bind(item.quota_bytes_used)
+        .bind(
+            item.target_permission_id
+                .as_ref()
+                .map(|id| id.as_str().to_string()),
+        )
+        .bind(item.state.as_str())
+        .bind(&item.created_at)
+        .bind(&item.updated_at)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+    }
+
+    for checkpoint in &batch.checkpoints_upsert {
+        sqlx::query(
+            "INSERT INTO scan_checkpoints (job_id, folder_id, page_token, depth)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(job_id, folder_id) DO UPDATE SET
+                page_token = excluded.page_token,
+                depth = excluded.depth",
+        )
+        .bind(&job_id_str)
+        .bind(&checkpoint.folder_id)
+        .bind(&checkpoint.page_token)
+        .bind(checkpoint.depth)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+    }
+
+    for folder_id in &batch.checkpoints_delete {
+        sqlx::query("DELETE FROM scan_checkpoints WHERE job_id = ?1 AND folder_id = ?2")
+            .bind(&job_id_str)
+            .bind(folder_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| ItemStoreError::Database(e.to_string()))?;
+    }
+
+    Ok(())
+}
+
 impl ItemStorePort for SqliteJobStore {
     fn commit_scan_batch<'a>(
         &'a self,
@@ -32,70 +105,7 @@ impl ItemStorePort for SqliteJobStore {
                 .await
                 .map_err(|e| ItemStoreError::Database(e.to_string()))?;
 
-            let job_id_str = job_id.value().to_string();
-            for item in &batch.items {
-                let parents = serde_json::to_string(&item.original_parent_ids)
-                    .map_err(|e| ItemStoreError::Database(e.to_string()))?;
-                sqlx::query(
-                    "INSERT INTO migration_items (
-                        id, job_id, file_id, name, mime_type, depth,
-                        original_parent_ids_json, original_owner_permission_id,
-                        quota_bytes_used, target_permission_id, state,
-                        created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-                    ON CONFLICT(job_id, file_id) DO NOTHING",
-                )
-                .bind(item.id.value().to_string())
-                .bind(&job_id_str)
-                .bind(&item.file_id)
-                .bind(&item.name)
-                .bind(&item.mime_type)
-                .bind(item.depth)
-                .bind(parents)
-                .bind(
-                    item.original_owner_permission_id
-                        .as_ref()
-                        .map(|id| id.as_str().to_string()),
-                )
-                .bind(item.quota_bytes_used)
-                .bind(
-                    item.target_permission_id
-                        .as_ref()
-                        .map(|id| id.as_str().to_string()),
-                )
-                .bind(item.state.as_str())
-                .bind(&item.created_at)
-                .bind(&item.updated_at)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
-            }
-
-            for checkpoint in &batch.checkpoints_upsert {
-                sqlx::query(
-                    "INSERT INTO scan_checkpoints (job_id, folder_id, page_token, depth)
-                     VALUES (?1, ?2, ?3, ?4)
-                     ON CONFLICT(job_id, folder_id) DO UPDATE SET
-                        page_token = excluded.page_token,
-                        depth = excluded.depth",
-                )
-                .bind(&job_id_str)
-                .bind(&checkpoint.folder_id)
-                .bind(&checkpoint.page_token)
-                .bind(checkpoint.depth)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| ItemStoreError::Database(e.to_string()))?;
-            }
-
-            for folder_id in &batch.checkpoints_delete {
-                sqlx::query("DELETE FROM scan_checkpoints WHERE job_id = ?1 AND folder_id = ?2")
-                    .bind(&job_id_str)
-                    .bind(folder_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| ItemStoreError::Database(e.to_string()))?;
-            }
+            insert_scan_batch(&mut tx, job_id, batch).await?;
 
             tx.commit()
                 .await
@@ -343,8 +353,14 @@ impl ItemStorePort for SqliteJobStore {
     fn item_aggregates<'a>(&'a self, job_id: JobId) -> ItemStoreFuture<'a, ItemAggregates> {
         Box::pin(async move {
             let job_id_str = job_id.value().to_string();
-            let total: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM migration_items WHERE job_id = ?1")
+            let progress =
+                sqlx::query("SELECT COUNT(*) AS total,
+                    COALESCE(SUM(state = 'VERIFIED'), 0) AS completed,
+                    COALESCE(SUM(state IN ('RETRYABLE_FAILED', 'PERMANENT_FAILED')), 0) AS failed,
+                    COALESCE(SUM(state IN ('SKIPPED_ALREADY_OWNED_BY_TARGET',
+                        'SKIPPED_NOT_OWNED_BY_SOURCE', 'SKIPPED_SHARED_DRIVE',
+                        'SKIPPED_SHORTCUT_TARGET', 'SKIPPED_TRASHED', 'SKIPPED_INELIGIBLE')), 0) AS skipped
+                    FROM migration_items WHERE job_id = ?1")
                     .bind(&job_id_str)
                     .fetch_one(self.pool())
                     .await
@@ -397,7 +413,10 @@ impl ItemStorePort for SqliteJobStore {
             .map_err(|e| ItemStoreError::Database(e.to_string()))?;
 
             Ok(ItemAggregates {
-                total: total as u64,
+                total: progress.get::<i64, _>("total") as u64,
+                completed: progress.get::<i64, _>("completed") as u64,
+                failed: progress.get::<i64, _>("failed") as u64,
+                skipped: progress.get::<i64, _>("skipped") as u64,
                 eligible: eligible as u64,
                 eligible_files: (eligible - eligible_folders).max(0) as u64,
                 eligible_folders: eligible_folders as u64,

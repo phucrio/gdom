@@ -240,6 +240,180 @@ fn mutation_methods(captured: &Mutex<Vec<String>>) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn quick_transfer_scan_start_failure_preserves_locked_nonrecursive_scope() {
+    let env = build_env(|_| {
+        (
+            "200 OK".into(),
+            file_json("selected-folder", false, false)
+                .replace("text/plain", "application/vnd.google-apps.folder"),
+        )
+    })
+    .await;
+    sqlx::query("CREATE TRIGGER reject_scan_start BEFORE UPDATE OF status ON migration_jobs WHEN NEW.status = 'SCANNING' BEGIN SELECT RAISE(ABORT, 'injected scan start failure'); END")
+        .execute(env.account_store.pool()).await.unwrap();
+
+    let result = env
+        .job_service
+        .start_transfer_operation(
+            AccountId::new(1),
+            AccountId::new(2),
+            vec!["selected-folder".into()],
+            false,
+        )
+        .await;
+
+    assert!(result.is_err());
+    let jobs = env.job_service.list_jobs().await.unwrap();
+    assert_eq!(jobs.len(), 1);
+    let job = &jobs[0];
+    assert_eq!(job.status(), JobStatus::Scanning);
+    assert_eq!(
+        env.job_store
+            .list_committed_file_ids(job.id())
+            .await
+            .unwrap(),
+        vec!["selected-folder"]
+    );
+    assert!(
+        env.job_store
+            .list_scan_checkpoints(job.id())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        env.job_service
+            .remove_root(job.id(), job.roots()[0].id)
+            .await
+            .is_err()
+    );
+    sqlx::query("DROP TRIGGER reject_scan_start")
+        .execute(env.account_store.pool())
+        .await
+        .unwrap();
+    env.job_service.reconcile_on_startup().await.unwrap();
+    env.captured.lock().unwrap().clear();
+    env.job_service.start_scan(job.id()).await.unwrap();
+    env.job_service.await_idle(job.id()).await;
+    assert_eq!(
+        env.job_service.get_job(job.id()).await.unwrap().status(),
+        JobStatus::ReadyForReview
+    );
+    assert!(env.captured.lock().unwrap().iter().all(|request| {
+        request_path(request).is_some_and(|path| path.starts_with("/drive/v3/about?"))
+    }));
+    assert!(mutation_methods(&env.captured).is_empty());
+}
+
+#[tokio::test]
+async fn quick_transfer_rolls_back_all_roots_when_later_seed_fails() {
+    let env = build_env(|request| {
+        let path = request_path(request).unwrap();
+        let file_id = path.split('?').next().unwrap().rsplit('/').next().unwrap();
+        ("200 OK".into(), file_json(file_id, false, false))
+    })
+    .await;
+    sqlx::query("CREATE TRIGGER reject_later_seed BEFORE INSERT ON migration_items WHEN (SELECT COUNT(*) FROM migration_items) = 100 BEGIN SELECT RAISE(ABORT, 'injected later seed failure'); END")
+        .execute(env.account_store.pool()).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_cleanup BEFORE DELETE ON migration_jobs BEGIN SELECT RAISE(ABORT, 'cleanup unavailable'); END")
+        .execute(env.account_store.pool()).await.unwrap();
+
+    let result = env
+        .job_service
+        .start_transfer_operation(
+            AccountId::new(1),
+            AccountId::new(2),
+            (0..101).map(|index| format!("file-{index}")).collect(),
+            false,
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(env.job_service.list_jobs().await.unwrap().is_empty());
+    let stored_items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM migration_items")
+        .fetch_one(env.account_store.pool())
+        .await
+        .unwrap();
+    assert_eq!(stored_items, 0);
+    assert!(mutation_methods(&env.captured).is_empty());
+}
+
+#[tokio::test]
+async fn quick_transfer_validation_failure_does_not_persist_a_draft() {
+    let env = build_env(|request| {
+        if request_path(request).is_some_and(|path| path.contains("valid-root")) {
+            ("200 OK".into(), file_json("valid-root", false, false))
+        } else {
+            ("404 Not Found".into(), "{}".into())
+        }
+    })
+    .await;
+    let result = env
+        .job_service
+        .start_transfer_operation(
+            AccountId::new(1),
+            AccountId::new(2),
+            vec!["valid-root".into(), "missing-root".into()],
+            false,
+        )
+        .await;
+    assert!(result.is_err());
+    assert!(env.job_service.list_jobs().await.unwrap().is_empty());
+    assert!(mutation_methods(&env.captured).is_empty());
+}
+
+#[tokio::test]
+async fn resume_migration_rejects_paused_partial_scan_without_remote_calls() {
+    let env = build_env(|_| ("404 Not Found".into(), "{}".into())).await;
+    let mut job = env
+        .job_service
+        .create_job(AccountId::new(1), AccountId::new(2))
+        .await
+        .unwrap();
+    let root = MigrationRoot {
+        id: RootId::new(300),
+        job_id: job.id(),
+        root_file_id: "root".into(),
+        root_name: "Root".into(),
+        validation_status: RootValidationStatus::Validated,
+        created_at: "t".into(),
+    };
+    job.add_root(root.clone()).unwrap();
+    env.job_store.add_root(&root).await.unwrap();
+    job.start_scanning("t".into()).unwrap();
+    job.pause_scanning().unwrap();
+    env.job_store.update_job(&job).await.unwrap();
+    let result = env.job_service.resume_migration(job.id()).await;
+    assert!(matches!(
+        result,
+        Err(crate::application::JobServiceError::IllegalTransition)
+    ));
+    assert!(env.captured.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn quick_transfer_removes_draft_when_root_persistence_fails() {
+    let env = build_env(|_| ("200 OK".into(), file_json("selected-file", false, false))).await;
+    sqlx::query("CREATE TRIGGER reject_selected_item BEFORE INSERT ON migration_items BEGIN SELECT RAISE(ABORT, 'injected item write failure'); END")
+        .execute(env.account_store.pool()).await.unwrap();
+    let result = env
+        .job_service
+        .start_transfer_operation(
+            AccountId::new(1),
+            AccountId::new(2),
+            vec!["selected-file".into()],
+            false,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(crate::application::JobServiceError::StoreError(_))
+    ));
+    assert!(env.job_service.list_jobs().await.unwrap().is_empty());
+    assert!(mutation_methods(&env.captured).is_empty());
+}
+
+#[tokio::test]
 async fn schema_v6_creates_lease_and_event_tables() {
     let env = build_env(|_| ("404 Not Found".into(), "{}".into())).await;
     let version: i64 =

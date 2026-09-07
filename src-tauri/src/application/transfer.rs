@@ -101,15 +101,19 @@ pub async fn execute_auto_transfer(
     job: &mut MigrationJob,
 ) -> Result<TransferHalt, TransferError> {
     let canary_halt = execute_canary(run, job).await?;
-    if let TransferHalt::Exhausted { failed, .. } = canary_halt {
-        if failed > 0 {
-            return Ok(canary_halt);
-        }
+    if let TransferHalt::Exhausted { .. } = canary_halt {
         let remaining = run.store.list_items_for_transfer(job.id()).await?;
-        if remaining.is_empty() {
-            return Ok(canary_halt);
+        if remaining.iter().all(|item| item.canary_selected) {
+            let cohort = run.store.list_canary_cohort(job.id()).await?;
+            let had_errors = cohort.iter().any(|item| {
+                matches!(
+                    item.state,
+                    ItemState::RetryableFailed | ItemState::PermanentFailed
+                )
+            });
+            job.start_bulk()?;
+            job.complete_transfer(iso_now(), had_errors)?;
         }
-        return execute_bulk(run, job).await;
     }
     Ok(canary_halt)
 }
@@ -160,7 +164,12 @@ pub async fn execute_bulk(
     job.start_bulk()?;
     let items = run.store.list_items_for_transfer(job.id()).await?;
     let halt = transfer_items(run, &items).await?;
-    apply_halt(job, &halt)?;
+    if matches!(halt, TransferHalt::Exhausted { .. }) {
+        let aggregates = run.store.item_aggregates(job.id()).await?;
+        job.complete_transfer(iso_now(), aggregates.failed > 0)?;
+    } else {
+        apply_halt(job, &halt)?;
+    }
     Ok(halt)
 }
 
@@ -210,7 +219,7 @@ pub async fn transfer_items(
             Err(StepError::Failed) => failed += 1,
             Err(StepError::Fatal(err)) => return Err(err),
         }
-        emit_transfer_progress(run, verified, Some(item.name.clone()));
+        emit_transfer_progress(run, Some(item.name.clone())).await?;
     }
     Ok(TransferHalt::Exhausted { verified, failed })
 }
@@ -545,16 +554,21 @@ fn emit_item_state(run: &TransferRun<'_>, item: &MigrationItem) {
     });
 }
 
-fn emit_transfer_progress(run: &TransferRun<'_>, completed: usize, current_path: Option<String>) {
+async fn emit_transfer_progress(
+    run: &TransferRun<'_>,
+    current_path: Option<String>,
+) -> Result<(), TransferError> {
     let Some(events) = run.events else {
-        return;
+        return Ok(());
     };
+    let aggregates = run.store.item_aggregates(run.job_id).await?;
     events.emit(JobRuntimeEvent::MigrationProgress {
         job_id: run.job_id,
-        completed: completed as u64,
-        total: run.progress_total,
+        completed: aggregates.completed,
+        total: aggregates.total,
         current_path,
     });
+    Ok(())
 }
 
 async fn finalize_step(

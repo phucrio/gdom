@@ -158,6 +158,8 @@ export type DryRunExport = AssertNoSecrets<{
 
 export type MigrationProgress = AssertNoSecrets<{
   completed: number;
+  failed?: number;
+  skipped?: number;
   total: number;
   currentPath: string | null;
 }>;

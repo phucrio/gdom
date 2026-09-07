@@ -198,6 +198,14 @@ impl RefreshTokenStore for MockKeyring {
 struct EmptyJobStore;
 
 impl JobStorePort for EmptyJobStore {
+    fn create_seeded_scan<'a>(
+        &'a self,
+        _job: &'a MigrationJob,
+        _roots: &'a crate::application::item_store::ItemBatchCommit,
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
     fn create_job<'a>(&'a self, _job: &'a MigrationJob) -> JobStoreFuture<'a, ()> {
         Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
     }

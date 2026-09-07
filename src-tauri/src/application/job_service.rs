@@ -203,6 +203,8 @@ impl From<JobStorePortError> for JobServiceError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransferProgress {
     pub completed: u64,
+    pub failed: u64,
+    pub skipped: u64,
     pub total: u64,
     pub current_path: Option<String>,
 }
@@ -563,25 +565,21 @@ where
         &self,
         job_id: JobId,
     ) -> Result<(Option<TransferProgress>, Vec<ItemFailure>), JobServiceError> {
+        let aggregates = self.job_store.item_aggregates(job_id).await?;
         let items = self.job_store.list_items_for_transfer(job_id).await?;
-        let progress = if items.is_empty() {
+        let progress = if aggregates.total == 0 {
             None
         } else {
-            let completed = items
-                .iter()
-                .filter(|item| {
-                    item.state == crate::domain::item::ItemState::Verified
-                        || item.state == crate::domain::item::ItemState::Transferred
-                })
-                .count() as u64;
             let current_path = items
                 .iter()
                 .find(|item| item.state.is_transfer_active() && !item.state.is_eligible())
                 .or_else(|| items.iter().find(|item| item.state.is_eligible()))
                 .map(|item| item.name.clone());
             Some(TransferProgress {
-                completed,
-                total: items.len() as u64,
+                completed: aggregates.completed,
+                failed: aggregates.failed,
+                skipped: aggregates.skipped,
+                total: aggregates.total,
                 current_path,
             })
         };
@@ -775,6 +773,17 @@ where
         source_id: AccountId,
         target_id: AccountId,
     ) -> Result<MigrationJob, JobServiceError> {
+        let job = self.prepare_job(source_id, target_id).await?;
+        self.job_store.create_job(&job).await?;
+        self.emit(JobRuntimeEvent::JobListChanged { job_id: job.id() });
+        Ok(job)
+    }
+
+    async fn prepare_job(
+        &self,
+        source_id: AccountId,
+        target_id: AccountId,
+    ) -> Result<MigrationJob, JobServiceError> {
         if source_id.value() == target_id.value() {
             return Err(JobServiceError::SameSourceAndTarget);
         }
@@ -793,10 +802,7 @@ where
         let job_id = JobId::new(next_entity_id());
         let created_at = iso_now();
 
-        let job = MigrationJob::new(job_id, source, target, created_at)?;
-        self.job_store.create_job(&job).await?;
-        self.emit(JobRuntimeEvent::JobListChanged { job_id: job.id() });
-        Ok(job)
+        Ok(MigrationJob::new(job_id, source, target, created_at)?)
     }
 
     pub async fn update_draft_job_accounts(
@@ -1031,7 +1037,7 @@ where
             return Err(JobServiceError::NoValidatedRoots);
         }
 
-        let mut job = self.create_job(source_id, target_id).await?;
+        let mut job = self.prepare_job(source_id, target_id).await?;
         let source_token = self
             .token_provider
             .get_access_token(source_id)
@@ -1075,10 +1081,28 @@ where
                 created_at: iso_now(),
             };
             job.add_root(root.clone())?;
-            self.job_store.add_root(&root).await?;
         }
 
-        let _ = recursive;
+        let pause = AtomicBool::new(false);
+        let root_batch = crate::application::scanner::collect_roots(
+            &ScanRun {
+                drive: Arc::clone(&self.drive),
+                store: &*self.job_store,
+                job_id: job.id(),
+                roots: job.roots(),
+                source_token: &source_token,
+                source_permission_id: &job.snapshots().source.permission_id,
+                target_permission_id: &job.snapshots().target.permission_id,
+                pause: &pause,
+                concurrency: DEFAULT_SCAN_CONCURRENCY,
+                events: None,
+            },
+            recursive,
+        )
+        .await?;
+        job.start_scanning(iso_now())?;
+        self.job_store.create_seeded_scan(&job, &root_batch).await?;
+        self.emit(JobRuntimeEvent::JobListChanged { job_id: job.id() });
         self.start_scan_with_auto(job.id(), true).await
     }
 
@@ -1583,7 +1607,9 @@ where
 
     pub async fn resume_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
         let mut job = self.get_job(job_id).await?;
-        if !job.status().is_transfer_resumable() {
+        if !job.status().is_transfer_resumable()
+            || self.job_run_phase(&job).await? == JobRunPhase::Scan
+        {
             return Err(JobServiceError::IllegalTransition);
         }
         let as_canary = self.should_resume_as_canary(&job).await?;

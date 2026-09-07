@@ -134,6 +134,8 @@ pub(crate) async fn job_dto_with_scan(
     if let Ok((progress, errors)) = state.job_service.live_progress(job.id()).await {
         dto.progress = progress.map(|progress| MigrationProgressDto {
             completed: progress.completed,
+            failed: progress.failed,
+            skipped: progress.skipped,
             total: progress.total,
             current_path: progress.current_path,
         });

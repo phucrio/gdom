@@ -163,6 +163,8 @@ pub struct JobDto {
 #[serde(rename_all = "camelCase")]
 pub struct MigrationProgressDto {
     pub completed: u64,
+    pub failed: u64,
+    pub skipped: u64,
     pub total: u64,
     pub current_path: Option<String>,
 }

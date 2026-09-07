@@ -29,6 +29,7 @@ export function App({ backend }: AppProps) {
   const [announcement, setAnnouncement] = useState(READY_ANNOUNCEMENT);
   const [legal, setLegal] = useState<"privacy" | "limited-use" | null>(null);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
+  const [accountFilter, setAccountFilter] = useState<string | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [connectDialogOpen, setConnectDialogOpen] = useState(false);
 
@@ -58,7 +59,11 @@ export function App({ backend }: AppProps) {
           j.status === "RUNNING_CANARY" ||
           j.status === "RUNNING" ||
           j.status === "QUEUED" ||
-          j.status === "PAUSED",
+          j.status === "PAUSED" ||
+          j.status === "CANARY_REVIEW" ||
+          j.status === "AUTH_REQUIRED" ||
+          j.status === "SOURCE_RATE_LIMITED" ||
+          j.status === "WAITING_FOR_QUOTA",
       );
       if (inFlight) {
         setActiveJobId(inFlight.id);
@@ -73,6 +78,13 @@ export function App({ backend }: AppProps) {
   // Determine active account DTO
   const activeAccount =
     accounts.accounts.find((a) => a.id === activeAccountId) ?? accounts.accounts[0] ?? null;
+
+  if (accounts.loadError && accounts.accounts.length === 0) {
+    return <main className="app-shell">
+      <p className="error" role="alert">{accounts.loadError}</p>
+      <button type="button" onClick={accounts.refresh}>Retry loading accounts</button>
+    </main>;
+  }
 
   // Render Landing Screen if accounts registry loaded and no accounts connected
   if (!accounts.loading && accounts.accounts.length === 0) {
@@ -146,6 +158,7 @@ export function App({ backend }: AppProps) {
       </div>
 
       <main className="workspace">
+        {accounts.loadError && <p className="error" role="alert">{accounts.loadError}</p>}
         {view === "home" && activeAccount && (
           <DriveFileBrowser
             key={activeAccount.id}
@@ -167,8 +180,8 @@ export function App({ backend }: AppProps) {
             jobs={jobs.jobs}
             loading={jobs.loading}
             loadError={jobs.loadError}
-            accountFilter={null}
-            onAccountFilter={() => {}}
+            accountFilter={accountFilter}
+            onAccountFilter={setAccountFilter}
             onAnnounce={announce}
             onRefresh={jobs.refresh}
             onSelectJobForProgress={(jobId) => {

@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { BackendPort } from "../ipc/port.ts";
-import { IPC_EVENTS, type JobDto, type JobItemDto } from "../ipc/types.ts";
+import { canResumeJob, progressCounts } from "./progress.ts";
+import { useProgressSnapshot } from "./useProgressSnapshot.ts";
+import { confirmCanaryEmail } from "../wizard/canary.ts";
 import { getFileIcon } from "../browser/format.ts";
 
 export type GlobalProgressPanelProps = {
@@ -11,88 +13,23 @@ export type GlobalProgressPanelProps = {
   onDismiss: () => void;
 };
 
-const JOB_EVENTS = [
-  IPC_EVENTS.scanProgress,
-  IPC_EVENTS.migrationProgress,
-  IPC_EVENTS.itemStateChanged,
-  IPC_EVENTS.jobStatusChanged,
-  IPC_EVENTS.canaryCompleted,
-  IPC_EVENTS.migrationCompleted,
-] as const;
+export function GlobalProgressPanel(props: GlobalProgressPanelProps) {
+  return props.jobId ? <ProgressPanel key={props.jobId} {...props} jobId={props.jobId} /> : null;
+}
 
-export function GlobalProgressPanel({
-  jobId,
-  backend,
-  onAnnounce,
-  onRefreshJobs,
-  onDismiss,
-}: GlobalProgressPanelProps) {
-  const [job, setJob] = useState<JobDto | null>(null);
+function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
+  GlobalProgressPanelProps & { jobId: string }) {
   const [expanded, setExpanded] = useState(false);
-  const [items, setItems] = useState<JobItemDto[]>([]);
   const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(false);
-  const [loadingItems, setLoadingItems] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [confirmationEmail, setConfirmationEmail] = useState("");
+  const { job, items, hasMore, loadingItems, loadError, refresh: fetchJob } =
+    useProgressSnapshot(backend, jobId, expanded ? page : 0);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  const fetchJob = useCallback(async () => {
-    if (!jobId) {
-      setJob(null);
-      return;
-    }
-    try {
-      const data = await backend.getJob(jobId);
-      setJob(data);
-    } catch {
-      // Ignored if job doesn't exist yet
-    }
-  }, [backend, jobId]);
-
-  useEffect(() => {
-    void fetchJob();
-  }, [fetchJob]);
-
-  useEffect(() => {
-    if (!jobId) return;
-    const subs = JOB_EVENTS.map((evt) => backend.subscribe(evt, () => void fetchJob()));
-    return () => {
-      void Promise.all(subs).then((unlistens) => {
-        unlistens.forEach((u) => u());
-      });
-    };
-  }, [backend, fetchJob, jobId]);
-
-  // Load items for dropdown
-  const fetchItems = useCallback(
-    async (nextPage = 1, append = false) => {
-      if (!jobId) return;
-      setLoadingItems(true);
-      try {
-        const pageRes = await backend.listJobItems(jobId, null, nextPage);
-        setItems((prev) => (append ? [...prev, ...pageRes.items] : pageRes.items));
-        setPage(nextPage);
-        setHasMore(pageRes.page * pageRes.pageSize < pageRes.total);
-      } catch {
-        // Ignored
-      } finally {
-        setLoadingItems(false);
-      }
-    },
-    [backend, jobId],
-  );
-
-  useEffect(() => {
-    if (expanded && jobId) {
-      void fetchItems(1, false);
-    }
-  }, [expanded, fetchItems, jobId]);
-
-  function handleScroll(e: React.UIEvent<HTMLDivElement>) {
-    const el = e.currentTarget;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 60 && hasMore && !loadingItems) {
-      void fetchItems(page + 1, true);
+  function handleScroll(event: React.UIEvent<HTMLDivElement>) {
+    const element = event.currentTarget;
+    if (element.scrollHeight - element.scrollTop - element.clientHeight < 60 && hasMore && !loadingItems) {
+      setPage((previous) => previous + 1);
     }
   }
 
@@ -100,7 +37,8 @@ export function GlobalProgressPanel({
     if (!jobId) return;
     setActionBusy(true);
     try {
-      await backend.pauseMigration(jobId);
+      if (job?.phase === "scan") await backend.pauseScan(jobId);
+      else await backend.pauseMigration(jobId);
       onAnnounce("Migration paused.");
       void fetchJob();
       onRefreshJobs();
@@ -115,7 +53,8 @@ export function GlobalProgressPanel({
     if (!jobId) return;
     setActionBusy(true);
     try {
-      await backend.resumeMigration(jobId);
+      if (job?.phase === "scan") await backend.startScan(jobId);
+      else await backend.resumeMigration(jobId);
       onAnnounce("Migration resumed.");
       void fetchJob();
       onRefreshJobs();
@@ -141,30 +80,31 @@ export function GlobalProgressPanel({
     }
   }
 
-  if (!jobId || !job) {
-    return null;
+  async function handleContinue() {
+    if (!job || !confirmCanaryEmail(confirmationEmail, job.targetSnapshot.email)) return;
+    setActionBusy(true);
+    try {
+      if (job.status === "READY_FOR_REVIEW") await backend.startCanary(jobId, confirmationEmail);
+      else await backend.continueMigration(jobId);
+      fetchJob();
+      onRefreshJobs();
+    } catch (caught: unknown) {
+      onAnnounce(caught instanceof Error ? caught.message : "Failed to continue migration.");
+    } finally { setActionBusy(false); }
+  }
+
+  if (!job) {
+    return <div className="global-transfer-panel" role="status">
+      {loadError ?? "Loading migration progress-"}
+      {loadError && <button type="button" onClick={fetchJob}>Retry</button>}
+    </div>;
   }
 
   const isScanning = job.status === "SCANNING";
-  const isRunning =
-    job.status === "RUNNING" ||
-    job.status === "RUNNING_CANARY" ||
-    job.status === "READY_FOR_REVIEW";
-  const isPaused = job.status === "PAUSED";
-  const isFinished =
-    job.status === "COMPLETED" ||
-    job.status === "COMPLETED_WITH_ERRORS" ||
-    job.status === "CANCELLED" ||
-    job.status === "FAILED";
-
-  const total = job.progress?.total ?? (job.scan?.totalItems || 0);
-  const completed = job.progress?.completed ?? 0;
-  const percent = total > 0 ? Math.min(100, Math.floor((completed / total) * 100)) : 0;
-
-  const succeededCount = completed; // successfully verified/transferred
-  const failedCount =
-    job.errors?.length ?? (job.status === "COMPLETED_WITH_ERRORS" || job.status === "FAILED" ? 1 : 0);
-  const skippedCount = job.scan?.skipped ?? 0;
+  const isRunning = isScanning || job.status === "RUNNING" || job.status === "RUNNING_CANARY";
+  const isPaused = canResumeJob(job);
+  const isFinished = ["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELLED", "FAILED"].includes(job.status);
+  const { total, processed, percent, succeeded: succeededCount, failed: failedCount, skipped: skippedCount } = progressCounts(job);
 
   return (
     <div
@@ -183,7 +123,6 @@ export function GlobalProgressPanel({
           </div>
 
           <div
-            ref={scrollRef}
             className="transfer-items-scrollable"
             onScroll={handleScroll}
             tabIndex={0}
@@ -219,6 +158,21 @@ export function GlobalProgressPanel({
         </div>
       )}
 
+      {loadError && <div className="error" role="alert">{loadError}{" "}
+        <button type="button" className="secondary-button btn-sm" onClick={fetchJob}>Retry</button>
+      </div>}
+      {job.lastError && <p className="warning" role="status">{job.lastError}</p>}
+      {(job.status === "CANARY_REVIEW" || job.status === "READY_FOR_REVIEW") && <div className="notice field">
+        <p>{job.status === "CANARY_REVIEW" ? `Canary finished: ${succeededCount} verified - ${failedCount} failed. Review the items before approving the remaining transfers.` : `Scan finished: ${total} items. Review the items before starting the canary transfer.`}</p>
+        <div className="field"><label htmlFor="canary-confirmation-email">Re-enter target email: {job.targetSnapshot.email}</label>
+        <input id="canary-confirmation-email" type="email" value={confirmationEmail}
+          onChange={(event) => setConfirmationEmail(event.target.value)} /></div>
+          {(job.status === "CANARY_REVIEW" || job.status === "READY_FOR_REVIEW") && (
+            <button type="button" className="primary-button btn-sm"
+              disabled={actionBusy || !confirmCanaryEmail(confirmationEmail, job.targetSnapshot.email)}
+              onClick={() => void handleContinue()}>{job.status === "READY_FOR_REVIEW" ? "Start canary transfer" : "Approve remaining transfers"}</button>
+          )}
+      </div>}
       {/* Main Bar */}
       <div className="transfer-bar">
         <button
@@ -240,7 +194,7 @@ export function GlobalProgressPanel({
                 <span>Scanning… {job.scan?.totalItems ?? 0} items found</span>
               ) : total > 0 ? (
                 <span>
-                  {completed} / {total} processed · {succeededCount} succeeded · {failedCount} failed · {skippedCount} skipped
+                  {processed} / {total} processed · {succeededCount} succeeded · {failedCount} failed · {skippedCount} skipped
                 </span>
               ) : (
                 <span>Status: {job.status.toLowerCase().replace(/_/g, " ")}</span>
@@ -286,7 +240,7 @@ export function GlobalProgressPanel({
             </button>
           )}
 
-          {!isFinished && (
+          {!isFinished && !isScanning && (
             <button
               type="button"
               className="danger-button btn-sm"
