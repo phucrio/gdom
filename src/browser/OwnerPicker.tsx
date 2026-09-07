@@ -157,9 +157,18 @@ export function OwnerPicker({
                     disabled={busy || isReauth}
                     aria-label={`Transfer ownership to ${targetName} (${target.email})`}
                   >
-                    <div className="target-account-avatar" aria-hidden="true">
-                      {targetName.substring(0, 2).toUpperCase()}
-                    </div>
+                    {target.avatarUrl ? (
+                      <img
+                        src={target.avatarUrl}
+                        alt=""
+                        className="target-account-avatar avatar-img"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className="target-account-avatar" aria-hidden="true">
+                        {targetName.substring(0, 2).toUpperCase()}
+                      </div>
+                    )}
                     <div className="target-account-info">
                       <span className="target-account-name">{targetName}</span>
                       <span className="target-account-email">{target.email}</span>

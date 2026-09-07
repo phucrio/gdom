@@ -22,6 +22,7 @@ const account: AccountDto = {
   lastAuthenticatedAt: "2026-09-05T00:00:00Z",
   updatedAt: "2026-09-05T00:00:00Z",
   removedAt: null,
+  avatarUrl: "https://example.com/avatar.jpg",
 };
 
 const oauthConfig: OAuthConfigDto = {

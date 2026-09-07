@@ -394,10 +394,31 @@ export function DriveFileBrowser({
                       }
                     }}
                   >
-                    <td className="col-name">
+                    <td
+                      className="col-name"
+                      onClick={(e) => {
+                        if (item.isFolder && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                          e.stopPropagation();
+                          handleRowDoubleClick(item);
+                        }
+                      }}
+                    >
                       <div className="name-cell">
                         <span className="item-icon" aria-hidden="true">{icon}</span>
-                        <span className="item-title" title={item.name}>{item.name}</span>
+                        {item.isFolder ? (
+                          <button
+                            type="button"
+                            className="folder-link-button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRowDoubleClick(item);
+                            }}
+                          >
+                            {item.name}
+                          </button>
+                        ) : (
+                          <span className="item-title" title={item.name}>{item.name}</span>
+                        )}
                       </div>
                     </td>
                     <td className="col-owner" title={ownerFull || undefined}>

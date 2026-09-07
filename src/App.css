@@ -153,15 +153,17 @@ button:disabled {
 }
 
 .workspace {
-  display: grid;
-  grid-template-columns: minmax(280px, 0.92fr) minmax(0, 1.15fr);
-  gap: 28px;
-  padding: 28px;
-  max-width: 1280px;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 28px;
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  min-height: calc(100vh - 64px);
+  box-sizing: border-box;
 }
 
 .workspace-single {
-  grid-template-columns: minmax(0, 1fr);
   max-width: 960px;
 }
 
@@ -790,6 +792,11 @@ code {
   user-select: none;
 }
 
+.avatar-img {
+  object-fit: cover;
+  border: 1px solid var(--rule);
+}
+
 .avatar-circle-large {
   width: 44px;
   height: 44px;
@@ -947,8 +954,10 @@ code {
 .drive-browser {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  height: calc(100vh - 110px);
+  max-height: calc(100vh - 110px);
   gap: 12px;
+  width: 100%;
 }
 
 .browser-toolbar {
@@ -959,6 +968,7 @@ code {
   background: var(--ink-raised);
   border: 1px solid var(--rule);
   border-radius: 8px;
+  flex-shrink: 0;
 }
 
 .breadcrumbs {
@@ -1012,12 +1022,16 @@ code {
   background: var(--ink-raised);
   border: 1px solid var(--rule);
   border-radius: 8px;
-  overflow: auto;
-  min-height: 480px;
+  overflow-y: auto;
+  overflow-x: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .drive-table {
   width: 100%;
+  min-width: 680px;
+  table-layout: fixed;
   border-collapse: collapse;
   text-align: left;
 }
@@ -1103,6 +1117,24 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.folder-link-button {
+  background: none;
+  border: none;
+  color: var(--paper);
+  font-weight: 500;
+  text-align: left;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.folder-link-button:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 .action-menu-trigger {

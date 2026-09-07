@@ -41,6 +41,7 @@ export type AccountDto = AssertNoSecrets<{
   lastAuthenticatedAt: string;
   updatedAt: string;
   removedAt: string | null;
+  avatarUrl?: string | null;
 }>;
 
 export type OAuthConfigDto = AssertNoSecrets<{

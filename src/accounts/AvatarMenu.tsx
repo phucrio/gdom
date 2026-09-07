@@ -114,17 +114,35 @@ export function AvatarMenu({
         aria-label={`Account menu for ${displayName} (${activeAccount.email})`}
         onClick={() => setOpen((prev) => !prev)}
       >
-        <span className="avatar-circle" aria-hidden="true">
-          {initials}
-        </span>
+        {activeAccount.avatarUrl ? (
+          <img
+            src={activeAccount.avatarUrl}
+            alt=""
+            className="avatar-circle avatar-img"
+            referrerPolicy="no-referrer"
+          />
+        ) : (
+          <span className="avatar-circle" aria-hidden="true">
+            {initials}
+          </span>
+        )}
       </button>
 
       {open && (
         <div className="avatar-dropdown" role="menu" aria-label="Account details and switching">
           <div className="avatar-dropdown-current">
-            <div className="avatar-circle avatar-circle-large" aria-hidden="true">
-              {initials}
-            </div>
+            {activeAccount.avatarUrl ? (
+              <img
+                src={activeAccount.avatarUrl}
+                alt=""
+                className="avatar-circle avatar-circle-large avatar-img"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <div className="avatar-circle avatar-circle-large" aria-hidden="true">
+                {initials}
+              </div>
+            )}
             <div className="current-account-info">
               <p className="current-account-name">{displayName}</p>
               <p className="current-account-email">{activeAccount.email}</p>
@@ -191,9 +209,18 @@ export function AvatarMenu({
                   }}
                   aria-current={isActive ? "true" : undefined}
                 >
-                  <span className="avatar-circle avatar-circle-small" aria-hidden="true">
-                    {accInitials}
-                  </span>
+                  {acc.avatarUrl ? (
+                    <img
+                      src={acc.avatarUrl}
+                      alt=""
+                      className="avatar-circle avatar-circle-small avatar-img"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <span className="avatar-circle avatar-circle-small" aria-hidden="true">
+                      {accInitials}
+                    </span>
+                  )}
                   <div className="account-row-details">
                     <span className="account-row-name">{accName}</span>
                     <span className="account-row-email">{acc.email}</span>
