@@ -92,7 +92,9 @@ function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
   }
 
   async function handleContinue() {
-    if (!job || !confirmCanaryEmail(confirmationEmail, job.targetSnapshot.email)) return;
+    if (!job || actionBusy) return;
+    if (job.status === "READY_FOR_REVIEW" && !confirmCanaryEmail(confirmationEmail, job.targetSnapshot.email)) return;
+    if (job.status !== "READY_FOR_REVIEW" && job.status !== "CANARY_REVIEW") return;
     setActionBusy(true);
     try {
       if (job.status === "READY_FOR_REVIEW") await backend.startCanary(jobId, confirmationEmail);
@@ -184,12 +186,13 @@ function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
       )}
       {(job.status === "CANARY_REVIEW" || job.status === "READY_FOR_REVIEW") && <div className="notice field">
         <p>{job.status === "CANARY_REVIEW" ? `Canary finished: ${succeededCount} verified - ${failedCount} failed. Review the items before approving the remaining transfers.` : `Scan finished: ${total} items. Review the items before starting the canary transfer.`}</p>
-        <div className="field"><label htmlFor="canary-confirmation-email">Re-enter target email: {job.targetSnapshot.email}</label>
+        {job.status === "READY_FOR_REVIEW" ? <div className="field"><label htmlFor="canary-confirmation-email">Re-enter target email: {job.targetSnapshot.email}</label>
         <input id="canary-confirmation-email" type="email" value={confirmationEmail}
           onChange={(event) => setConfirmationEmail(event.target.value)} /></div>
+          : <p><strong>Recipient:</strong> {job.targetSnapshot.email}</p>}
           {(job.status === "CANARY_REVIEW" || job.status === "READY_FOR_REVIEW") && (
             <button type="button" className="primary-button btn-sm"
-              disabled={actionBusy || !confirmCanaryEmail(confirmationEmail, job.targetSnapshot.email)}
+              disabled={actionBusy || (job.status === "READY_FOR_REVIEW" && !confirmCanaryEmail(confirmationEmail, job.targetSnapshot.email))}
               onClick={() => void handleContinue()}>{job.status === "READY_FOR_REVIEW" ? "Start canary transfer" : "Approve remaining transfers"}</button>
           )}
       </div>}
