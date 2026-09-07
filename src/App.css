@@ -1,11 +1,11 @@
 :root {
-  --ink: #0b0d12;
-  --ink-raised: #141822;
-  --paper: #f3f1ea;
-  --muted: #c5cad6;
-  --rule: #3a4254;
-  --seal: #5e6ad2;
-  --accent: #9db1ff;
+  --ink: #0f172a;
+  --ink-raised: #1e293b;
+  --paper: #f8fafc;
+  --muted: #cbd5e1;
+  --rule: #64748b;
+  --seal: #4338ca;
+  --accent: #a5b4fc;
   --connected: #3dd68c;
   --reauth: #e2b344;
   --disconnected: #9aa3b5;
@@ -14,9 +14,9 @@
   --focus: #a5b4ff;
   --field-fill: #0a0c11;
   --field-border: #8a93a8;
-  --surface: rgba(243, 241, 234, 0.04);
-  --font-display: "Bahnschrift", "Segoe UI Variable Display", "Segoe UI", sans-serif;
-  --font-body: "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, sans-serif;
+  --surface: rgba(248, 250, 252, 0.06);
+  --font-display: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --font-mono: "Cascadia Code", Consolas, ui-monospace, monospace;
   color: var(--paper);
   background: var(--ink);
@@ -57,7 +57,9 @@ button:disabled {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   background:
     radial-gradient(circle at 88% -8%, #22264a 0, transparent 28rem),
     var(--ink);
@@ -153,14 +155,21 @@ button:disabled {
 }
 
 .workspace {
+  min-block-size: 0;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   padding: 20px 28px;
   width: 100%;
   max-width: 1440px;
   margin: 0 auto;
-  min-height: calc(100vh - 64px);
+  min-height: 0;
   box-sizing: border-box;
+}
+
+.progress-region {
+  padding: 0 24px 24px;
+  background: var(--ink);
 }
 
 .workspace-single {
@@ -583,7 +592,54 @@ code {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  padding: 16px 20px 0;
+  padding: 20px 24px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--rule) 55%, transparent);
+}
+
+.dialog-body { max-height: min(70vh, 640px); overflow: auto; padding: 24px; }
+
+.primary-button, .secondary-button, .ghost-button, .danger-button {
+  min-height: 36px;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out, transform 150ms ease-out;
+}
+
+button:not(:disabled):active { transform: translateY(1px); }
+
+.file-type-icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; vertical-align: middle; }
+.file-type-icon-folder { color: #fbbf24; fill: color-mix(in srgb, #fbbf24 18%, transparent); }
+.file-type-icon-pdf { color: #f87171; }
+.file-type-icon-archive { color: #fbbf24; }
+.file-type-icon-markdown, .file-type-icon-code { color: #a5b4fc; }
+.file-type-icon-spreadsheet, .file-type-icon-google-sheet { color: #4ade80; }
+.file-type-icon-presentation, .file-type-icon-google-slide { color: #fb923c; }
+.file-type-icon-image { color: #c084fc; }
+.file-type-icon-shortcut { color: var(--accent); }
+
+.job-details-view { grid-template-columns: minmax(8rem, max-content) minmax(0, 1fr); margin: 0; }
+.job-details-view dt { color: var(--muted); font-weight: 600; }
+.job-details-view dd { margin: 0; overflow-wrap: anywhere; }
+
+.owner-picker-targets { margin: 0; padding: 0; border: 0; min-width: 0; }
+.target-account-card { cursor: pointer; }
+.target-account-card input { width: 1rem; min-height: 1rem; flex: 0 0 auto; accent-color: var(--seal); }
+.target-account-card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--seal) 18%, var(--field-fill)); }
+.transfer-review { display: grid; gap: 4px; padding: 12px; border-left: 3px solid var(--seal); background: color-mix(in srgb, var(--seal) 12%, var(--ink-raised)); border-radius: 0 6px 6px 0; font-size: 0.875rem; }
+
+.transfer-bar { box-shadow: 0 8px 24px #00000033; }
+.transfer-dropdown-container { max-height: min(320px, 40dvh); }
+
+@media (max-width: 900px) {
+  .progress-region { padding: 0 16px 16px; }
+  .topbar { padding-inline: 16px; }
+}
+
+@media (max-width: 640px) {
+  .transfer-bar { align-items: stretch; flex-direction: column; }
+  .transfer-bar-controls { justify-content: flex-end; }
+  .dialog-backdrop { padding: 16px; }
+  .dialog-header { padding-inline: 16px; }
+  .dialog-body { padding: 16px; }
+  .job-details-view { grid-template-columns: 1fr; gap: 4px 0; }
 }
 
 .limited-use {
@@ -659,6 +715,8 @@ code {
 @media (prefers-reduced-motion: reduce) {
   * {
     scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
   }
 }
 
@@ -1354,11 +1412,9 @@ code {
 }
 
 .global-transfer-panel {
-  position: fixed;
-  bottom: 24px;
-  right: 24px;
-  z-index: 1500;
-  width: min(440px, calc(100vw - 48px));
+  position: static;
+  width: min(100%, 1120px);
+  margin-inline: auto;
   display: flex;
   flex-direction: column;
 }
@@ -1415,7 +1471,7 @@ code {
 }
 
 .target-tag {
-  color: var(--connected);
+  color: var(--paper);
 }
 
 .transfer-status-line {

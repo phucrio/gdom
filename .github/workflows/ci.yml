@@ -26,6 +26,9 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
+      - run: pnpm qa:typecheck
+      - run: pnpm exec playwright install chromium
+      - run: pnpm ui:qa
       - run: cargo fmt --check
         working-directory: src-tauri
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings

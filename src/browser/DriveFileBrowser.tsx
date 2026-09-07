@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { BackendPort } from "../ipc/port.ts";
 import type { AccountDto, DriveFileItemDto, JobDto } from "../ipc/types.ts";
 import { ContextMenu, type ContextMenuItemAction } from "./ContextMenu.tsx";
-import { formatDate, formatFileSize, getFileIcon } from "./format.ts";
+import { FileTypeIcon } from "./FileTypeIcon.tsx";
+import { formatDate, formatFileSize, getFileIconKind } from "./format.ts";
 import { RenameDialog, TrashConfirmDialog } from "./ItemActionDialogs.tsx";
 import { ItemDetailsDialog } from "./ItemDetailsDialog.tsx";
 import { OwnerCell } from "./OwnerCell.tsx";
@@ -393,7 +394,7 @@ export function DriveFileBrowser({
             ) : (
               items.map((item) => {
                 const isSelected = selectedIds.has(item.id);
-                const icon = getFileIcon(item.mimeType, Boolean(item.folderId));
+                const iconKind = getFileIconKind(item.name, item.mimeType, item.isFolder, item.shortcutTargetId !== null);
                 const { display: modDate, full: fullDate } = formatDate(item.modifiedTime);
                 const sizeStr = item.folderId ? "—" : formatFileSize(item.size);
 
@@ -423,8 +424,8 @@ export function DriveFileBrowser({
                       }}
                     >
                       <div className="name-cell">
-                        <span className="item-icon" aria-hidden="true">{icon}</span>
-                        {item.folderId ? (
+                        <span className="item-icon"><FileTypeIcon kind={iconKind} /></span>
+                        {item.isFolder ? (
                           <button
                             type="button"
                             className="folder-link-button"

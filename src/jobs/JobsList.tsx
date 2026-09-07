@@ -183,58 +183,22 @@ export function JobsList({
       {/* Read-Only Details Dialog */}
       {inspectJob !== null && (
         <Dialog title="Migration history details" onClose={() => setInspectJob(null)}>
-          <div className="job-details-view">
-            <div className="detail-item">
-              <span className="detail-label">Source:</span>
-              <span className="detail-val">{inspectJob.sourceSnapshot.email} ({inspectJob.sourceSnapshot.displayName})</span>
-            </div>
-            <div className="detail-item">
-              <span className="detail-label">Target:</span>
-              <span className="detail-val">{inspectJob.targetSnapshot.email} ({inspectJob.targetSnapshot.displayName})</span>
-            </div>
-            <div className="detail-item">
-              <span className="detail-label">Status:</span>
-              <span className="detail-val status-tag">{jobStatusLabel(inspectJob.status)}</span>
-            </div>
-            <div className="detail-item">
-              <span className="detail-label">Root folders/items:</span>
-              <span className="detail-val">
-                {inspectJob.roots.map((r) => r.rootName).join(", ") || "None"}
-              </span>
-            </div>
-            <div className="detail-item">
-              <span className="detail-label">Created at:</span>
-              <span className="detail-val">{formatDate(inspectJob.createdAt).full}</span>
-            </div>
+          <dl className="dialog-body job-details-view">
+            <dt>Source</dt><dd>{inspectJob.sourceSnapshot.email} ({inspectJob.sourceSnapshot.displayName})</dd>
+            <dt>Target</dt><dd>{inspectJob.targetSnapshot.email} ({inspectJob.targetSnapshot.displayName})</dd>
+            <dt>Status</dt><dd><span className="status-badge">{jobStatusLabel(inspectJob.status)}</span></dd>
+            <dt>Root folders/items</dt><dd>{inspectJob.roots.map((r) => r.rootName).join(", ") || "None"}</dd>
+            <dt>Created</dt><dd>{formatDate(inspectJob.createdAt).full}</dd>
             {inspectJob.startedAt && (
-              <div className="detail-item">
-                <span className="detail-label">Started at:</span>
-                <span className="detail-val">{formatDate(inspectJob.startedAt).full}</span>
-              </div>
+              <><dt>Started</dt><dd>{formatDate(inspectJob.startedAt).full}</dd></>
             )}
             {inspectJob.completedAt && (
-              <div className="detail-item">
-                <span className="detail-label">Completed at:</span>
-                <span className="detail-val">{formatDate(inspectJob.completedAt).full}</span>
-              </div>
+              <><dt>Completed</dt><dd>{formatDate(inspectJob.completedAt).full}</dd></>
             )}
             {inspectJob.lastError && (
-              <div className="detail-item error">
-                <span className="detail-label">Last error:</span>
-                <span className="detail-val">{inspectJob.lastError}</span>
-              </div>
+              <><dt>Last error</dt><dd className="error">{inspectJob.lastError}</dd></>
             )}
-
-            <div className="dialog-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => setInspectJob(null)}
-              >
-                Close
-              </button>
-            </div>
-          </div>
+          </dl>
         </Dialog>
       )}
     </section>
