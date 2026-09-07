@@ -89,6 +89,8 @@ mod tests {
             quota_bytes_used: Some(10),
             trashed: false,
             shortcut_target_id: None,
+            modified_time: None,
+            web_view_link: None,
         }
     }
 

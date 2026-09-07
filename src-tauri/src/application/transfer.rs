@@ -96,6 +96,24 @@ pub async fn execute_canary(
     Ok(halt)
 }
 
+pub async fn execute_auto_transfer(
+    run: &TransferRun<'_>,
+    job: &mut MigrationJob,
+) -> Result<TransferHalt, TransferError> {
+    let canary_halt = execute_canary(run, job).await?;
+    if let TransferHalt::Exhausted { failed, .. } = canary_halt {
+        if failed > 0 {
+            return Ok(canary_halt);
+        }
+        let remaining = run.store.list_items_for_transfer(job.id()).await?;
+        if remaining.is_empty() {
+            return Ok(canary_halt);
+        }
+        return execute_bulk(run, job).await;
+    }
+    Ok(canary_halt)
+}
+
 async fn select_canary_batch(
     run: &TransferRun<'_>,
     job: &MigrationJob,
