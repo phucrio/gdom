@@ -1,31 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { AccountRegistry } from "./accounts/AccountRegistry.tsx";
+import { AvatarMenu } from "./accounts/AvatarMenu.tsx";
+import { ConnectDialog } from "./accounts/ConnectDialog.tsx";
 import { useAccountRegistry } from "./accounts/useAccountRegistry.ts";
 import gdomIcon from "./assets/gdom-icon.svg?no-inline";
+import { LandingScreen } from "./auth/LandingScreen.tsx";
+import { DriveFileBrowser } from "./browser/DriveFileBrowser.tsx";
+import { GlobalProgressPanel } from "./browser/GlobalProgressPanel.tsx";
 import type { BackendPort } from "./ipc/port.ts";
 import type { JobDto } from "./ipc/types.ts";
-import { openedJobAnnouncement, openPersistedJob, resumePersistedJob } from "./jobs/catalog.ts";
-import { jobCountByAccount } from "./jobs/groups.ts";
 import { JobsList } from "./jobs/JobsList.tsx";
 import { useJobCatalog } from "./jobs/useJobCatalog.ts";
 import { LIMITED_USE_TITLE, PRIVACY_POLICY_TITLE } from "./legal/copy.ts";
 import { LegalDialogs } from "./legal/LegalDialogs.tsx";
-import {
-  ACCOUNT_JOBS_FILTER_ANNOUNCEMENT,
-  BRAND_NAME,
-  NEW_JOB_ANNOUNCEMENT,
-  NEW_WIZARD_KEY,
-  OPEN_JOB_FAILED,
-  READY_ANNOUNCEMENT,
-  RESUME_JOB_ANNOUNCEMENT,
-  RESUME_JOB_FAILED,
-} from "./nav/copy.ts";
+import { BRAND_NAME, READY_ANNOUNCEMENT } from "./nav/copy.ts";
 import { PrimaryNav } from "./nav/PrimaryNav.tsx";
 import { useWorkspaceNav } from "./nav/useWorkspaceNav.ts";
-import { shouldClearOpenedJob } from "./nav/workspace.ts";
-import { createLatestLoad } from "./ui/latestLoad.ts";
-import { MigrationWizard } from "./wizard/MigrationWizard.tsx";
 import "./App.css";
 
 type AppProps = {
@@ -38,58 +28,65 @@ export function App({ backend }: AppProps) {
   const { view, goTo } = useWorkspaceNav();
   const [announcement, setAnnouncement] = useState(READY_ANNOUNCEMENT);
   const [legal, setLegal] = useState<"privacy" | "limited-use" | null>(null);
-  const [accountFilter, setAccountFilter] = useState<string | null>(null);
-  const [openedJob, setOpenedJob] = useState<JobDto | null>(null);
-  const jobActionLoad = useRef(createLatestLoad());
+  const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [connectDialogOpen, setConnectDialogOpen] = useState(false);
+
+  // Sync active account: defaults to first connected or available account
+  useEffect(() => {
+    if (accounts.accounts.length === 0) {
+      setActiveAccountId(null);
+      return;
+    }
+    // If no active account selected, or active account disconnected/removed, select first available
+    const activeExists = accounts.accounts.some((a) => a.id === activeAccountId);
+    if (!activeAccountId || !activeExists) {
+      const firstConnected =
+        accounts.accounts.find((a) => a.authStatus === "CONNECTED") ?? accounts.accounts[0];
+      if (firstConnected) {
+        setActiveAccountId(firstConnected.id);
+      }
+    }
+  }, [accounts.accounts, activeAccountId]);
+
+  // Track latest in-progress job globally if none manually dismissed
+  useEffect(() => {
+    if (!activeJobId && jobs.jobs.length > 0) {
+      const inFlight = jobs.jobs.find(
+        (j) =>
+          j.status === "SCANNING" ||
+          j.status === "RUNNING_CANARY" ||
+          j.status === "RUNNING" ||
+          j.status === "QUEUED" ||
+          j.status === "PAUSED",
+      );
+      if (inFlight) {
+        setActiveJobId(inFlight.id);
+      }
+    }
+  }, [activeJobId, jobs.jobs]);
 
   function announce(message: string) {
     setAnnouncement(message);
   }
 
-  useEffect(() => {
-    if (shouldClearOpenedJob(window.location.hash, view)) {
-      setOpenedJob(null);
-    }
-  }, [view]);
+  // Determine active account DTO
+  const activeAccount =
+    accounts.accounts.find((a) => a.id === activeAccountId) ?? accounts.accounts[0] ?? null;
 
-  async function openJob(jobId: string) {
-    const token = jobActionLoad.current.begin();
-    try {
-      const job = await openPersistedJob(backend, jobId);
-      if (!jobActionLoad.current.isCurrent(token)) {
-        return;
-      }
-      setOpenedJob(job);
-      goTo("wizard");
-      announce(openedJobAnnouncement(job));
-    } catch (caught) {
-      if (!jobActionLoad.current.isCurrent(token)) {
-        return;
-      }
-      const message = caught instanceof Error ? caught.message : OPEN_JOB_FAILED;
-      jobs.setLoadError(message);
-      announce(message);
-    }
-  }
-
-  async function resumeJob(job: JobDto) {
-    const token = jobActionLoad.current.begin();
-    try {
-      const next = await resumePersistedJob(backend, job);
-      if (!jobActionLoad.current.isCurrent(token)) {
-        return;
-      }
-      setOpenedJob(next);
-      goTo("wizard");
-      announce(RESUME_JOB_ANNOUNCEMENT);
-    } catch (caught) {
-      if (!jobActionLoad.current.isCurrent(token)) {
-        return;
-      }
-      const message = caught instanceof Error ? caught.message : RESUME_JOB_FAILED;
-      jobs.setLoadError(message);
-      announce(message);
-    }
+  // Render Landing Screen if accounts registry loaded and no accounts connected
+  if (!accounts.loading && accounts.accounts.length === 0) {
+    return (
+      <div className="app-shell landing-shell">
+        <LandingScreen
+          backend={backend}
+          onAnnounce={announce}
+          onConnected={accounts.refresh}
+          onOpenLegal={setLegal}
+        />
+        <LegalDialogs open={legal} onClose={() => setLegal(null)} />
+      </div>
+    );
   }
 
   return (
@@ -99,32 +96,48 @@ export function App({ backend }: AppProps) {
           <span className="brand-mark" aria-hidden="true">
             <img src={gdomIcon} width={24} height={24} alt="" />
           </span>
-          {BRAND_NAME}
+          <span className="brand-title">{BRAND_NAME}</span>
         </div>
+
         <PrimaryNav
           view={view}
-          openedExistingJob={openedJob !== null}
-          onAccounts={() => {
-            setOpenedJob(null);
-            goTo("accounts");
-          }}
-          onJobs={() => {
-            setOpenedJob(null);
-            goTo("jobs");
-          }}
-          onNewJob={() => {
-            setOpenedJob(null);
-            goTo("wizard");
-            announce(NEW_JOB_ANNOUNCEMENT);
-          }}
+          onHome={() => goTo("home")}
+          onJobs={() => goTo("jobs")}
         />
-        <div className="legal-links">
-          <button type="button" className="link-button" onClick={() => setLegal("privacy")}>
-            {PRIVACY_POLICY_TITLE}
-          </button>
-          <button type="button" className="link-button" onClick={() => setLegal("limited-use")}>
-            {LIMITED_USE_TITLE}
-          </button>
+
+        <div className="topbar-right">
+          <div className="legal-links">
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => setLegal("privacy")}
+              aria-label="Privacy Policy"
+            >
+              {PRIVACY_POLICY_TITLE}
+            </button>
+            <span aria-hidden="true">·</span>
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => setLegal("limited-use")}
+              aria-label="Limited Use Disclosure"
+            >
+              {LIMITED_USE_TITLE}
+            </button>
+          </div>
+
+          <AvatarMenu
+            activeAccount={activeAccount}
+            accounts={accounts.accounts}
+            backend={backend}
+            onSelectAccount={(accId) => {
+              setActiveAccountId(accId);
+              goTo("home");
+            }}
+            onAddAccount={() => setConnectDialogOpen(true)}
+            onAnnounce={announce}
+            onRefresh={accounts.refresh}
+          />
         </div>
       </header>
 
@@ -132,49 +145,62 @@ export function App({ backend }: AppProps) {
         {announcement}
       </div>
 
-      <main className="workspace workspace-single">
-        {view === "accounts" && (
-          <AccountRegistry
-            backend={backend}
+      <main className="workspace">
+        {view === "home" && activeAccount && (
+          <DriveFileBrowser
+            key={activeAccount.id}
+            account={activeAccount}
             accounts={accounts.accounts}
-            loading={accounts.loading}
-            loadError={accounts.loadError}
-            jobCounts={jobCountByAccount(jobs.jobs)}
-            onShowJobs={(accountId) => {
-              setAccountFilter(accountId);
-              goTo("jobs");
-              announce(ACCOUNT_JOBS_FILTER_ANNOUNCEMENT);
-            }}
-            onRefresh={accounts.refresh}
+            backend={backend}
             onAnnounce={announce}
+            onMigrationStarted={(job: JobDto) => {
+              setActiveJobId(job.id);
+              jobs.refresh();
+            }}
+            onAddAccount={() => setConnectDialogOpen(true)}
           />
         )}
+
         {view === "jobs" && (
           <JobsList
-            backend={backend}
             accounts={accounts.accounts}
             jobs={jobs.jobs}
             loading={jobs.loading}
             loadError={jobs.loadError}
-            accountFilter={accountFilter}
-            onAccountFilter={setAccountFilter}
-            onOpenJob={(jobId) => void openJob(jobId)}
-            onResumeJob={(job) => void resumeJob(job)}
+            accountFilter={null}
+            onAccountFilter={() => {}}
             onAnnounce={announce}
             onRefresh={jobs.refresh}
-          />
-        )}
-        {view === "wizard" && (
-          <MigrationWizard
-            key={openedJob?.id ?? NEW_WIZARD_KEY}
-            backend={backend}
-            accounts={accounts.accounts}
-            onAnnounce={announce}
-            openedJob={openedJob}
+            onSelectJobForProgress={(jobId) => {
+              setActiveJobId(jobId);
+            }}
           />
         )}
       </main>
 
+      {/* Global Transfer Progress Panel (floating bottom-right) */}
+      <GlobalProgressPanel
+        jobId={activeJobId}
+        backend={backend}
+        onAnnounce={announce}
+        onRefreshJobs={jobs.refresh}
+        onDismiss={() => setActiveJobId(null)}
+      />
+
+      {/* Connect / Add Account Dialog */}
+      {connectDialogOpen && (
+        <ConnectDialog
+          backend={backend}
+          onClose={() => setConnectDialogOpen(false)}
+          onConnected={() => {
+            setConnectDialogOpen(false);
+            accounts.refresh();
+          }}
+          onAnnounce={announce}
+        />
+      )}
+
+      {/* Legal Dialogs */}
       <LegalDialogs open={legal} onClose={() => setLegal(null)} />
     </div>
   );
