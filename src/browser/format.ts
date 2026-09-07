@@ -44,17 +44,39 @@ export function formatDate(isoString: string | null | undefined): { display: str
   }
 }
 
-export function getFileIcon(mimeType: string, isFolder: boolean): string {
-  if (isFolder) {
-    return "📁";
-  }
-  if (mimeType.includes("pdf")) return "📄";
-  if (mimeType.includes("image")) return "🖼️";
-  if (mimeType.includes("video")) return "🎥";
-  if (mimeType.includes("audio")) return "🎵";
-  if (mimeType.includes("spreadsheet") || mimeType.includes("excel")) return "📊";
-  if (mimeType.includes("presentation") || mimeType.includes("powerpoint")) return "📽️";
-  if (mimeType.includes("document") || mimeType.includes("word")) return "📝";
-  if (mimeType.includes("zip") || mimeType.includes("compressed")) return "📦";
-  return "📄";
+import type { FileIconKind } from "./FileTypeIcon.tsx";
+
+const EXTENSIONS: Record<string, FileIconKind> = {
+  pdf: "pdf", zip: "archive", rar: "archive", "7z": "archive", tar: "archive", gz: "archive", bz2: "archive", xz: "archive", epub: "ebook", mobi: "ebook", doc: "document", docx: "document", odt: "document", txt: "document", md: "markdown", markdown: "markdown", xls: "spreadsheet", xlsx: "spreadsheet", ods: "spreadsheet", csv: "spreadsheet", ppt: "presentation", pptx: "presentation", odp: "presentation", png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", svg: "image", heic: "image", mp3: "audio", wav: "audio", flac: "audio", m4a: "audio", mp4: "video", webm: "video", mov: "video", mkv: "video", rs: "code", ts: "code", tsx: "code", js: "code", jsx: "code", py: "code", go: "code", java: "code", json: "code", yaml: "code", yml: "code", toml: "code", css: "code", html: "code",
+};
+
+const SPECIFIC_MIME_TYPES: Record<string, FileIconKind> = {
+  "application/gzip": "archive",
+  "application/json": "code",
+  "application/x-tar": "archive",
+  "text/csv": "spreadsheet",
+};
+
+export function getFileIconKind(name: string, mimeType: string, isFolder: boolean, isShortcut = false): FileIconKind {
+  if (isShortcut || mimeType === "application/vnd.google-apps.shortcut") return "shortcut";
+  if (isFolder || mimeType === "application/vnd.google-apps.folder") return "folder";
+  if (mimeType === "application/vnd.google-apps.document") return "google-doc";
+  if (mimeType === "application/vnd.google-apps.spreadsheet") return "google-sheet";
+  if (mimeType === "application/vnd.google-apps.presentation") return "google-slide";
+  const parts = name.toLowerCase().split(".");
+  const extension = parts[parts.length - 1] ?? "";
+  const specificMimeKind = SPECIFIC_MIME_TYPES[mimeType];
+  if (specificMimeKind !== undefined) return specificMimeKind;
+  if (mimeType === "text/plain") return EXTENSIONS[extension] ?? "document";
+  if (mimeType === "application/epub+zip" || mimeType.includes("mobipocket")) return "ebook";
+  if (mimeType === "text/markdown") return "markdown";
+  if (mimeType.includes("pdf")) return "pdf";
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video";
+  if (mimeType.startsWith("audio/")) return "audio";
+  if (mimeType.includes("spreadsheet") || mimeType.includes("excel")) return "spreadsheet";
+  if (mimeType.includes("presentation") || mimeType.includes("powerpoint")) return "presentation";
+  if (mimeType.includes("document") || mimeType.includes("word")) return "document";
+  if (mimeType.includes("zip") || mimeType.includes("compressed") || mimeType.includes("rar")) return "archive";
+  return EXTENSIONS[extension] ?? "file";
 }

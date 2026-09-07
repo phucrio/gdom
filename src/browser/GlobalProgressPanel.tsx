@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { BackendPort } from "../ipc/port.ts";
 import { canResumeJob, progressCounts } from "./progress.ts";
 import { useProgressSnapshot } from "./useProgressSnapshot.ts";
 import { confirmCanaryEmail } from "../wizard/canary.ts";
-import { getFileIcon } from "../browser/format.ts";
+import { FileTypeIcon } from "./FileTypeIcon.tsx";
+import { getFileIconKind } from "./format.ts";
 
 export type GlobalProgressPanelProps = {
   jobId: string | null;
@@ -17,14 +18,23 @@ export function GlobalProgressPanel(props: GlobalProgressPanelProps) {
   return props.jobId ? <ProgressPanel key={props.jobId} {...props} jobId={props.jobId} /> : null;
 }
 
+const TERMINAL_JOB_STATUSES = new Set(["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELLED", "FAILED"]);
+
 function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
   GlobalProgressPanelProps & { jobId: string }) {
   const [expanded, setExpanded] = useState(false);
   const [page, setPage] = useState(1);
   const [actionBusy, setActionBusy] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmationEmail, setConfirmationEmail] = useState("");
   const { job, items, hasMore, loadingItems, loadError, refresh: fetchJob } =
     useProgressSnapshot(backend, jobId, expanded ? page : 0);
+
+  useEffect(() => {
+    if (job !== null && TERMINAL_JOB_STATUSES.has(job.status)) {
+      setConfirmCancel(false);
+    }
+  }, [job?.status]);
 
   function handleScroll(event: React.UIEvent<HTMLDivElement>) {
     const element = event.currentTarget;
@@ -70,6 +80,7 @@ function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
     setActionBusy(true);
     try {
       await backend.cancelMigration(jobId);
+      setConfirmCancel(false);
       onAnnounce("Migration cancelled.");
       void fetchJob();
       onRefreshJobs();
@@ -103,7 +114,7 @@ function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
   const isScanning = job.status === "SCANNING";
   const isRunning = isScanning || job.status === "RUNNING" || job.status === "RUNNING_CANARY";
   const isPaused = canResumeJob(job);
-  const isFinished = ["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELLED", "FAILED"].includes(job.status);
+  const isFinished = TERMINAL_JOB_STATUSES.has(job.status);
   const { total, processed, percent, succeeded: succeededCount, failed: failedCount, skipped: skippedCount } = progressCounts(job);
 
   return (
@@ -133,13 +144,13 @@ function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
               <p className="no-items">No items listed yet.</p>
             ) : (
               items.map((item) => {
-                const icon = getFileIcon(item.mimeType, item.mimeType.includes("folder"));
+                const iconKind = getFileIconKind(item.name, item.mimeType, item.mimeType.includes("folder"));
                 const isVerified = item.state === "VERIFIED";
                 const isFailed = item.state.includes("FAILED");
                 const isSkipped = item.state.includes("SKIPPED");
                 return (
                   <div key={item.id} className="transfer-item-row" role="article">
-                    <span className="item-icon" aria-hidden="true">{icon}</span>
+                    <span className="item-icon"><FileTypeIcon kind={iconKind} /></span>
                     <div className="item-info">
                       <span className="item-name" title={item.name}>{item.name}</span>
                       <span className="item-state-label">
@@ -162,6 +173,15 @@ function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
         <button type="button" className="secondary-button btn-sm" onClick={fetchJob}>Retry</button>
       </div>}
       {job.lastError && <p className="warning" role="status">{job.lastError}</p>}
+      {confirmCancel && (
+        <div className="notice cancel-confirmation" role="alert">
+          <p>Cancel this migration? Transfers already completed will not be reversed.</p>
+          <div className="dialog-actions">
+            <button type="button" className="secondary-button btn-sm" onClick={() => setConfirmCancel(false)} disabled={actionBusy}>Keep running</button>
+            <button type="button" className="danger-button btn-sm" onClick={() => void handleCancel()} disabled={actionBusy}>{actionBusy ? "Cancelling…" : "Cancel migration"}</button>
+          </div>
+        </div>
+      )}
       {(job.status === "CANARY_REVIEW" || job.status === "READY_FOR_REVIEW") && <div className="notice field">
         <p>{job.status === "CANARY_REVIEW" ? `Canary finished: ${succeededCount} verified - ${failedCount} failed. Review the items before approving the remaining transfers.` : `Scan finished: ${total} items. Review the items before starting the canary transfer.`}</p>
         <div className="field"><label htmlFor="canary-confirmation-email">Re-enter target email: {job.targetSnapshot.email}</label>
@@ -244,7 +264,7 @@ function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
             <button
               type="button"
               className="danger-button btn-sm"
-              onClick={() => void handleCancel()}
+              onClick={() => setConfirmCancel(true)}
               disabled={actionBusy}
             >
               Cancel

@@ -29,6 +29,7 @@ export function OwnerPicker({
 }: OwnerPickerProps) {
   const hasFolder = selectedItems.some((i) => i.isFolder);
   const [recursive, setRecursive] = useState(true);
+  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const submittingRef = useRef(false);
@@ -38,6 +39,7 @@ export function OwnerPicker({
       setRecursive(true);
       setBusy(false);
       setError(null);
+      setSelectedTargetId(null);
       submittingRef.current = false;
     }
   }, [isOpen]);
@@ -51,8 +53,11 @@ export function OwnerPicker({
   const itemCount = selectedItems.length;
   const sourceName = accountDisplayLabel(sourceAccount);
 
-  async function handleSelectTarget(target: AccountDto) {
-    if (submittingRef.current || busy) return;
+  const selectedTarget = targetAccounts.find((account) => account.id === selectedTargetId) ?? null;
+
+  async function handleStartTransfer() {
+    const target = selectedTarget;
+    if (target === null || submittingRef.current || busy) return;
     if (target.authStatus === "REAUTH_REQUIRED") {
       setError(`Account ${target.email} requires re-authentication before it can receive ownership.`);
       return;
@@ -84,9 +89,14 @@ export function OwnerPicker({
     }
   }
 
+  function handleAddAccount() {
+    onClose();
+    onAddAccount();
+  }
+
   return (
     <Dialog title="Transfer ownership" onClose={onClose}>
-      <div className="owner-picker" role="dialog" aria-labelledby="owner-picker-title">
+      <div className="dialog-body owner-picker">
         <div className="owner-picker-header">
           <p className="owner-picker-summary">
             <strong>Source:</strong> {sourceName} ({sourceAccount.email})
@@ -116,9 +126,7 @@ export function OwnerPicker({
 
         <div className="owner-picker-notice" role="note">
           <p>
-            Chọn tài khoản bên dưới để bắt đầu chuyển quyền sở hữu ngay. GDOM sẽ
-            gửi yêu cầu bằng tài khoản nguồn và chấp nhận bằng tài khoản nhận.
-            Không có hoàn tác tự động.
+            Choose a recipient, review the transfer, then start it. GDOM sends the ownership request from the source account and accepts it with the recipient account. Completed transfers are not automatically reversed.
           </p>
         </div>
 
@@ -128,35 +136,31 @@ export function OwnerPicker({
           </p>
         )}
 
-        <div className="owner-picker-targets" role="group" aria-label="Target account list">
-          <p className="targets-title">Select recipient account:</p>
-
+        <fieldset className="owner-picker-targets">
+          <legend className="targets-title">Select recipient account</legend>
           {targetAccounts.length === 0 ? (
             <div className="no-targets">
               <p>No other connected Google accounts available.</p>
               <button
                 type="button"
                 className="secondary-button"
-                onClick={onAddAccount}
+                onClick={handleAddAccount}
                 disabled={busy}
               >
                 + Add another account
               </button>
             </div>
           ) : (
-            <div className="target-accounts-list">
+            <div className="target-accounts-list" role="radiogroup" aria-label="Recipient accounts">
               {targetAccounts.map((target) => {
                 const targetName = accountDisplayLabel(target);
                 const isReauth = target.authStatus === "REAUTH_REQUIRED";
                 return (
-                  <button
+                  <label
                     key={target.id}
-                    type="button"
-                    className={`target-account-card ${isReauth ? "disabled" : ""}`}
-                    onClick={() => void handleSelectTarget(target)}
-                    disabled={busy || isReauth}
-                    aria-label={`Transfer ownership to ${targetName} (${target.email})`}
+                    className={`target-account-card ${isReauth ? "disabled" : ""} ${selectedTargetId === target.id ? "selected" : ""}`}
                   >
+                    <input type="radio" name="transfer-target" value={target.id} checked={selectedTargetId === target.id} onChange={() => { setSelectedTargetId(target.id); setError(null); }} disabled={busy || isReauth} aria-label={`Select ${targetName} (${target.email})`} />
                     {target.avatarUrl ? (
                       <img
                         src={target.avatarUrl}
@@ -178,24 +182,30 @@ export function OwnerPicker({
                         </span>
                       )}
                     </div>
-                    <span className="target-select-hint" aria-hidden="true">
-                      {busy ? "Starting…" : "Transfer →"}
-                    </span>
-                  </button>
+                    <span className="target-select-hint" aria-hidden="true">{selectedTargetId === target.id ? "Selected" : "Select"}</span>
+                  </label>
                 );
               })}
 
               <button
                 type="button"
                 className="add-target-button"
-                onClick={onAddAccount}
+                onClick={handleAddAccount}
                 disabled={busy}
               >
                 + Add another account
               </button>
             </div>
           )}
-        </div>
+        </fieldset>
+
+        {selectedTarget !== null && (
+          <div className="transfer-review" role="status">
+            <strong>Ready to start</strong>
+            <span>{sourceAccount.email} → {selectedTarget.email}</span>
+            <span>{itemCount} item{itemCount === 1 ? "" : "s"}{hasFolder ? (recursive ? ", including subfolders" : ", selected folders only") : ""}</span>
+          </div>
+        )}
 
         <div className="dialog-actions">
           <button
@@ -205,6 +215,9 @@ export function OwnerPicker({
             disabled={busy}
           >
             Cancel
+          </button>
+          <button type="button" className="primary-button" onClick={() => void handleStartTransfer()} disabled={busy || selectedTarget === null}>
+            {busy ? "Starting transfer…" : "Start transfer"}
           </button>
         </div>
       </div>

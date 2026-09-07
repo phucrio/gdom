@@ -157,7 +157,7 @@ export function App({ backend }: AppProps) {
         {announcement}
       </div>
 
-      <main className="workspace">
+      <main id="main-content" className="workspace">
         {accounts.loadError && <p className="error" role="alert">{accounts.loadError}</p>}
         {view === "home" && activeAccount && (
           <DriveFileBrowser
@@ -191,14 +191,15 @@ export function App({ backend }: AppProps) {
         )}
       </main>
 
-      {/* Global Transfer Progress Panel (floating bottom-right) */}
-      <GlobalProgressPanel
-        jobId={activeJobId}
-        backend={backend}
-        onAnnounce={announce}
-        onRefreshJobs={jobs.refresh}
-        onDismiss={() => setActiveJobId(null)}
-      />
+      <aside className="progress-region" aria-label="Active migration">
+        <GlobalProgressPanel
+          jobId={activeJobId}
+          backend={backend}
+          onAnnounce={announce}
+          onRefreshJobs={jobs.refresh}
+          onDismiss={() => setActiveJobId(null)}
+        />
+      </aside>
 
       {/* Connect / Add Account Dialog */}
       {connectDialogOpen && (

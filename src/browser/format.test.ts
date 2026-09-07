@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDate, formatFileSize, getFileIcon } from "./format.ts";
+import { formatDate, formatFileSize, getFileIconKind } from "./format.ts";
 
 describe("format utilities", () => {
   it("formats file size with readable units and handles null/undefined/0", () => {
@@ -22,11 +22,21 @@ describe("format utilities", () => {
     expect(formatted.full).not.toBe("—");
   });
 
-  it("returns distinctive icons based on mime type", () => {
-    expect(getFileIcon("application/vnd.google-apps.folder", true)).toBe("📁");
-    expect(getFileIcon("application/pdf", false)).toBe("📄");
-    expect(getFileIcon("image/png", false)).toBe("🖼️");
-    expect(getFileIcon("video/mp4", false)).toBe("🎥");
-    expect(getFileIcon("audio/mpeg", false)).toBe("🎵");
+  it("classifies local icons from MIME type, extension, and shortcut state", () => {
+    expect(getFileIconKind("Folder", "application/vnd.google-apps.folder", true)).toBe("folder");
+    expect(getFileIconKind("Report.pdf", "application/pdf", false)).toBe("pdf");
+    expect(getFileIconKind("archive.TAR.GZ", "application/octet-stream", false)).toBe("archive");
+    expect(getFileIconKind("guide.EPUB", "application/octet-stream", false)).toBe("ebook");
+    expect(getFileIconKind("guide", "application/epub+zip", false)).toBe("ebook");
+    expect(getFileIconKind("data.pdf", "text/csv", false)).toBe("spreadsheet");
+    expect(getFileIconKind("README", "text/plain", false)).toBe("document");
+    expect(getFileIconKind("config", "application/json", false)).toBe("code");
+    expect(getFileIconKind("archive.pdf", "application/gzip", false)).toBe("archive");
+    expect(getFileIconKind("notes.md", "text/plain", false)).toBe("markdown");
+    expect(getFileIconKind("notes", "text/markdown", false)).toBe("markdown");
+    expect(getFileIconKind("Document", "application/vnd.google-apps.document", false)).toBe("google-doc");
+    expect(getFileIconKind("presentation.pptx", "application/octet-stream", false)).toBe("presentation");
+    expect(getFileIconKind("Shortcut", "application/vnd.google-apps.shortcut", false)).toBe("shortcut");
+    expect(getFileIconKind("unknown.blob", "application/octet-stream", false)).toBe("file");
   });
 });

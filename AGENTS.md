@@ -48,6 +48,7 @@ Detailed architectural specifications, engineering standards, and product decisi
 
 | Document | Description |
 |---|---|
+| [docs/DESIGN.md](docs/DESIGN.md) | **UI/UX Design Direction**: Approved visual and interaction contract, file-type icons, responsive layouts, progress feedback, accessibility, and acceptance criteria. |
 | [docs/architecture.md](docs/architecture.md) | **System Architecture**: Clean Architecture layers, multi-account domain model, security boundaries, loopback listener design, and token-routing invariants. |
 | [docs/code-convention.md](docs/code-convention.md) | **Code Conventions**: Rust 2024 idioms, strict TypeScript standards, error handling without unwrap, WCAG 2.2 AA accessibility, LF line endings, and Conventional commit rules. |
 | [docs/code-review.md](docs/code-review.md) | **Code Review Guidelines**: Reviewer checklists, verification gates (Security, Architecture, Invariants, Durability), and author responsibilities. |

@@ -2,7 +2,7 @@ import { createRoot } from "react-dom/client";
 import { useState } from "react";
 import { App } from "../src/App.tsx";
 import type { BackendPort } from "../src/ipc/port.ts";
-import type { AccountDto, JobDto, JobItemDto } from "../src/ipc/types.ts";
+import type { AccountDto, DriveFileItemDto, JobDto, JobItemDto } from "../src/ipc/types.ts";
 
 const account = (id: string): AccountDto => ({ id, email: `${id}@gmail.com`, displayName: id,
   googlePermissionId: id, label: null, authStatus: "CONNECTED", connectedAt: "2026-09-07",
@@ -19,10 +19,16 @@ let current: JobDto = { id: "job-1", sourceAccountId: source.id, targetAccountId
 let items: JobItemDto[] = [0, 1].map((index) => ({ id: `item-${index}`, jobId: current.id,
   fileId: `file-${index}`, name: index === 0 ? "Report.pdf" : "Folder", mimeType: index === 0 ? "application/pdf" : "application/vnd.google-apps.folder",
   depth: 0, originalParentIds: [], state: "ELIGIBLE", quotaBytesUsed: null }));
+const driveItem: DriveFileItemDto = {
+  id: "drive-item-1", name: "release-notes.md", mimeType: "text/markdown", isFolder: false,
+  folderId: null, size: 128, modifiedTime: "2026-09-07T00:00:00Z", owners: [], webViewLink: null,
+  canTransferOwnership: true, isOwner: true, shortcutTargetId: null,
+};
 const listeners = new Map<string, Set<() => void>>();
 let failAccounts = false;
 let delayJob = false;
 let failJob = false;
+let failStartTransfer = false;
 let jobRequests = 0;
 let releaseJob: (() => void) | null = null;
 const commands: string[] = [];
@@ -32,6 +38,8 @@ const transition = async (command: string, status: JobDto["status"]) => {
   commands.push(command); current = { ...current, status }; emit(); return current;
 };
 const backend: BackendPort = {
+  beginAccountConnection: unsupported,
+  cancelAccountConnection: unsupported,
   listAccounts: async () => { if (failAccounts) throw new Error("Registry unavailable"); return [source, target]; },
   listJobs: async () => [current, { ...current, id: "other-job", sourceAccountId: "other", targetAccountId: "else", status: "COMPLETED" }],
   getJob: async (id) => {
@@ -43,8 +51,9 @@ const backend: BackendPort = {
     return result;
   },
   listJobItems: async (_id, _filter, page = 1) => ({ items: items.slice(page - 1, page), page, pageSize: 1, total: items.length }),
+  openDriveItem: unsupported,
   subscribe: async (event, callback) => { const callbacks = listeners.get(event) ?? new Set(); callbacks.add(callback); listeners.set(event, callbacks); return () => { callbacks.delete(callback); }; },
-  listDriveFiles: async () => ({ items: [], nextPageToken: null }),
+  listDriveFiles: async () => ({ items: [driveItem], nextPageToken: null }),
   pauseMigration: () => transition("pauseMigration", "PAUSED"),
   pauseScan: () => transition("pauseScan", "PAUSED"),
   startScan: () => transition("startScan", "SCANNING"),
@@ -56,7 +65,7 @@ const backend: BackendPort = {
   getOAuthConfig: unsupported, resetOAuthConfig: unsupported, connectAccount: unsupported,
   updateAccountLabel: unsupported, disconnectAccount: unsupported, removeAccount: unsupported,
   deleteLocalAccountData: unsupported, renameDriveItem: unsupported, trashDriveItem: unsupported,
-  startTransferOperation: unsupported, createJob: unsupported, updateDraftJobAccounts: unsupported,
+  startTransferOperation: async (input) => { if (failStartTransfer) throw new Error("Transfer start unavailable"); commands.push(`startTransferOperation:${input.sourceAccountId}:${input.targetAccountId}:${input.rootFileIds.join(",")}:${input.recursive}`); return current; }, createJob: unsupported, updateDraftJobAccounts: unsupported,
   deleteDraftJob: unsupported, getAccountReferences: unsupported, validateRoot: unsupported,
   addRoot: unsupported, removeRoot: unsupported, exportDryRun: unsupported,
 };
@@ -67,6 +76,7 @@ function Fixture() {
     get jobRequests() { return jobRequests; },
     get jobHeld() { return releaseJob !== null; },
     failJob(failure: boolean) { failJob = failure; },
+    failStartTransfer(failure: boolean) { failStartTransfer = failure; },
     setStatus(status: JobDto["status"], phase: JobDto["phase"] = "bulk") { current = { ...current, status, phase };
       if (status === "CANARY_REVIEW") {
         current.progress = { completed: 1, failed: 1, skipped: 0, total: 3, currentPath: null };
