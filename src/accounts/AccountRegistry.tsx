@@ -4,7 +4,6 @@ import type { BackendPort } from "../ipc/port.ts";
 import type { AccountDto } from "../ipc/types.ts";
 import { Dialog } from "../ui/Dialog.tsx";
 import { ConnectDialog } from "./ConnectDialog.tsx";
-import { WORKSPACE_SECTION_ID } from "../nav/copy.ts";
 import { referencingJobsLabel } from "./copy.ts";
 import { accountDisplayLabel, accountStatusBadge, connectedAccountCount } from "./status.ts";
 
@@ -57,7 +56,7 @@ export function AccountRegistry({
   }
 
   return (
-    <section id={WORKSPACE_SECTION_ID.accounts} className="registry" aria-labelledby="registry-title" tabIndex={-1}>
+    <section id="account-registry" className="registry" aria-labelledby="registry-title" tabIndex={-1}>
       <div className="section-heading">
         <div>
           <p className="eyebrow">Account registry</p>

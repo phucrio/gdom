@@ -488,10 +488,11 @@ mod tests {
         let lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase> =
             Arc::new(lifecycle_service);
 
+        let drive_arc = Arc::new(drive_client);
         let job_service = Arc::new(crate::application::JobService::new(
             account_store.clone(),
             job_store.clone(),
-            Arc::new(drive_client) as Arc<dyn crate::application::DrivePort>,
+            drive_arc.clone() as Arc<dyn crate::application::DrivePort>,
             token_provider.clone(),
         ));
 
@@ -503,6 +504,7 @@ mod tests {
             lifecycle_use_case,
             token_provider,
             job_store,
+            drive_arc,
             job_service,
         )
     }
@@ -523,12 +525,12 @@ mod tests {
         let account_a = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-a"),
-            AccountProfile::new("a@gmail.com", "Alice"),
+            AccountProfile::new("a@gmail.com", "Alice", None),
         );
         let account_b = ConnectedAccount::new(
             AccountId::new(2),
             GooglePermissionId::new("perm-b"),
-            AccountProfile::new("b@gmail.com", "Bob"),
+            AccountProfile::new("b@gmail.com", "Bob", None),
         );
         state
             .account_store
@@ -640,7 +642,7 @@ mod tests {
         let account = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-1"),
-            AccountProfile::new("user@gmail.com", "User"),
+            AccountProfile::new("user@gmail.com", "User", None),
         );
         state
             .account_store
@@ -766,7 +768,7 @@ mod tests {
         let account = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-1"),
-            AccountProfile::new("a@gmail.com", "Alice"),
+            AccountProfile::new("a@gmail.com", "Alice", None),
         );
         state.account_store.connect(&account).await.unwrap();
         state
@@ -806,7 +808,7 @@ mod tests {
         let account = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-1"),
-            AccountProfile::new("a@gmail.com", "Alice"),
+            AccountProfile::new("a@gmail.com", "Alice", None),
         );
         state.account_store.connect(&account).await.unwrap();
 
@@ -832,7 +834,7 @@ mod tests {
         let account = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-1"),
-            AccountProfile::new("a@gmail.com", "Alice"),
+            AccountProfile::new("a@gmail.com", "Alice", None),
         );
         state.account_store.connect(&account).await.unwrap();
         state
@@ -879,7 +881,7 @@ mod tests {
         let account = ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-1"),
-            AccountProfile::new("a@gmail.com", "Alice"),
+            AccountProfile::new("a@gmail.com", "Alice", None),
         );
         state.account_store.connect(&account).await.unwrap();
 

@@ -34,7 +34,7 @@ fn parse_root_id(raw: &str) -> Result<RootId, CommandError> {
         .map_err(|_| CommandError::InvalidFolder("Invalid root ID format".to_owned()))
 }
 
-fn map_job_service_error(err: JobServiceError) -> CommandError {
+pub(crate) fn map_job_service_error(err: JobServiceError) -> CommandError {
     match err {
         JobServiceError::SameSourceAndTarget => CommandError::SameSourceAndTarget(
             "Source and target accounts must be different".to_owned(),
@@ -116,7 +116,7 @@ fn map_job_service_error(err: JobServiceError) -> CommandError {
     }
 }
 
-async fn job_dto_with_scan(
+pub(crate) async fn job_dto_with_scan(
     state: &AppState,
     job: crate::domain::job::MigrationJob,
 ) -> Result<JobDto, CommandError> {
@@ -134,6 +134,8 @@ async fn job_dto_with_scan(
     if let Ok((progress, errors)) = state.job_service.live_progress(job.id()).await {
         dto.progress = progress.map(|progress| MigrationProgressDto {
             completed: progress.completed,
+            failed: progress.failed,
+            skipped: progress.skipped,
             total: progress.total,
             current_path: progress.current_path,
         });

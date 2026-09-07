@@ -5,7 +5,6 @@ import type { BackendPort } from "../ipc/port.ts";
 import { IPC_EVENTS, type AccountDto, type JobDto, type JobErrorEntry } from "../ipc/types.ts";
 import { DryRunReview } from "../dry-run/DryRunReview.tsx";
 import { emptyScanSummary } from "../dry-run/preflight.ts";
-import { WORKSPACE_SECTION_ID } from "../nav/copy.ts";
 import { accountDisplayLabel } from "../accounts/status.ts";
 import { jobRunPhase } from "../jobs/status.ts";
 import { hydrateWizardFromJob } from "./hydrate.ts";
@@ -504,7 +503,7 @@ export function MigrationWizard({
     jobStatus === "PAUSED";
 
   return (
-    <section id={WORKSPACE_SECTION_ID.wizard} className="wizard" aria-labelledby={WIZARD_TITLE_ID} tabIndex={-1}>
+    <section id="migration-wizard" className="wizard" aria-labelledby={WIZARD_TITLE_ID} tabIndex={-1}>
       <div className="section-heading">
         <div>
           <p className="eyebrow">{WIZARD_EYEBROW}</p>

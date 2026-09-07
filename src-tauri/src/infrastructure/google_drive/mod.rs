@@ -3,6 +3,7 @@ use std::{error::Error, fmt, time::Duration};
 use reqwest::StatusCode;
 use serde::Deserialize;
 
+mod browser;
 mod permissions;
 
 use crate::{
@@ -17,9 +18,10 @@ use crate::{
 
 const API_BASE_URL: &str = "https://www.googleapis.com";
 const ABOUT_PATH: &str =
-    "/drive/v3/about?fields=user%28permissionId%2CemailAddress%2CdisplayName%29";
+    "/drive/v3/about?fields=user%28permissionId%2CemailAddress%2CdisplayName%2CphotoLink%29";
 const ABOUT_QUOTA_PATH: &str = "/drive/v3/about?fields=storageQuota";
-const LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress),driveId,size,quotaBytesUsed,trashed,shortcutDetails,capabilities)";
+const LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress),driveId,size,quotaBytesUsed,trashed,shortcutDetails,capabilities,modifiedTime,webViewLink)";
+const BROWSE_LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress),driveId,size,quotaBytesUsed,trashed,shortcutDetails,capabilities,modifiedTime,webViewLink)";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const USER_AGENT: &str = concat!("gdom/", env!("CARGO_PKG_VERSION"));
 const LIST_PAGE_SIZE: &str = "1000";
@@ -77,6 +79,7 @@ impl GoogleDriveClient {
             permission_id: GooglePermissionId::new(response.user.permission_id),
             email: response.user.email_address,
             display_name: response.user.display_name,
+            avatar_url: response.user.photo_link,
         })
     }
 
@@ -211,6 +214,120 @@ impl GoogleDriveClient {
         })
     }
 
+    pub async fn list_browse_children(
+        &self,
+        token: &AccessToken,
+        folder_id: Option<&str>,
+        page_token: Option<&str>,
+        page_size: Option<u32>,
+        order_by: Option<&str>,
+    ) -> Result<DriveChildPage, GoogleDriveError> {
+        let parent_id = match folder_id {
+            Some(id) if !id.trim().is_empty() && id.trim() != "root" => id.trim(),
+            _ => "root",
+        };
+        let query = children_query(parent_id);
+        let page_size_str = page_size.unwrap_or(50).clamp(1, 100).to_string();
+        let query_string = {
+            let mut encoded = url::form_urlencoded::Serializer::new(String::new());
+            encoded.append_pair("q", &query);
+            encoded.append_pair("spaces", "drive");
+            encoded.append_pair("pageSize", &page_size_str);
+            encoded.append_pair("supportsAllDrives", "true");
+            encoded.append_pair("fields", BROWSE_LIST_FIELDS);
+            if let Some(token) = page_token.filter(|t| !t.is_empty()) {
+                encoded.append_pair("pageToken", token);
+            }
+            if let Some(order) = order_by.filter(|o| !o.is_empty()) {
+                encoded.append_pair("orderBy", order);
+            } else {
+                encoded.append_pair("orderBy", "folder,name");
+            }
+            encoded.finish()
+        };
+        let url = format!("{}/drive/v3/files?{query_string}", self.base_url);
+
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(token.expose_secret())
+            .send()
+            .await
+            .map_err(|_| GoogleDriveError::Transport)?;
+
+        if !response.status().is_success() {
+            return Err(Self::error_from_response(response).await);
+        }
+
+        let raw = response
+            .json::<RawFileListResponse>()
+            .await
+            .map_err(|_| GoogleDriveError::InvalidResponse)?;
+
+        Ok(DriveChildPage {
+            files: raw
+                .files
+                .unwrap_or_default()
+                .into_iter()
+                .map(drive_child_from_raw)
+                .collect(),
+            next_page_token: raw.next_page_token,
+        })
+    }
+
+    pub async fn rename_file(
+        &self,
+        token: &AccessToken,
+        file_id: &str,
+        new_name: &str,
+    ) -> Result<(), GoogleDriveError> {
+        let url = format!(
+            "{}/drive/v3/files/{}?supportsAllDrives=true",
+            self.base_url,
+            encode_path_segment(file_id)
+        );
+        let body = serde_json::json!({ "name": new_name });
+        let response = self
+            .client
+            .patch(url)
+            .bearer_auth(token.expose_secret())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|_| GoogleDriveError::Transport)?;
+
+        if !response.status().is_success() {
+            return Err(Self::error_from_response(response).await);
+        }
+        Ok(())
+    }
+
+    pub async fn trash_file(
+        &self,
+        token: &AccessToken,
+        file_id: &str,
+    ) -> Result<(), GoogleDriveError> {
+        let url = format!(
+            "{}/drive/v3/files/{}?supportsAllDrives=true",
+            self.base_url,
+            encode_path_segment(file_id)
+        );
+        let body = serde_json::json!({ "trashed": true });
+        let response = self
+            .client
+            .patch(url)
+            .bearer_auth(token.expose_secret())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|_| GoogleDriveError::Transport)?;
+
+        if !response.status().is_success() {
+            return Err(Self::error_from_response(response).await);
+        }
+        Ok(())
+    }
+
     async fn error_from_response(response: reqwest::Response) -> GoogleDriveError {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
@@ -297,6 +414,8 @@ fn drive_child_from_raw(raw: RawFileResponse) -> DriveChild {
         quota_bytes_used: parse_i64_string(raw.quota_bytes_used.or(raw.size)),
         trashed: raw.trashed.unwrap_or(false),
         shortcut_target_id: raw.shortcut_details.and_then(|details| details.target_id),
+        modified_time: raw.modified_time,
+        web_view_link: raw.web_view_link,
     }
 }
 
@@ -339,6 +458,10 @@ struct RawFileResponse {
     shortcut_details: Option<RawShortcutDetails>,
     #[serde(default)]
     pub(super) permissions: Option<Vec<RawPermission>>,
+    #[serde(default)]
+    modified_time: Option<String>,
+    #[serde(default)]
+    web_view_link: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -430,6 +553,7 @@ pub struct DriveAccountIdentity {
     permission_id: GooglePermissionId,
     email: String,
     display_name: String,
+    avatar_url: Option<String>,
 }
 
 impl DriveAccountIdentity {
@@ -437,11 +561,13 @@ impl DriveAccountIdentity {
         permission_id: GooglePermissionId,
         email: impl Into<String>,
         display_name: impl Into<String>,
+        avatar_url: Option<String>,
     ) -> Self {
         Self {
             permission_id,
             email: email.into(),
             display_name: display_name.into(),
+            avatar_url,
         }
     }
 
@@ -455,6 +581,10 @@ impl DriveAccountIdentity {
 
     pub fn display_name(&self) -> &str {
         &self.display_name
+    }
+
+    pub fn avatar_url(&self) -> Option<&str> {
+        self.avatar_url.as_deref()
     }
 }
 
@@ -644,6 +774,7 @@ struct AboutUser {
     permission_id: String,
     email_address: String,
     display_name: String,
+    photo_link: Option<String>,
 }
 
 impl IdentityLookupPort for GoogleDriveClient {
@@ -656,6 +787,7 @@ impl IdentityLookupPort for GoogleDriveClient {
             identity.permission_id().clone(),
             identity.email(),
             identity.display_name(),
+            identity.avatar_url().map(ToOwned::to_owned),
         ))
     }
 }

@@ -129,8 +129,23 @@ impl DriveTreePort for MockDrive {
 }
 
 impl DriveTransferPort for MockDrive {
-    fn get_file<'a>(&'a self, _token: &'a AccessToken, _file_id: &'a str) -> DriveFileFuture<'a> {
-        Box::pin(async { Err(DriveTransferError::UnexpectedStatus(501)) })
+    fn get_file<'a>(&'a self, _token: &'a AccessToken, file_id: &'a str) -> DriveFileFuture<'a> {
+        Box::pin(async move {
+            Ok(crate::application::drive_transfer::DriveFileSnapshot {
+                id: file_id.into(),
+                name: file_id.into(),
+                mime_type: FOLDER_MIME_TYPE.into(),
+                parents: vec!["original-parent".into()],
+                quota_bytes_used: None,
+                owners: vec![crate::application::drive_folder::DriveFolderOwner {
+                    permission_id: GooglePermissionId::new(SOURCE_PERM),
+                    email_address: None,
+                }],
+                trashed: false,
+                drive_id: None,
+                permissions: Vec::new(),
+            })
+        })
     }
 
     fn create_pending_owner<'a>(
@@ -324,6 +339,68 @@ async fn seed_job_with_roots(store: &SqliteJobStore, roots: &[&str]) -> JobId {
         store.add_root(root).await.unwrap();
     }
     job.id()
+}
+
+#[tokio::test]
+async fn selected_roots_preserve_metadata_and_only_recurse_into_requested_folders() {
+    for (mime_type, recursive, expected_list_calls) in [
+        (FOLDER_MIME_TYPE, false, 0),
+        (FOLDER_MIME_TYPE, true, 1),
+        ("text/plain", true, 0),
+    ] {
+        let (base_url, captured) = spawn_http_handler(move |request| {
+            if request_is_list(request) {
+                return ("200 OK".into(), r#"{"files":[]}"#.into());
+            }
+            (
+                "200 OK".into(),
+                format!(
+                    r#"{{"id":"selected-root","name":"Actual name","mimeType":"{mime_type}","parents":["existing-parent"],"quotaBytesUsed":"42","owners":[{{"permissionId":"{SOURCE_PERM}"}}]}}"#
+                ),
+            )
+        });
+        let account_store = SqliteAccountStore::open_in_memory().await.unwrap();
+        let store = SqliteJobStore::new(account_store.pool().clone());
+        let job_id = seed_job_with_roots(&store, &["selected-root"]).await;
+        let job = store.find_job_by_id(job_id).await.unwrap().unwrap();
+        let drive = Arc::new(GoogleDriveClient::for_test(base_url).unwrap()) as Arc<dyn DrivePort>;
+        let token = AccessToken::new(SOURCE_TOKEN.into());
+        let source = GooglePermissionId::new(SOURCE_PERM);
+        let target = GooglePermissionId::new(TARGET_PERM);
+        let pause = std::sync::atomic::AtomicBool::new(false);
+        let run = ScanRun {
+            drive,
+            store: &store,
+            job_id,
+            roots: job.roots(),
+            source_token: &token,
+            source_permission_id: &source,
+            target_permission_id: &target,
+            pause: &pause,
+            concurrency: 1,
+            events: None,
+        };
+        crate::application::scanner::seed_roots(&run, recursive)
+            .await
+            .unwrap();
+        assert_eq!(run_scan(&run).await.unwrap(), ScanOutcome::Completed);
+        let page = store.list_items_page(job_id, None, 1, 10).await.unwrap();
+        assert_eq!(page.items.len(), 1);
+        let item = &page.items[0];
+        assert_eq!(item.name, "Actual name");
+        assert_eq!(item.mime_type, mime_type);
+        assert_eq!(item.original_parent_ids, vec!["existing-parent"]);
+        assert_eq!(item.quota_bytes_used, Some(42));
+        assert_eq!(
+            captured
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request_is_list(request))
+                .count(),
+            expected_list_calls
+        );
+    }
 }
 
 #[tokio::test]
@@ -803,7 +880,7 @@ async fn mock_http_scan_routes_source_and_target_tokens() {
                 .unwrap_or_else(|| r#"{"files":[]}"#.into());
             return ("200 OK".into(), body);
         }
-        ("404 Not Found".into(), "{}".into())
+        ("200 OK".into(), source_folder("root-http", "HTTP"))
     });
 
     let account_store = SqliteAccountStore::open_in_memory().await.unwrap();
@@ -859,7 +936,7 @@ async fn mock_http_rate_limit_does_not_mutate() {
                 r#"{"error":{"code":429}}"#.into(),
             );
         }
-        ("200 OK".into(), "{}".into())
+        ("200 OK".into(), source_folder("root-429", "Limited"))
     });
     let account_store = SqliteAccountStore::open_in_memory().await.unwrap();
     let store = SqliteJobStore::new(account_store.pool().clone());

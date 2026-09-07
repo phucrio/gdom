@@ -79,6 +79,11 @@ pub type JobStoreFuture<'a, T> =
 
 pub trait JobStorePort: Send + Sync {
     fn create_job<'a>(&'a self, job: &'a MigrationJob) -> JobStoreFuture<'a, ()>;
+    fn create_seeded_scan<'a>(
+        &'a self,
+        job: &'a MigrationJob,
+        roots: &'a crate::application::item_store::ItemBatchCommit,
+    ) -> JobStoreFuture<'a, ()>;
     fn update_job<'a>(&'a self, job: &'a MigrationJob) -> JobStoreFuture<'a, ()>;
     fn update_draft_job<'a>(&'a self, job: &'a MigrationJob) -> JobStoreFuture<'a, ()>;
     fn find_job_by_id<'a>(&'a self, job_id: JobId) -> JobStoreFuture<'a, Option<MigrationJob>>;

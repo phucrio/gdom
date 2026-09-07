@@ -25,6 +25,7 @@ struct StoredAccountRow {
     last_authenticated_at: String,
     updated_at: String,
     removed_at: Option<String>,
+    avatar_url: Option<String>,
 }
 
 pub struct SqliteAccountStore {
@@ -224,6 +225,23 @@ impl SqliteAccountStore {
             tx.commit().await?;
         }
 
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT version FROM _schema_migrations WHERE version = 7")
+                .fetch_optional(&pool)
+                .await?;
+        if row.is_none() {
+            let mut tx = pool.begin().await?;
+            sqlx::raw_sql(include_str!("../../migrations/007_account_avatar_url.sql"))
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                "INSERT INTO _schema_migrations (version, applied_at) VALUES (7, datetime('now'))",
+            )
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+        }
+
         Ok(Self { pool })
     }
 
@@ -233,16 +251,17 @@ impl SqliteAccountStore {
     ) -> Result<ConnectedAccount, AccountStoreError> {
         let label_str = account.label().map(AccountLabel::as_str);
         let stored = sqlx::query_as::<_, StoredAccountRow>(
-            "INSERT INTO accounts (id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)
+            "INSERT INTO accounts (id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at, avatar_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, ?7)
              ON CONFLICT (google_permission_id) DO UPDATE SET
                  email = excluded.email,
                  display_name = excluded.display_name,
                  auth_status = 'CONNECTED',
                  last_authenticated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                 removed_at = NULL
-             RETURNING id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at",
+                 removed_at = NULL,
+                 avatar_url = COALESCE(excluded.avatar_url, accounts.avatar_url)
+             RETURNING id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at, avatar_url",
         )
         .bind(account.id().value().to_string())
         .bind(account.google_permission_id().as_str())
@@ -250,6 +269,7 @@ impl SqliteAccountStore {
         .bind(account.display_name())
         .bind(label_str)
         .bind(account.auth_status().as_str())
+        .bind(account.avatar_url())
         .fetch_one(&self.pool)
         .await?;
 
@@ -269,7 +289,7 @@ impl SqliteAccountStore {
         permission_id: &GooglePermissionId,
     ) -> Result<Option<ConnectedAccount>, AccountStoreError> {
         sqlx::query_as::<_, StoredAccountRow>(
-            "SELECT id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at
+            "SELECT id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at, avatar_url
              FROM accounts
              WHERE google_permission_id = ?1 AND removed_at IS NULL",
         )
@@ -285,7 +305,7 @@ impl SqliteAccountStore {
         permission_id: &GooglePermissionId,
     ) -> Result<Option<ConnectedAccount>, AccountStoreError> {
         sqlx::query_as::<_, StoredAccountRow>(
-            "SELECT id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at
+            "SELECT id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at, avatar_url
              FROM accounts
              WHERE google_permission_id = ?1",
         )
@@ -301,7 +321,7 @@ impl SqliteAccountStore {
         account_id: AccountId,
     ) -> Result<Option<ConnectedAccount>, AccountStoreError> {
         sqlx::query_as::<_, StoredAccountRow>(
-            "SELECT id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at
+            "SELECT id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at, avatar_url
              FROM accounts
              WHERE id = ?1 AND removed_at IS NULL",
         )
@@ -385,7 +405,7 @@ impl SqliteAccountStore {
 
     pub async fn list_all(&self) -> Result<Vec<ConnectedAccount>, AccountStoreError> {
         let rows = sqlx::query_as::<_, StoredAccountRow>(
-            "SELECT id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at
+            "SELECT id, google_permission_id, email, display_name, label, auth_status, connected_at, last_authenticated_at, updated_at, removed_at, avatar_url
              FROM accounts
              WHERE removed_at IS NULL
              ORDER BY email ASC",
@@ -448,7 +468,7 @@ fn parse_account(stored: StoredAccountRow) -> Result<ConnectedAccount, AccountSt
     Ok(ConnectedAccount::with_lifecycle(
         AccountId::new(stored.id.parse::<u128>()?),
         GooglePermissionId::new(stored.google_permission_id),
-        AccountProfile::new(stored.email, stored.display_name),
+        AccountProfile::new(stored.email, stored.display_name, stored.avatar_url),
         label,
         auth_status,
         stored.connected_at,

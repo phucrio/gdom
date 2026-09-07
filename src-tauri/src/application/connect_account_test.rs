@@ -51,7 +51,7 @@ impl IdentityLookupPort for MockIdentityClient {
         _token: &AccessToken,
     ) -> Result<AccountIdentity, IdentityLookupError> {
         self.response.clone().map(|(perm, email, name)| {
-            AccountIdentity::new(GooglePermissionId::new(perm), email, name)
+            AccountIdentity::new(GooglePermissionId::new(perm), email, name, None)
         })
     }
 }
@@ -99,7 +99,11 @@ impl AccountStorePort for MockAccountStore {
             ConnectedAccount::new(
                 existing.id(),
                 GooglePermissionId::new(perm.clone()),
-                AccountProfile::new(account.email(), account.display_name()),
+                AccountProfile::new(
+                    account.email(),
+                    account.display_name(),
+                    account.avatar_url().map(ToOwned::to_owned),
+                ),
             )
         } else {
             (*account).clone()
@@ -261,7 +265,7 @@ async fn connect_account_reconnect_preserves_id_and_updates_token() {
         .connect(&ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-existing"),
-            AccountProfile::new("old@gmail.com", "Old Name"),
+            AccountProfile::new("old@gmail.com", "Old Name", None),
         ))
         .await
         .unwrap();
@@ -398,7 +402,7 @@ async fn reconnect_restores_previous_profile_when_keychain_save_fails() {
         .connect(&ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-existing"),
-            AccountProfile::new("old@gmail.com", "Old Name"),
+            AccountProfile::new("old@gmail.com", "Old Name", None),
         ))
         .await
         .unwrap();
@@ -466,7 +470,7 @@ async fn reconnect_restores_previous_profile_when_refresh_token_missing_and_keyr
         .connect(&ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-existing"),
-            AccountProfile::new("old@gmail.com", "Old Name"),
+            AccountProfile::new("old@gmail.com", "Old Name", None),
         ))
         .await
         .unwrap();
@@ -567,7 +571,7 @@ async fn reconnect_propagates_rollback_failure_when_profile_restoration_fails() 
         .connect(&ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("perm-existing"),
-            AccountProfile::new("old@gmail.com", "Old Name"),
+            AccountProfile::new("old@gmail.com", "Old Name", None),
         ))
         .await
         .unwrap();

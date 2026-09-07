@@ -83,7 +83,7 @@ async fn about_get_routes_bearer_token_and_parses_identity() {
         .expect("test server captures the request")
         .expect("captured request is valid UTF-8");
     assert!(request.starts_with(
-        "GET /drive/v3/about?fields=user%28permissionId%2CemailAddress%2CdisplayName%29 HTTP/1.1\r\n"
+        "GET /drive/v3/about?fields=user%28permissionId%2CemailAddress%2CdisplayName%2CphotoLink%29 HTTP/1.1\r\n"
     ));
     assert!(request.lines().any(|line| {
         line.split_once(':').is_some_and(|(name, value)| {

@@ -41,6 +41,7 @@ export type AccountDto = AssertNoSecrets<{
   lastAuthenticatedAt: string;
   updatedAt: string;
   removedAt: string | null;
+  avatarUrl?: string | null;
 }>;
 
 export type OAuthConfigDto = AssertNoSecrets<{
@@ -157,6 +158,8 @@ export type DryRunExport = AssertNoSecrets<{
 
 export type MigrationProgress = AssertNoSecrets<{
   completed: number;
+  failed?: number;
+  skipped?: number;
   total: number;
   currentPath: string | null;
 }>;
@@ -223,6 +226,63 @@ export const ACCOUNT_COMMANDS = {
   deleteLocalAccountData: "delete_local_account_data",
   getAccountReferences: "get_account_references",
 } as const;
+
+export const DRIVE_COMMANDS = {
+  listDriveFiles: "list_drive_files",
+  renameDriveItem: "rename_drive_item",
+  trashDriveItem: "trash_drive_item",
+  startTransferOperation: "start_transfer_operation",
+} as const;
+
+export type DriveFileOwnerDto = AssertNoSecrets<{
+  permissionId: string;
+  emailAddress: string | null;
+}>;
+
+export type DriveFileItemDto = AssertNoSecrets<{
+  id: string;
+  name: string;
+  mimeType: string;
+  isFolder: boolean;
+  size: number | null;
+  modifiedTime: string | null;
+  owners: DriveFileOwnerDto[];
+  webViewLink: string | null;
+  canTransferOwnership: boolean;
+  isOwner: boolean;
+  shortcutTargetId: string | null;
+}>;
+
+export type DriveFileListDto = AssertNoSecrets<{
+  items: DriveFileItemDto[];
+  nextPageToken: string | null;
+}>;
+
+export type ListDriveFilesInput = AssertNoSecrets<{
+  accountId: string;
+  folderId?: string | null;
+  pageToken?: string | null;
+  pageSize?: number | null;
+  orderBy?: string | null;
+}>;
+
+export type RenameDriveItemInput = AssertNoSecrets<{
+  accountId: string;
+  fileId: string;
+  newName: string;
+}>;
+
+export type TrashDriveItemInput = AssertNoSecrets<{
+  accountId: string;
+  fileId: string;
+}>;
+
+export type StartTransferOperationInput = AssertNoSecrets<{
+  sourceAccountId: string;
+  targetAccountId: string;
+  rootFileIds: string[];
+  recursive: boolean;
+}>;
 
 export const JOB_COMMANDS = {
   createJob: "create_job",

@@ -203,6 +203,8 @@ impl From<JobStorePortError> for JobServiceError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransferProgress {
     pub completed: u64,
+    pub failed: u64,
+    pub skipped: u64,
     pub total: u64,
     pub current_path: Option<String>,
 }
@@ -563,25 +565,21 @@ where
         &self,
         job_id: JobId,
     ) -> Result<(Option<TransferProgress>, Vec<ItemFailure>), JobServiceError> {
+        let aggregates = self.job_store.item_aggregates(job_id).await?;
         let items = self.job_store.list_items_for_transfer(job_id).await?;
-        let progress = if items.is_empty() {
+        let progress = if aggregates.total == 0 {
             None
         } else {
-            let completed = items
-                .iter()
-                .filter(|item| {
-                    item.state == crate::domain::item::ItemState::Verified
-                        || item.state == crate::domain::item::ItemState::Transferred
-                })
-                .count() as u64;
             let current_path = items
                 .iter()
                 .find(|item| item.state.is_transfer_active() && !item.state.is_eligible())
                 .or_else(|| items.iter().find(|item| item.state.is_eligible()))
                 .map(|item| item.name.clone());
             Some(TransferProgress {
-                completed,
-                total: items.len() as u64,
+                completed: aggregates.completed,
+                failed: aggregates.failed,
+                skipped: aggregates.skipped,
+                total: aggregates.total,
                 current_path,
             })
         };
@@ -689,6 +687,50 @@ where
         }
     }
 
+    pub async fn run_transfer_auto(
+        &self,
+        job: &mut crate::domain::job::MigrationJob,
+    ) -> Result<crate::application::transfer::TransferHalt, JobServiceError> {
+        let source_token = self
+            .token_provider
+            .get_access_token(job.source_account_id())
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
+        let target_token = self
+            .token_provider
+            .get_access_token(job.target_account_id())
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
+        let source_perm = job.snapshots().source.permission_id.clone();
+        let target_perm = job.snapshots().target.permission_id.clone();
+        let target_email = job.snapshots().target.email.clone();
+        let pause = Self::get_or_init_flag(&self.transfer_pause_flags, job.id()).await;
+        let cancel = Self::get_or_init_flag(&self.transfer_cancel_flags, job.id()).await;
+        let progress_total = self
+            .job_store
+            .list_items_for_transfer(job.id())
+            .await?
+            .len() as u64;
+        let run = crate::application::transfer::TransferRun {
+            drive: self.drive.as_ref()
+                as &dyn crate::application::drive_transfer::DriveTransferPort,
+            store: &*self.job_store,
+            sleeper: self.sleeper.as_ref(),
+            jitter: self.jitter.as_ref(),
+            source_token: &source_token,
+            target_token: &target_token,
+            source_permission_id: &source_perm,
+            target_permission_id: &target_perm,
+            target_email: &target_email,
+            pause: Some(pause.as_ref()),
+            cancel: Some(cancel.as_ref()),
+            job_id: job.id(),
+            events: Some(self.events.as_ref()),
+            progress_total,
+        };
+        Ok(crate::application::transfer::execute_auto_transfer(&run, job).await?)
+    }
+
     async fn persist_paused(
         &self,
         job_id: JobId,
@@ -731,6 +773,17 @@ where
         source_id: AccountId,
         target_id: AccountId,
     ) -> Result<MigrationJob, JobServiceError> {
+        let job = self.prepare_job(source_id, target_id).await?;
+        self.job_store.create_job(&job).await?;
+        self.emit(JobRuntimeEvent::JobListChanged { job_id: job.id() });
+        Ok(job)
+    }
+
+    async fn prepare_job(
+        &self,
+        source_id: AccountId,
+        target_id: AccountId,
+    ) -> Result<MigrationJob, JobServiceError> {
         if source_id.value() == target_id.value() {
             return Err(JobServiceError::SameSourceAndTarget);
         }
@@ -749,10 +802,7 @@ where
         let job_id = JobId::new(next_entity_id());
         let created_at = iso_now();
 
-        let job = MigrationJob::new(job_id, source, target, created_at)?;
-        self.job_store.create_job(&job).await?;
-        self.emit(JobRuntimeEvent::JobListChanged { job_id: job.id() });
-        Ok(job)
+        Ok(MigrationJob::new(job_id, source, target, created_at)?)
     }
 
     pub async fn update_draft_job_accounts(
@@ -973,7 +1023,98 @@ where
         self.get_job(job_id).await
     }
 
+    pub async fn start_transfer_operation(
+        &self,
+        source_id: AccountId,
+        target_id: AccountId,
+        root_file_ids: Vec<String>,
+        recursive: bool,
+    ) -> Result<MigrationJob, JobServiceError> {
+        if source_id.value() == target_id.value() {
+            return Err(JobServiceError::SameSourceAndTarget);
+        }
+        if root_file_ids.is_empty() {
+            return Err(JobServiceError::NoValidatedRoots);
+        }
+
+        let mut job = self.prepare_job(source_id, target_id).await?;
+        let source_token = self
+            .token_provider
+            .get_access_token(source_id)
+            .await
+            .map_err(|e| JobServiceError::TokenError(e.to_string()))?;
+
+        for file_id in root_file_ids {
+            let metadata = self
+                .drive
+                .get_folder_metadata(&source_token, &file_id)
+                .await
+                .map_err(|e| match e {
+                    DriveFolderLookupError::NotFound => JobServiceError::FolderNotFound,
+                    DriveFolderLookupError::Unauthorized | DriveFolderLookupError::Forbidden => {
+                        JobServiceError::TokenError(e.to_string())
+                    }
+                    other => JobServiceError::DriveError(other.to_string()),
+                })?;
+
+            if metadata.trashed {
+                return Err(JobServiceError::FolderTrashed);
+            }
+            if metadata.drive_id.is_some() {
+                return Err(JobServiceError::SharedDriveNotSupported);
+            }
+            let source_perm = &job.snapshots().source.permission_id;
+            let is_owned = metadata
+                .owners
+                .iter()
+                .any(|o| &o.permission_id == source_perm);
+            if !is_owned {
+                return Err(JobServiceError::NotOwnedBySourceAccount);
+            }
+
+            let root = MigrationRoot {
+                id: RootId::new(next_entity_id()),
+                job_id: job.id(),
+                root_file_id: metadata.id,
+                root_name: metadata.name,
+                validation_status: RootValidationStatus::Validated,
+                created_at: iso_now(),
+            };
+            job.add_root(root.clone())?;
+        }
+
+        let pause = AtomicBool::new(false);
+        let root_batch = crate::application::scanner::collect_roots(
+            &ScanRun {
+                drive: Arc::clone(&self.drive),
+                store: &*self.job_store,
+                job_id: job.id(),
+                roots: job.roots(),
+                source_token: &source_token,
+                source_permission_id: &job.snapshots().source.permission_id,
+                target_permission_id: &job.snapshots().target.permission_id,
+                pause: &pause,
+                concurrency: DEFAULT_SCAN_CONCURRENCY,
+                events: None,
+            },
+            recursive,
+        )
+        .await?;
+        job.start_scanning(iso_now())?;
+        self.job_store.create_seeded_scan(&job, &root_batch).await?;
+        self.emit(JobRuntimeEvent::JobListChanged { job_id: job.id() });
+        self.start_scan_with_auto(job.id(), true).await
+    }
+
     pub async fn start_scan(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        self.start_scan_with_auto(job_id, false).await
+    }
+
+    pub async fn start_scan_with_auto(
+        &self,
+        job_id: JobId,
+        auto_continue: bool,
+    ) -> Result<MigrationJob, JobServiceError> {
         let mut job = self.get_job(job_id).await?;
         if job.status() == JobStatus::Paused && self.looks_like_transfer_pause(&job).await? {
             return Err(JobServiceError::IllegalTransition);
@@ -1010,7 +1151,9 @@ where
         let worker = self.clone();
         tokio::spawn(async move {
             let _lease = lease;
-            worker.execute_scan(job_id, source_token, pause).await;
+            worker
+                .execute_scan(job_id, source_token, pause, auto_continue)
+                .await;
         });
 
         Ok(job)
@@ -1021,6 +1164,7 @@ where
         job_id: JobId,
         source_token: crate::application::AccessToken,
         pause: Arc<AtomicBool>,
+        auto_continue: bool,
     ) {
         let Ok(job) = self.get_job(job_id).await else {
             return;
@@ -1051,6 +1195,7 @@ where
                 return;
             }
         };
+        let mut scan_succeeded = false;
         match outcome {
             Ok(ScanOutcome::Completed) => {
                 match self.token_provider.get_access_token(target_id).await {
@@ -1065,6 +1210,8 @@ where
                 }
                 if let Err(err) = job.complete_scanning() {
                     job.set_last_error(err.to_string());
+                } else {
+                    scan_succeeded = true;
                 }
             }
             Ok(ScanOutcome::Paused) => {
@@ -1091,6 +1238,66 @@ where
         let _ = self.job_store.update_job(&job).await;
         self.emit_status(&job);
         self.scan_pause_flags.lock().await.remove(&job_id);
+
+        if scan_succeeded && auto_continue {
+            let auto_runner = self.clone();
+            tokio::spawn(async move {
+                let _ = auto_runner.run_auto_mutation_if_ready(job_id).await;
+            });
+        }
+    }
+
+    pub async fn run_auto_mutation_if_ready(&self, job_id: JobId) -> Result<(), JobServiceError> {
+        let mut job = self.get_job(job_id).await?;
+        if job.status() != JobStatus::ReadyForReview {
+            return Ok(());
+        }
+        let lease = match self.try_acquire_transfer(job_id).await {
+            Ok(lease) => lease,
+            Err(JobServiceError::TransferInProgress) => {
+                let _ = self.queue_or_busy(job_id).await;
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        };
+
+        let previous = job.status().as_str().to_string();
+        if let Err(err) = job.start_canary() {
+            drop(lease);
+            self.release_durable_lease(job_id).await;
+            return Err(err.into());
+        }
+        if let Err(err) = self
+            .persist_status(&job, Some(&previous), "JOB_STATUS")
+            .await
+        {
+            drop(lease);
+            self.release_durable_lease(job_id).await;
+            return Err(err);
+        }
+
+        let started = job.clone();
+        let worker = self.clone();
+        tokio::spawn(async move {
+            let mut running = started;
+            Self::set_control_flag(&worker.transfer_pause_flags, job_id, false).await;
+            Self::set_control_flag(&worker.transfer_cancel_flags, job_id, false).await;
+            let previous = running.status().as_str().to_string();
+            let result = worker.run_transfer_auto(&mut running).await;
+            if running.status() == JobStatus::Cancelled {
+                let _ = worker.job_store.cancel_unstarted_items(job_id).await;
+            }
+            let _ = worker
+                .persist_status(&running, Some(&previous), "JOB_STATUS")
+                .await;
+            drop(lease);
+            worker.release_durable_lease(job_id).await;
+            worker.transfer_pause_flags.lock().await.remove(&job_id);
+            worker.transfer_cancel_flags.lock().await.remove(&job_id);
+            let _ = result;
+        });
+
+        Ok(())
     }
 
     pub async fn pause_scan(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
@@ -1400,7 +1607,9 @@ where
 
     pub async fn resume_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
         let mut job = self.get_job(job_id).await?;
-        if !job.status().is_transfer_resumable() {
+        if !job.status().is_transfer_resumable()
+            || self.job_run_phase(&job).await? == JobRunPhase::Scan
+        {
             return Err(JobServiceError::IllegalTransition);
         }
         let as_canary = self.should_resume_as_canary(&job).await?;

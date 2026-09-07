@@ -1,12 +1,17 @@
 import type {
   AccountDto,
   AccountReferencesDto,
+  DriveFileListDto,
   DryRunExport,
   JobDto,
   JobItemsPage,
+  ListDriveFilesInput,
   ListJobsFilter,
   OAuthConfigDto,
+  RenameDriveItemInput,
   RootValidation,
+  StartTransferOperationInput,
+  TrashDriveItemInput,
 } from "./types.ts";
 
 /** UI-owned backend contract. Transport and secrets stay behind the adapter. */
@@ -20,6 +25,11 @@ export type BackendPort = {
   disconnectAccount(accountId: string): Promise<void>;
   removeAccount(accountId: string): Promise<void>;
   deleteLocalAccountData(accountId: string, confirmation: true): Promise<void>;
+
+  listDriveFiles(input: ListDriveFilesInput): Promise<DriveFileListDto>;
+  renameDriveItem(input: RenameDriveItemInput): Promise<void>;
+  trashDriveItem(input: TrashDriveItemInput): Promise<void>;
+  startTransferOperation(input: StartTransferOperationInput): Promise<JobDto>;
 
   createJob(sourceAccountId: string, targetAccountId: string): Promise<JobDto>;
   updateDraftJobAccounts(

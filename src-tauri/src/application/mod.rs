@@ -3,6 +3,7 @@ pub mod account_lifecycle;
 pub mod account_token_provider;
 pub mod backoff;
 pub mod connect_account;
+pub mod drive_browser;
 pub mod drive_folder;
 pub mod drive_transfer;
 pub mod drive_tree;

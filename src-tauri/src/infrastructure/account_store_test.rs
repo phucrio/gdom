@@ -34,17 +34,17 @@ async fn store_accepts_more_than_two_accounts() {
             account(
                 1,
                 "permission-a",
-                AccountProfile::new("a@example.com", "Account A"),
+                AccountProfile::new("a@example.com", "Account A", None),
             ),
             account(
                 2,
                 "permission-b",
-                AccountProfile::new("b@example.com", "Account B"),
+                AccountProfile::new("b@example.com", "Account B", None),
             ),
             account(
                 3,
                 "permission-c",
-                AccountProfile::new("c@example.com", "Account C"),
+                AccountProfile::new("c@example.com", "Account C", None),
             ),
         ] {
             store.connect(&account).await.expect("account persists");
@@ -67,7 +67,7 @@ async fn reconnect_preserves_id_and_updates_profile() {
             .connect(&account(
                 1,
                 "permission-a",
-                AccountProfile::new("old@example.com", "Old Name"),
+                AccountProfile::new("old@example.com", "Old Name", None),
             ))
             .await
             .expect("original account persists");
@@ -77,7 +77,7 @@ async fn reconnect_preserves_id_and_updates_profile() {
             .connect(&account(
                 99,
                 "permission-a",
-                AccountProfile::new("new@example.com", "New Name"),
+                AccountProfile::new("new@example.com", "New Name", None),
             ))
             .await
             .expect("account reconnects");
@@ -115,7 +115,7 @@ async fn account_survives_database_reopen() {
             .connect(&account(
                 1,
                 "permission-a",
-                AccountProfile::new("a@example.com", "Account A"),
+                AccountProfile::new("a@example.com", "Account A", None),
             ))
             .await
             .expect("account persists");
@@ -148,7 +148,7 @@ async fn remove_deletes_specified_account() {
             .connect(&account(
                 1,
                 "permission-a",
-                AccountProfile::new("a@example.com", "Account A"),
+                AccountProfile::new("a@example.com", "Account A", None),
             ))
             .await
             .expect("account persists");
@@ -185,7 +185,7 @@ async fn list_all_returns_accounts_in_order() {
             .connect(&account(
                 3,
                 "permission-c",
-                AccountProfile::new("charlie@example.com", "Charlie"),
+                AccountProfile::new("charlie@example.com", "Charlie", None),
             ))
             .await
             .expect("account persists");
@@ -193,7 +193,7 @@ async fn list_all_returns_accounts_in_order() {
             .connect(&account(
                 1,
                 "permission-a",
-                AccountProfile::new("alice@example.com", "Alice"),
+                AccountProfile::new("alice@example.com", "Alice", None),
             ))
             .await
             .expect("account persists");
@@ -201,7 +201,7 @@ async fn list_all_returns_accounts_in_order() {
             .connect(&account(
                 2,
                 "permission-b",
-                AccountProfile::new("bob@example.com", "Bob"),
+                AccountProfile::new("bob@example.com", "Bob", None),
             ))
             .await
             .expect("account persists");

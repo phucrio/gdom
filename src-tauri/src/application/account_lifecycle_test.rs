@@ -51,7 +51,7 @@ impl IdentityLookupPort for MockIdentityClient {
         _token: &AccessToken,
     ) -> Result<AccountIdentity, IdentityLookupError> {
         self.response.clone().map(|(perm, email, name)| {
-            AccountIdentity::new(GooglePermissionId::new(perm), email, name)
+            AccountIdentity::new(GooglePermissionId::new(perm), email, name, None)
         })
     }
 }
@@ -198,6 +198,14 @@ impl RefreshTokenStore for MockKeyring {
 struct EmptyJobStore;
 
 impl JobStorePort for EmptyJobStore {
+    fn create_seeded_scan<'a>(
+        &'a self,
+        _job: &'a MigrationJob,
+        _roots: &'a crate::application::item_store::ItemBatchCommit,
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+
     fn create_job<'a>(&'a self, _job: &'a MigrationJob) -> JobStoreFuture<'a, ()> {
         Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
     }
@@ -311,12 +319,12 @@ async fn list_accounts_returns_all_registered_accounts() {
     let account_a = ConnectedAccount::new(
         AccountId::new(1),
         GooglePermissionId::new("perm-a"),
-        AccountProfile::new("a@gmail.com", "Alice"),
+        AccountProfile::new("a@gmail.com", "Alice", None),
     );
     let account_b = ConnectedAccount::new(
         AccountId::new(2),
         GooglePermissionId::new("perm-b"),
-        AccountProfile::new("b@gmail.com", "Bob"),
+        AccountProfile::new("b@gmail.com", "Bob", None),
     );
     store.connect(&account_a).await.unwrap();
     store.connect(&account_b).await.unwrap();
@@ -344,7 +352,7 @@ async fn update_account_label_sets_and_clears_label() {
     let account = ConnectedAccount::new(
         AccountId::new(1),
         GooglePermissionId::new("perm-1"),
-        AccountProfile::new("user@gmail.com", "User"),
+        AccountProfile::new("user@gmail.com", "User", None),
     );
     store.connect(&account).await.unwrap();
 
@@ -402,7 +410,7 @@ async fn disconnect_account_purges_keychain_and_updates_status() {
     let account = ConnectedAccount::new(
         AccountId::new(1),
         GooglePermissionId::new("perm-1"),
-        AccountProfile::new("user@gmail.com", "User"),
+        AccountProfile::new("user@gmail.com", "User", None),
     );
     store.connect(&account).await.unwrap();
     keyring
@@ -433,7 +441,7 @@ async fn disconnect_account_propagates_keychain_failure() {
     let account = ConnectedAccount::new(
         AccountId::new(1),
         GooglePermissionId::new("perm-1"),
-        AccountProfile::new("user@gmail.com", "User"),
+        AccountProfile::new("user@gmail.com", "User", None),
     );
     store.connect(&account).await.unwrap();
 
@@ -468,7 +476,7 @@ async fn reauthenticate_account_updates_token_and_reconnects() {
     let mut account = ConnectedAccount::new(
         AccountId::new(1),
         GooglePermissionId::new("perm-1"),
-        AccountProfile::new("user@gmail.com", "User"),
+        AccountProfile::new("user@gmail.com", "User", None),
     );
     account.set_auth_status(AuthStatus::ReauthRequired);
     store.connect(&account).await.unwrap();
@@ -511,7 +519,7 @@ async fn reauthenticate_account_rejects_identity_mismatch() {
     let account = ConnectedAccount::new(
         AccountId::new(1),
         GooglePermissionId::new("perm-expected"),
-        AccountProfile::new("user@gmail.com", "User"),
+        AccountProfile::new("user@gmail.com", "User", None),
     );
     store.connect(&account).await.unwrap();
     keyring
@@ -562,7 +570,7 @@ async fn remove_account_purges_keychain_and_removes_from_store() {
     let account = ConnectedAccount::new(
         AccountId::new(1),
         GooglePermissionId::new("perm-1"),
-        AccountProfile::new("user@gmail.com", "User"),
+        AccountProfile::new("user@gmail.com", "User", None),
     );
     store.connect(&account).await.unwrap();
     keyring
@@ -593,7 +601,7 @@ async fn delete_local_account_data_purges_keychain_and_store() {
     let account = ConnectedAccount::new(
         AccountId::new(1),
         GooglePermissionId::new("perm-1"),
-        AccountProfile::new("user@gmail.com", "User"),
+        AccountProfile::new("user@gmail.com", "User", None),
     );
     store.connect(&account).await.unwrap();
     keyring

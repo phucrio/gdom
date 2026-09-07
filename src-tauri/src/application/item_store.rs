@@ -45,6 +45,9 @@ pub struct ItemPage {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ItemAggregates {
     pub total: u64,
+    pub completed: u64,
+    pub failed: u64,
+    pub skipped: u64,
     pub eligible: u64,
     pub eligible_files: u64,
     pub eligible_folders: u64,

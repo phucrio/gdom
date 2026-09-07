@@ -12,7 +12,7 @@ use super::{
     GoogleDriveClient, GoogleDriveError, RawFileResponse, RawPermission, encode_path_segment,
 };
 
-const FILE_FIELDS: &str = "id,name,mimeType,parents,owners(permissionId,emailAddress),trashed,driveId,permissions(id,type,role,emailAddress,pendingOwner)";
+const FILE_FIELDS: &str = "id,name,mimeType,parents,owners(permissionId,emailAddress),trashed,driveId,quotaBytesUsed,size,permissions(id,type,role,emailAddress,pendingOwner)";
 
 impl GoogleDriveClient {
     pub async fn get_file(
@@ -212,6 +212,7 @@ fn drive_file_snapshot_from_raw(raw: RawFileResponse) -> DriveFileSnapshot {
             .collect(),
         trashed: raw.trashed.unwrap_or(false),
         drive_id: raw.drive_id,
+        quota_bytes_used: super::parse_i64_string(raw.quota_bytes_used.or(raw.size)),
         permissions: raw
             .permissions
             .unwrap_or_default()

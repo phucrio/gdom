@@ -3,16 +3,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::application::AccessToken;
-use crate::application::drive_tree::{
-    DrivePort, DriveTreeError, FOLDER_MIME_TYPE, SCAN_CHECKPOINT_BATCH_SIZE,
-};
+use crate::application::drive_tree::{DrivePort, DriveTreeError, SCAN_CHECKPOINT_BATCH_SIZE};
 use crate::application::entity_id::next_entity_id;
 use crate::application::item_classifier::classify_drive_child;
 use crate::application::item_store::{ItemBatchCommit, ItemStoreError, ItemStorePort};
 use crate::application::job_events::{JobEventSink, JobRuntimeEvent};
 use crate::application::time::iso_now;
 use crate::domain::GooglePermissionId;
-use crate::domain::item::{ItemId, ItemState, MigrationItem, ScanCheckpoint};
+use crate::domain::item::{ItemId, MigrationItem, ScanCheckpoint};
 use crate::domain::job::{JobId, MigrationRoot};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -114,15 +112,14 @@ pub async fn run_scan(run: &ScanRun<'_>) -> Result<ScanOutcome, ScanError> {
 
     let mut checkpoints = run.store.list_scan_checkpoints(run.job_id).await?;
     if checkpoints.is_empty() && visited.is_empty() {
-        seed_roots(
-            run.store,
-            run.job_id,
-            run.roots,
-            run.source_permission_id,
-            &mut visited,
-            &mut checkpoints,
-        )
-        .await?;
+        seed_roots(run, true).await?;
+        visited = run
+            .store
+            .list_committed_file_ids(run.job_id)
+            .await?
+            .into_iter()
+            .collect();
+        checkpoints = run.store.list_scan_checkpoints(run.job_id).await?;
         emit_scan_progress(run.store, run.events.as_deref(), run.job_id).await;
     }
 
@@ -190,61 +187,127 @@ pub async fn run_scan(run: &ScanRun<'_>) -> Result<ScanOutcome, ScanError> {
     Ok(ScanOutcome::Completed)
 }
 
-async fn seed_roots(
+pub(crate) async fn seed_roots(run: &ScanRun<'_>, recursive: bool) -> Result<(), ScanError> {
+    let batch = collect_roots(run, recursive).await?;
+    persist_roots(run.store, run.job_id, &batch).await?;
+    Ok(())
+}
+
+pub(crate) async fn persist_roots(
     store: &dyn ItemStorePort,
     job_id: JobId,
-    roots: &[MigrationRoot],
-    source_permission_id: &GooglePermissionId,
-    visited: &mut HashSet<String>,
-    checkpoints: &mut Vec<ScanCheckpoint>,
+    roots: &ItemBatchCommit,
 ) -> Result<(), ScanError> {
-    let now = iso_now();
-    let mut items = Vec::new();
-    let mut upserts = Vec::new();
-    for root in roots {
-        if !visited.insert(root.root_file_id.clone()) {
-            continue;
-        }
-        items.push(MigrationItem {
-            id: ItemId::new(next_entity_id()),
-            job_id,
-            file_id: root.root_file_id.clone(),
-            name: root.root_name.clone(),
-            mime_type: FOLDER_MIME_TYPE.to_string(),
-            depth: 0,
-            original_parent_ids: Vec::new(),
-            original_owner_permission_id: Some(source_permission_id.clone()),
-            quota_bytes_used: None,
-            target_permission_id: None,
-            state: ItemState::Eligible,
-            canary_selected: false,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        });
-        upserts.push(ScanCheckpoint {
-            job_id,
-            folder_id: root.root_file_id.clone(),
-            page_token: None,
-            depth: 0,
-        });
-    }
-
-    if items.is_empty() {
-        return Ok(());
-    }
-
-    for offset in (0..items.len()).step_by(SCAN_CHECKPOINT_BATCH_SIZE) {
-        let end = (offset + SCAN_CHECKPOINT_BATCH_SIZE).min(items.len());
+    for items in roots.items.chunks(SCAN_CHECKPOINT_BATCH_SIZE) {
         let batch = ItemBatchCommit {
-            items: items[offset..end].to_vec(),
-            checkpoints_upsert: upserts[offset..end].to_vec(),
+            items: items.to_vec(),
+            checkpoints_upsert: roots
+                .checkpoints_upsert
+                .iter()
+                .filter(|checkpoint| {
+                    items
+                        .iter()
+                        .any(|item| item.file_id == checkpoint.folder_id)
+                })
+                .cloned()
+                .collect(),
             checkpoints_delete: Vec::new(),
         };
         store.commit_scan_batch(job_id, &batch).await?;
     }
-
-    checkpoints.extend(upserts);
     Ok(())
+}
+
+pub(crate) async fn collect_roots(
+    run: &ScanRun<'_>,
+    recursive: bool,
+) -> Result<ItemBatchCommit, ScanError> {
+    let job_id = run.job_id;
+    let mut visited = HashSet::new();
+    let now = iso_now();
+    let mut items = Vec::new();
+    let mut upserts = Vec::new();
+    for root in run.roots {
+        if !visited.insert(root.root_file_id.clone()) {
+            continue;
+        }
+        let snapshot = run
+            .drive
+            .get_file(run.source_token, &root.root_file_id)
+            .await
+            .map_err(|error| {
+                ScanError::Drive(match error {
+                    crate::application::drive_transfer::DriveTransferError::Unauthorized => {
+                        DriveTreeError::Unauthorized
+                    }
+                    crate::application::drive_transfer::DriveTransferError::NotFound => {
+                        DriveTreeError::NotFound
+                    }
+                    crate::application::drive_transfer::DriveTransferError::RateLimited => {
+                        DriveTreeError::RateLimited
+                    }
+                    crate::application::drive_transfer::DriveTransferError::Forbidden => {
+                        DriveTreeError::Forbidden
+                    }
+                    crate::application::drive_transfer::DriveTransferError::InvalidResponse => {
+                        DriveTreeError::InvalidResponse
+                    }
+                    crate::application::drive_transfer::DriveTransferError::ServerUnavailable => DriveTreeError::Unavailable,
+                    crate::application::drive_transfer::DriveTransferError::UnexpectedStatus(status) => DriveTreeError::UnexpectedStatus(status),
+                    crate::application::drive_transfer::DriveTransferError::SharingRateLimitExceeded => DriveTreeError::RateLimited,
+                    crate::application::drive_transfer::DriveTransferError::StorageQuotaExceeded => DriveTreeError::Forbidden,
+                    crate::application::drive_transfer::DriveTransferError::Transport => DriveTreeError::Transport,
+                })
+            })?;
+        let child = crate::application::drive_tree::DriveChild {
+            id: snapshot.id,
+            name: snapshot.name,
+            mime_type: snapshot.mime_type,
+            parents: snapshot.parents,
+            owners: snapshot.owners,
+            drive_id: snapshot.drive_id,
+            quota_bytes_used: snapshot.quota_bytes_used,
+            trashed: snapshot.trashed,
+            shortcut_target_id: None,
+            modified_time: None,
+            web_view_link: None,
+        };
+        let disposition =
+            classify_drive_child(&child, run.source_permission_id, run.target_permission_id);
+        items.push(MigrationItem {
+            id: ItemId::new(next_entity_id()),
+            job_id,
+            file_id: root.root_file_id.clone(),
+            name: child.name,
+            mime_type: child.mime_type,
+            depth: 0,
+            original_parent_ids: child.parents,
+            original_owner_permission_id: child
+                .owners
+                .first()
+                .map(|owner| owner.permission_id.clone()),
+            quota_bytes_used: child.quota_bytes_used,
+            target_permission_id: None,
+            state: disposition.item_state(),
+            canary_selected: false,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        });
+        if recursive && disposition.should_recurse() {
+            upserts.push(ScanCheckpoint {
+                job_id,
+                folder_id: root.root_file_id.clone(),
+                page_token: None,
+                depth: 0,
+            });
+        }
+    }
+
+    Ok(ItemBatchCommit {
+        items,
+        checkpoints_upsert: upserts,
+        checkpoints_delete: Vec::new(),
+    })
 }
 
 async fn apply_page(

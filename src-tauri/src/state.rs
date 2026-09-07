@@ -137,6 +137,7 @@ impl OAuthConfig {
 // ---------------------------------------------------------------------------
 
 pub struct AppState {
+    pub drive_browser: crate::application::drive_browser::DriveBrowserService<SqliteAccountStore>,
     pub account_store: Arc<SqliteAccountStore>,
 
     #[cfg(target_os = "windows")]
@@ -173,6 +174,7 @@ impl AppState {
         account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
         token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
         job_store: Arc<crate::infrastructure::SqliteJobStore>,
+        drive_client: Arc<crate::infrastructure::google_drive::GoogleDriveClient>,
         job_service: Arc<
             crate::application::JobService<
                 SqliteAccountStore,
@@ -181,6 +183,11 @@ impl AppState {
         >,
     ) -> Self {
         Self {
+            drive_browser: crate::application::drive_browser::DriveBrowserService::new(
+                account_store.clone(),
+                token_provider.clone(),
+                drive_client.clone(),
+            ),
             account_store,
             credential_store,
             oauth_config,
@@ -203,6 +210,7 @@ impl AppState {
         account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
         token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
         job_store: Arc<crate::infrastructure::SqliteJobStore>,
+        drive_client: Arc<crate::infrastructure::google_drive::GoogleDriveClient>,
         job_service: Arc<
             crate::application::JobService<
                 SqliteAccountStore,
@@ -211,6 +219,11 @@ impl AppState {
         >,
     ) -> Self {
         Self {
+            drive_browser: crate::application::drive_browser::DriveBrowserService::new(
+                account_store.clone(),
+                token_provider.clone(),
+                drive_client.clone(),
+            ),
             account_store,
             credential_store,
             oauth_config,
@@ -498,6 +511,12 @@ mod tests {
             lifecycle_use_case,
             token_provider,
             job_store,
+            Arc::new(
+                crate::infrastructure::google_drive::GoogleDriveClient::for_test(
+                    "http://localhost".into(),
+                )
+                .unwrap(),
+            ),
             job_service,
         );
 
@@ -551,6 +570,12 @@ mod tests {
             lifecycle_use_case,
             token_provider,
             job_store,
+            Arc::new(
+                crate::infrastructure::google_drive::GoogleDriveClient::for_test(
+                    "http://localhost".into(),
+                )
+                .unwrap(),
+            ),
             job_service,
         );
 

@@ -83,7 +83,7 @@ mod tests {
         let job_service = Arc::new(JobService::new(
             account_store.clone(),
             job_store.clone(),
-            Arc::new(drive_client) as Arc<dyn crate::application::DrivePort>,
+            Arc::new(drive_client.clone()) as Arc<dyn crate::application::DrivePort>,
             token_provider.clone(),
         ));
 
@@ -95,6 +95,7 @@ mod tests {
             account_lifecycle_use_case,
             token_provider,
             job_store,
+            Arc::new(drive_client),
             job_service,
         )
     }
@@ -116,9 +117,104 @@ mod tests {
             GooglePermissionId::new(perm),
             email,
             name,
+            None,
         )
         .unwrap();
         store.connect(&acc).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn progress_preserves_verified_items_and_terminal_history() {
+        // Given persisted outcomes, including a transferred item awaiting verification.
+        let state = build_test_state().await;
+        create_dummy_account(
+            &state.account_store,
+            1,
+            "source@gmail.com",
+            "Source",
+            "source",
+        )
+        .await;
+        create_dummy_account(
+            &state.account_store,
+            2,
+            "target@gmail.com",
+            "Target",
+            "target",
+        )
+        .await;
+        let job = create_job_inner(
+            &state,
+            CreateJobInput {
+                source_account_id: "1".into(),
+                target_account_id: "2".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let job_id = job.id.parse().unwrap();
+        use crate::domain::item::{ItemId, ItemState, MigrationItem};
+        let items = [
+            ItemState::Verified,
+            ItemState::Verified,
+            ItemState::Transferred,
+            ItemState::RetryableFailed,
+            ItemState::PermanentFailed,
+            ItemState::SkippedIneligible,
+            ItemState::SkippedShortcutTarget,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, item_state)| MigrationItem {
+            id: ItemId::new(index as u128 + 1),
+            job_id,
+            file_id: index.to_string(),
+            name: index.to_string(),
+            mime_type: "text/plain".into(),
+            depth: 0,
+            original_parent_ids: vec![],
+            original_owner_permission_id: None,
+            quota_bytes_used: None,
+            target_permission_id: None,
+            state: item_state,
+            canary_selected: false,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        })
+        .collect();
+        state
+            .job_store
+            .commit_scan_batch(
+                job_id,
+                &ItemBatchCommit {
+                    items,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        // When the command reports progress.
+        let result = get_job_inner(&state, JobIdInput { job_id: job.id })
+            .await
+            .unwrap();
+        // Then successes remain counted and the denominator includes every persisted item.
+        let progress = result.progress.unwrap();
+        assert_eq!((progress.completed, progress.total), (2, 7));
+        assert_eq!((progress.failed, progress.skipped), (2, 2));
+
+        sqlx::query("UPDATE migration_items SET state = CASE state WHEN 'TRANSFERRED' THEN 'VERIFIED' WHEN 'RETRYABLE_FAILED' THEN 'PERMANENT_FAILED' ELSE state END WHERE job_id = ?1")
+            .bind(job_id.value().to_string()).execute(state.account_store.pool()).await.unwrap();
+        let history = get_job_inner(
+            &state,
+            JobIdInput {
+                job_id: job_id.value().to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let history_progress = history.progress.unwrap();
+        assert_eq!((history_progress.completed, history_progress.total), (3, 7));
+        assert_eq!((history_progress.failed, history_progress.skipped), (2, 2));
     }
 
     #[tokio::test]
@@ -369,7 +465,7 @@ mod tests {
         let job_service = Arc::new(JobService::new(
             account_store.clone(),
             job_store.clone(),
-            Arc::new(drive) as Arc<dyn crate::application::DrivePort>,
+            Arc::new(drive.clone()) as Arc<dyn crate::application::DrivePort>,
             token_provider.clone(),
         ));
         AppState::new(
@@ -380,6 +476,7 @@ mod tests {
             account_lifecycle_use_case,
             token_provider,
             job_store,
+            Arc::new(drive),
             job_service,
         )
     }
@@ -387,6 +484,11 @@ mod tests {
     #[tokio::test]
     async fn start_scan_preflight_list_and_export_roundtrip() {
         let (base_url, captured) = spawn_http_handler(|request| {
+            if crate::test_support::request_path(request)
+                .is_some_and(|path| path.split('?').next() == Some("/drive/v3/files/root-1"))
+            {
+                return ("200 OK".into(), source_folder("root-1", "Root One"));
+            }
             if request_is_quota(request) {
                 return (
                     "200 OK".into(),
@@ -619,6 +721,11 @@ mod tests {
         let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
         let go_rx = std::sync::Mutex::new(Some(go_rx));
         let (base_url, _) = spawn_http_handler(move |request| {
+            if crate::test_support::request_path(request)
+                .is_some_and(|path| path.split('?').next() == Some("/drive/v3/files/root-pause"))
+            {
+                return ("200 OK".into(), source_folder("root-pause", "Pause Root"));
+            }
             if request_is_quota(request) {
                 return (
                     "200 OK".into(),
@@ -820,6 +927,11 @@ mod tests {
         let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
         let go_rx = std::sync::Mutex::new(Some(go_rx));
         let (base_url, _) = spawn_http_handler(move |request| {
+            if crate::test_support::request_path(request)
+                .is_some_and(|path| path.split('?').next() == Some("/drive/v3/files/root-1"))
+            {
+                return ("200 OK".into(), source_folder("root-1", "Root"));
+            }
             if request_is_quota(request) {
                 return (
                     "200 OK".into(),
@@ -965,6 +1077,11 @@ mod tests {
         let lists = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let lists_handler = std::sync::Arc::clone(&lists);
         let (base_url, _) = spawn_http_handler(move |request| {
+            if crate::test_support::request_path(request)
+                .is_some_and(|path| path.split('?').next() == Some("/drive/v3/files/root-1"))
+            {
+                return ("200 OK".into(), source_folder("root-1", "Root"));
+            }
             if request_is_quota(request) {
                 return (
                     "200 OK".into(),
@@ -1048,6 +1165,11 @@ mod tests {
     #[tokio::test]
     async fn unavailable_list_error_persists_paused_not_failed() {
         let (base_url, _) = spawn_http_handler(move |request| {
+            if crate::test_support::request_path(request)
+                .is_some_and(|path| path.split('?').next() == Some("/drive/v3/files/root-1"))
+            {
+                return ("200 OK".into(), source_folder("root-1", "Root"));
+            }
             if request_is_list(request) {
                 return ("503 Service Unavailable".into(), "{}".into());
             }

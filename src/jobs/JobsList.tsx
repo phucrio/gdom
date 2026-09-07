@@ -1,21 +1,15 @@
+import { progressCounts } from "../browser/progress.ts";
 import { useState } from "react";
 
 import { accountDisplayLabel } from "../accounts/status.ts";
 import type { AccountDto, JobDto } from "../ipc/types.ts";
-import { WORKSPACE_SECTION_ID } from "../nav/copy.ts";
+import { formatDate } from "../browser/format.ts";
 import { Dialog } from "../ui/Dialog.tsx";
 import { haltStatusDetail, isHaltStatus, jobStatusLabel } from "./status.ts";
-import { canDeleteDraft, listResumeKind } from "./actions.ts";
 import {
   JOB_ACCOUNT_FILTER_ALL,
   JOB_ACCOUNT_FILTER_ID,
   JOB_ACCOUNT_FILTER_LABEL,
-  JOB_DELETE_CANCEL_LABEL,
-  JOB_DELETE_DRAFT_LABEL,
-  JOB_DELETE_DRAFT_TITLE,
-  JOB_DELETE_FAILED,
-  JOB_OPEN_LABEL,
-  JOB_RESUME_LABEL,
   JOBS_EMPTY,
   JOBS_EMPTY_FILTERED,
   JOBS_EYEBROW,
@@ -23,8 +17,6 @@ import {
   JOBS_TITLE,
   JOBS_TITLE_ID,
   accountOptionLabel,
-  deleteDraftConfirmMessage,
-  draftDeletedAnnouncement,
   jobGroupHeadingId,
   jobsShownLabel,
   queuePositionLabel,
@@ -39,62 +31,34 @@ import {
 import { jobPairLabel } from "./pairLabel.ts";
 
 type JobsListProps = {
-  backend: { deleteDraftJob(jobId: string): Promise<void> };
   accounts: AccountDto[];
   jobs: JobDto[];
   loading: boolean;
   loadError: string | null;
   accountFilter: string | null;
   onAccountFilter: (accountId: string | null) => void;
-  onOpenJob: (jobId: string) => void;
-  onResumeJob: (job: JobDto) => void;
   onAnnounce: (message: string) => void;
   onRefresh: () => void;
+  onSelectJobForProgress?: (jobId: string) => void;
 };
 
 export function JobsList({
-  backend,
   accounts,
   jobs,
   loading,
   loadError,
   accountFilter,
   onAccountFilter,
-  onOpenJob,
-  onResumeJob,
-  onAnnounce,
-  onRefresh,
+  onSelectJobForProgress,
 }: JobsListProps) {
-  const [pendingDelete, setPendingDelete] = useState<JobDto | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [inspectJob, setInspectJob] = useState<JobDto | null>(null);
 
   const visible = filterJobsByAccount(jobs, accountFilter);
   const grouped = groupJobs(visible);
   const queuedCount = grouped.queued.length;
 
-  async function confirmDelete() {
-    if (pendingDelete === null) {
-      return;
-    }
-    setBusy(true);
-    setActionError(null);
-    try {
-      await backend.deleteDraftJob(pendingDelete.id);
-      onAnnounce(draftDeletedAnnouncement(jobPairLabel(pendingDelete, accounts)));
-      setPendingDelete(null);
-      onRefresh();
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : JOB_DELETE_FAILED;
-      setActionError(message);
-      onAnnounce(message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
-    <section id={WORKSPACE_SECTION_ID.jobs} className="jobs" aria-labelledby={JOBS_TITLE_ID} tabIndex={-1}>
+    <section id="jobs" className="jobs" aria-labelledby={JOBS_TITLE_ID} tabIndex={-1}>
       <div className="section-heading">
         <div>
           <p className="eyebrow">{JOBS_EYEBROW}</p>
@@ -152,17 +116,35 @@ export function JobsList({
             <h3 id={headingId}>{JOB_LIST_GROUP_TITLES[group]}</h3>
             <ul className="job-list">
               {items.map((job) => {
-                const resumeKind = listResumeKind(job.status);
                 const halt = isHaltStatus(job.status)
                   ? haltStatusDetail(job.status, job.lastError)
                   : null;
+                const { total, processed: completed, skipped, failed } = progressCounts(job);
+                const dateInfo = formatDate(job.completedAt ?? job.startedAt ?? job.createdAt);
+
+                const rootSummary =
+                  job.roots.length > 0
+                    ? job.roots.map((r) => r.rootName).join(", ")
+                    : "Drive Selection";
+
                 return (
                   <li key={job.id} className="job-card">
                     <div className="job-identity">
                       <strong>{jobPairLabel(job, accounts)}</strong>
-                      <span className="job-meta">{jobStatusLabel(job.status)}</span>
+                      <span className="job-meta">
+                        {rootSummary} · {dateInfo.display}
+                      </span>
                     </div>
-                    <span className="status-badge">{jobStatusLabel(job.status)}</span>
+
+                    <div className="job-status-area">
+                      <span className="status-badge">{jobStatusLabel(job.status)}</span>
+                      {total > 0 && (
+                        <span className="job-counts-summary">
+                          {completed}/{total} items · {skipped} skipped · {failed} failed
+                        </span>
+                      )}
+                    </div>
+
                     {halt !== null && (
                       <p className="warning" role="status">
                         {halt}
@@ -171,26 +153,22 @@ export function JobsList({
                     {job.queuePosition !== null && job.status === "QUEUED" && (
                       <p className="muted">{queuePositionLabel(job.queuePosition)}</p>
                     )}
+
                     <div className="job-actions">
-                      <button type="button" className="primary-button" onClick={() => onOpenJob(job.id)}>
-                        {JOB_OPEN_LABEL}
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setInspectJob(job)}
+                      >
+                        View details
                       </button>
-                      {resumeKind === "transfer" && (
-                        <button type="button" onClick={() => onResumeJob(job)}>
-                          {JOB_RESUME_LABEL}
-                        </button>
-                      )}
-                      {canDeleteDraft(job.status) && (
+                      {onSelectJobForProgress && (
                         <button
                           type="button"
-                          className="danger-button"
-                          onClick={() => {
-                            setActionError(null);
-                            setPendingDelete(job);
-                          }}
-                          disabled={busy}
+                          className="ghost-button"
+                          onClick={() => onSelectJobForProgress(job.id)}
                         >
-                          {JOB_DELETE_DRAFT_LABEL}
+                          Track progress
                         </button>
                       )}
                     </div>
@@ -202,26 +180,58 @@ export function JobsList({
         );
       })}
 
-      {pendingDelete !== null && (
-        <Dialog title={JOB_DELETE_DRAFT_TITLE} onClose={() => setPendingDelete(null)}>
-          <div className="dialog-body">
-            <p>{deleteDraftConfirmMessage(jobPairLabel(pendingDelete, accounts))}</p>
-            {actionError !== null && (
-              <p className="error" role="alert">
-                {actionError}
-              </p>
+      {/* Read-Only Details Dialog */}
+      {inspectJob !== null && (
+        <Dialog title="Migration history details" onClose={() => setInspectJob(null)}>
+          <div className="job-details-view">
+            <div className="detail-item">
+              <span className="detail-label">Source:</span>
+              <span className="detail-val">{inspectJob.sourceSnapshot.email} ({inspectJob.sourceSnapshot.displayName})</span>
+            </div>
+            <div className="detail-item">
+              <span className="detail-label">Target:</span>
+              <span className="detail-val">{inspectJob.targetSnapshot.email} ({inspectJob.targetSnapshot.displayName})</span>
+            </div>
+            <div className="detail-item">
+              <span className="detail-label">Status:</span>
+              <span className="detail-val status-tag">{jobStatusLabel(inspectJob.status)}</span>
+            </div>
+            <div className="detail-item">
+              <span className="detail-label">Root folders/items:</span>
+              <span className="detail-val">
+                {inspectJob.roots.map((r) => r.rootName).join(", ") || "None"}
+              </span>
+            </div>
+            <div className="detail-item">
+              <span className="detail-label">Created at:</span>
+              <span className="detail-val">{formatDate(inspectJob.createdAt).full}</span>
+            </div>
+            {inspectJob.startedAt && (
+              <div className="detail-item">
+                <span className="detail-label">Started at:</span>
+                <span className="detail-val">{formatDate(inspectJob.startedAt).full}</span>
+              </div>
             )}
+            {inspectJob.completedAt && (
+              <div className="detail-item">
+                <span className="detail-label">Completed at:</span>
+                <span className="detail-val">{formatDate(inspectJob.completedAt).full}</span>
+              </div>
+            )}
+            {inspectJob.lastError && (
+              <div className="detail-item error">
+                <span className="detail-label">Last error:</span>
+                <span className="detail-val">{inspectJob.lastError}</span>
+              </div>
+            )}
+
             <div className="dialog-actions">
-              <button type="button" className="ghost-button" onClick={() => setPendingDelete(null)}>
-                {JOB_DELETE_CANCEL_LABEL}
-              </button>
               <button
                 type="button"
-                className="danger-button"
-                disabled={busy}
-                onClick={() => void confirmDelete()}
+                className="secondary-button"
+                onClick={() => setInspectJob(null)}
               >
-                {JOB_DELETE_DRAFT_LABEL}
+                Close
               </button>
             </div>
           </div>

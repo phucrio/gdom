@@ -26,6 +26,8 @@ pub struct DriveChild {
     pub quota_bytes_used: Option<i64>,
     pub trashed: bool,
     pub shortcut_target_id: Option<String>,
+    pub modified_time: Option<String>,
+    pub web_view_link: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +55,37 @@ pub trait DriveTreePort: Send + Sync {
         folder_id: &'a str,
         page_token: Option<&'a str>,
     ) -> DriveListFuture<'a>;
+
+    fn list_browse_children<'a>(
+        &'a self,
+        token: &'a AccessToken,
+        folder_id: Option<&'a str>,
+        page_token: Option<&'a str>,
+        _page_size: Option<u32>,
+        _order_by: Option<&'a str>,
+    ) -> DriveListFuture<'a> {
+        let fid = folder_id.unwrap_or("root");
+        self.list_children(token, fid, page_token)
+    }
+
+    fn rename_file<'a>(
+        &'a self,
+        token: &'a AccessToken,
+        file_id: &'a str,
+        new_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DriveTreeError>> + Send + 'a>> {
+        let _ = (token, file_id, new_name);
+        Box::pin(async move { Ok(()) })
+    }
+
+    fn trash_file<'a>(
+        &'a self,
+        token: &'a AccessToken,
+        file_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DriveTreeError>> + Send + 'a>> {
+        let _ = (token, file_id);
+        Box::pin(async move { Ok(()) })
+    }
 }
 
 pub trait DriveQuotaPort: Send + Sync {

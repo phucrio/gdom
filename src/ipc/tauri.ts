@@ -6,9 +6,11 @@ import type { BackendPort } from "./port.ts";
 import { assertNoSecretFields } from "./secrets.ts";
 import {
   ACCOUNT_COMMANDS,
+  DRIVE_COMMANDS,
   JOB_COMMANDS,
   type AccountDto,
   type AccountReferencesDto,
+  type DriveFileListDto,
   type DryRunExport,
   type JobDto,
   type JobItemsPage,
@@ -65,6 +67,15 @@ export function createTauriBackend(): BackendPort {
       invokeCommand<void>(ACCOUNT_COMMANDS.deleteLocalAccountData, {
         input: { accountId, confirmation },
       }),
+
+    listDriveFiles: (input) =>
+      invokeCommand<DriveFileListDto>(DRIVE_COMMANDS.listDriveFiles, { input }),
+    renameDriveItem: (input) =>
+      invokeCommand<void>(DRIVE_COMMANDS.renameDriveItem, { input }),
+    trashDriveItem: (input) =>
+      invokeCommand<void>(DRIVE_COMMANDS.trashDriveItem, { input }),
+    startTransferOperation: (input) =>
+      invokeCommand<JobDto>(DRIVE_COMMANDS.startTransferOperation, { input }),
 
     createJob: (sourceAccountId, targetAccountId) =>
       invokeCommand<JobDto>(JOB_COMMANDS.createJob, {

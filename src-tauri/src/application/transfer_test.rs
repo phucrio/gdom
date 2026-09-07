@@ -9,7 +9,9 @@ use crate::application::AccessToken;
 use crate::application::backoff::{Sleeper, ZeroJitter};
 use crate::application::item_store::ItemStorePort;
 use crate::application::job_store::JobStorePort;
-use crate::application::transfer::{TransferHalt, TransferRun, execute_bulk, execute_canary};
+use crate::application::transfer::{
+    TransferHalt, TransferRun, execute_auto_transfer, execute_bulk, execute_canary,
+};
 use crate::domain::item::{ItemId, ItemState, MigrationItem};
 use crate::domain::job::{
     AccountSnapshot, JobId, JobStatus, MigrationJob, MigrationRoot, RootId, RootValidationStatus,
@@ -403,6 +405,141 @@ fn mutation_requests(requests: &[String]) -> Vec<&String> {
         .iter()
         .filter(|request| matches!(request_method(request), Some("POST" | "PATCH" | "PUT")))
         .collect()
+}
+
+#[tokio::test]
+async fn auto_transfer_waits_for_review_before_mutating_outside_canary() {
+    let fixture = setup(1, vec![("canary-file", 1), ("root-folder", 0)]).await;
+    let mut job = fixture.job.clone();
+
+    execute_auto_transfer(&run_of(&fixture), &mut job)
+        .await
+        .expect("auto transfer");
+
+    assert_eq!(job.status(), JobStatus::CanaryReview);
+    let requests = captured_requests(&fixture);
+    assert!(mutation_requests(&requests).iter().all(|request| {
+        request_path(request).is_some_and(|path| !path.contains("root-folder"))
+    }));
+}
+
+#[tokio::test]
+async fn auto_transfer_completes_when_canary_covers_all_items() {
+    let fixture = setup(5, vec![("only-file", 0)]).await;
+    let mut job = fixture.job.clone();
+
+    execute_auto_transfer(&run_of(&fixture), &mut job)
+        .await
+        .expect("auto transfer");
+
+    assert_eq!(job.status(), JobStatus::Completed);
+    assert!(job.completed_at().is_some());
+}
+
+#[tokio::test]
+async fn auto_transfer_completes_with_errors_when_entire_canary_fails() {
+    let fixture = setup(5, vec![("missing-file", 0)]).await;
+    fixture
+        .script
+        .not_found_on_source_get
+        .lock()
+        .expect("script")
+        .insert("missing-file".into());
+    let mut job = fixture.job.clone();
+
+    execute_auto_transfer(&run_of(&fixture), &mut job)
+        .await
+        .expect("auto transfer");
+
+    assert_eq!(job.status(), JobStatus::CompletedWithErrors);
+}
+
+#[tokio::test]
+async fn auto_transfer_waits_for_review_after_partial_canary_failure() {
+    let fixture = setup(1, vec![("missing-file", 1), ("root-folder", 0)]).await;
+    fixture
+        .script
+        .not_found_on_source_get
+        .lock()
+        .expect("script")
+        .insert("missing-file".into());
+    let mut job = fixture.job.clone();
+
+    execute_auto_transfer(&run_of(&fixture), &mut job)
+        .await
+        .expect("auto transfer");
+
+    assert_eq!(job.status(), JobStatus::CanaryReview);
+    assert!(mutation_requests(&captured_requests(&fixture)).is_empty());
+}
+
+#[tokio::test]
+async fn auto_transfer_completes_with_errors_when_canary_exhausts_retries() {
+    let fixture = setup(5, vec![("retry-file", 0)]).await;
+    fixture
+        .script
+        .remaining_failures
+        .store(100, Ordering::SeqCst);
+    let mut job = fixture.job.clone();
+
+    execute_auto_transfer(&run_of(&fixture), &mut job)
+        .await
+        .expect("auto transfer");
+
+    assert_eq!(job.status(), JobStatus::CompletedWithErrors);
+}
+
+#[tokio::test]
+async fn bulk_progress_includes_previously_verified_canary_items() {
+    use crate::application::job_events::{JobRuntimeEvent, RecordingJobEventSink};
+
+    let fixture = setup(1, vec![("canary-file", 1), ("root-folder", 0)]).await;
+    let mut job = fixture.job.clone();
+    execute_canary(&run_of(&fixture), &mut job)
+        .await
+        .expect("canary");
+    let events = RecordingJobEventSink::new();
+    let mut run = run_of(&fixture);
+    run.events = Some(&events);
+
+    execute_bulk(&run, &mut job).await.expect("approved bulk");
+
+    assert!(events.snapshot().iter().any(|event| matches!(
+        event,
+        JobRuntimeEvent::MigrationProgress {
+            completed: 2,
+            total: 2,
+            ..
+        }
+    )));
+}
+
+#[tokio::test]
+async fn approved_bulk_preserves_permanent_canary_failure_in_final_status() {
+    let fixture = setup(1, vec![("missing-file", 1), ("root-folder", 0)]).await;
+    fixture
+        .script
+        .not_found_on_source_get
+        .lock()
+        .expect("script")
+        .insert("missing-file".into());
+    let mut job = fixture.job.clone();
+    execute_auto_transfer(&run_of(&fixture), &mut job)
+        .await
+        .expect("canary");
+
+    let halt = execute_bulk(&run_of(&fixture), &mut job)
+        .await
+        .expect("approved bulk");
+
+    assert_eq!(
+        halt,
+        TransferHalt::Exhausted {
+            verified: 1,
+            failed: 0
+        }
+    );
+    assert_eq!(job.status(), JobStatus::CompletedWithErrors);
 }
 
 #[tokio::test]

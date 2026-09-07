@@ -24,6 +24,7 @@ pub struct DriveFileSnapshot {
     pub owners: Vec<DriveFolderOwner>,
     pub trashed: bool,
     pub drive_id: Option<String>,
+    pub quota_bytes_used: Option<i64>,
     pub permissions: Vec<DrivePermission>,
 }
 

@@ -124,19 +124,26 @@ impl std::str::FromStr for AuthStatus {
 pub struct AccountProfile {
     email: String,
     display_name: String,
+    avatar_url: Option<String>,
 }
 
 impl AccountProfile {
-    pub fn new(email: impl Into<String>, display_name: impl Into<String>) -> Self {
+    pub fn new(
+        email: impl Into<String>,
+        display_name: impl Into<String>,
+        avatar_url: Option<String>,
+    ) -> Self {
         Self {
             email: email.into(),
             display_name: display_name.into(),
+            avatar_url,
         }
     }
 
     pub fn new_personal(
         email: impl Into<String>,
         display_name: impl Into<String>,
+        avatar_url: Option<String>,
     ) -> Result<Self, AccountError> {
         let email = email.into();
         if !is_personal_google_email(&email) {
@@ -145,6 +152,7 @@ impl AccountProfile {
         Ok(Self {
             email,
             display_name: display_name.into(),
+            avatar_url,
         })
     }
 }
@@ -211,8 +219,9 @@ impl ConnectedAccount {
         google_permission_id: GooglePermissionId,
         email: impl Into<String>,
         display_name: impl Into<String>,
+        avatar_url: Option<String>,
     ) -> Result<Self, AccountError> {
-        let profile = AccountProfile::new_personal(email, display_name)?;
+        let profile = AccountProfile::new_personal(email, display_name, avatar_url)?;
         Ok(Self::new(id, google_permission_id, profile))
     }
 
@@ -230,6 +239,10 @@ impl ConnectedAccount {
 
     pub fn display_name(&self) -> &str {
         &self.profile.display_name
+    }
+
+    pub fn avatar_url(&self) -> Option<&str> {
+        self.profile.avatar_url.as_deref()
     }
 
     pub fn label(&self) -> Option<&AccountLabel> {
@@ -298,17 +311,17 @@ mod tests {
         registry.connect(ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("permission-a"),
-            AccountProfile::new("a@example.com", "Account A"),
+            AccountProfile::new("a@example.com", "Account A", None),
         ));
         registry.connect(ConnectedAccount::new(
             AccountId::new(2),
             GooglePermissionId::new("permission-b"),
-            AccountProfile::new("b@example.com", "Account B"),
+            AccountProfile::new("b@example.com", "Account B", None),
         ));
         registry.connect(ConnectedAccount::new(
             AccountId::new(3),
             GooglePermissionId::new("permission-c"),
-            AccountProfile::new("c@example.com", "Account C"),
+            AccountProfile::new("c@example.com", "Account C", None),
         ));
 
         assert_eq!(registry.account_count(), 3);
@@ -320,13 +333,13 @@ mod tests {
         let original_id = registry.connect(ConnectedAccount::new(
             AccountId::new(1),
             GooglePermissionId::new("permission-a"),
-            AccountProfile::new("a@example.com", "Account A"),
+            AccountProfile::new("a@example.com", "Account A", None),
         ));
 
         let reconnected_id = registry.connect(ConnectedAccount::new(
             AccountId::new(99),
             GooglePermissionId::new("permission-a"),
-            AccountProfile::new("updated@example.com", "Updated Account A"),
+            AccountProfile::new("updated@example.com", "Updated Account A", None),
         ));
 
         assert_eq!(reconnected_id, original_id);
@@ -335,28 +348,28 @@ mod tests {
 
     #[test]
     fn personal_email_validation_accepts_gmail_and_googlemail() {
-        assert!(AccountProfile::new_personal("user@gmail.com", "User").is_ok());
-        assert!(AccountProfile::new_personal("user@googlemail.com", "User").is_ok());
-        assert!(AccountProfile::new_personal("User.Name+Tag@GMAIL.COM", "User").is_ok());
-        assert!(AccountProfile::new_personal("User@GoogleMail.Com", "User").is_ok());
+        assert!(AccountProfile::new_personal("user@gmail.com", "User", None).is_ok());
+        assert!(AccountProfile::new_personal("user@googlemail.com", "User", None).is_ok());
+        assert!(AccountProfile::new_personal("User.Name+Tag@GMAIL.COM", "User", None).is_ok());
+        assert!(AccountProfile::new_personal("User@GoogleMail.Com", "User", None).is_ok());
     }
 
     #[test]
     fn personal_email_validation_rejects_workspace_and_other_domains() {
         assert_eq!(
-            AccountProfile::new_personal("admin@company.com", "Workspace User"),
+            AccountProfile::new_personal("admin@company.com", "Workspace User", None),
             Err(AccountError::UnsupportedAccountType)
         );
         assert_eq!(
-            AccountProfile::new_personal("user@notgmail.com", "Impostor"),
+            AccountProfile::new_personal("user@notgmail.com", "Impostor", None),
             Err(AccountError::UnsupportedAccountType)
         );
         assert_eq!(
-            AccountProfile::new_personal("gmail.com", "Malformed"),
+            AccountProfile::new_personal("gmail.com", "Malformed", None),
             Err(AccountError::UnsupportedAccountType)
         );
         assert_eq!(
-            AccountProfile::new_personal("", "Empty"),
+            AccountProfile::new_personal("", "Empty", None),
             Err(AccountError::UnsupportedAccountType)
         );
     }

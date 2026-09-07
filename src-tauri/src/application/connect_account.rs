@@ -101,6 +101,7 @@ pub struct AccountIdentity {
     permission_id: GooglePermissionId,
     email: String,
     display_name: String,
+    avatar_url: Option<String>,
 }
 
 impl AccountIdentity {
@@ -108,11 +109,13 @@ impl AccountIdentity {
         permission_id: GooglePermissionId,
         email: impl Into<String>,
         display_name: impl Into<String>,
+        avatar_url: Option<String>,
     ) -> Self {
         Self {
             permission_id,
             email: email.into(),
             display_name: display_name.into(),
+            avatar_url,
         }
     }
 
@@ -126,6 +129,10 @@ impl AccountIdentity {
 
     pub fn display_name(&self) -> &str {
         &self.display_name
+    }
+
+    pub fn avatar_url(&self) -> Option<&str> {
+        self.avatar_url.as_deref()
     }
 }
 
@@ -528,6 +535,7 @@ where
             identity.permission_id().clone(),
             identity.email(),
             identity.display_name(),
+            identity.avatar_url().map(ToOwned::to_owned),
         )
         .map_err(ConnectAccountError::Account)?;
 
