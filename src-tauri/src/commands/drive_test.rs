@@ -116,7 +116,7 @@ mod tests {
                     "id": "folder-1",
                     "name": "My Folder",
                     "mimeType": "application/vnd.google-apps.folder",
-                    "owners": [{"permissionId": SOURCE_PERM, "emailAddress": "src@gmail.com"}],
+                    "owners": [{"permissionId": SOURCE_PERM, "emailAddress": "src@gmail.com", "photoLink": "https://lh3.googleusercontent.com/test-owner"}],
                     "modifiedTime": "2026-09-01T10:00:00Z",
                     "webViewLink": "https://drive.google.com/folder-1"
                 },
@@ -201,6 +201,11 @@ mod tests {
 
         let serialized = serde_json::to_value(&res).unwrap();
         assert_eq!(serialized["items"][0]["folderId"], "folder-1");
+        assert_eq!(
+            serialized["items"][0]["owners"][0]["avatarUrl"],
+            "https://lh3.googleusercontent.com/test-owner"
+        );
+        assert!(serialized["items"][1]["owners"][0]["avatarUrl"].is_null());
         assert!(serialized["items"][1]["folderId"].is_null());
         assert_eq!(serialized["items"][2]["folderId"], "shared-folder");
         assert!(serialized["items"][3]["folderId"].is_null());

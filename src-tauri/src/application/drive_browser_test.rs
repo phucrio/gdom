@@ -57,6 +57,7 @@ impl DriveBrowserPort for RecordingBrowser {
                     owners: vec![crate::application::DriveFolderOwner {
                         permission_id: GooglePermissionId::new("owner-1"),
                         email_address: None,
+                        avatar_url: None,
                     }],
                     drive_id: None,
                     quota_bytes_used: None,

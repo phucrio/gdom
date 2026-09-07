@@ -3,20 +3,25 @@ import process from 'node:process';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createServer } from 'vite';
-import { writeFile, unlink } from 'node:fs/promises';
+import { readFile, writeFile, unlink } from 'node:fs/promises';
 
 // Run with node; NODE_PATH can point to an existing Playwright installation.
 const { chromium } = createRequire(import.meta.url)('playwright');
 const server = await createServer({ server: { host: '127.0.0.1', port: 15327 } });
+const configuration = JSON.parse(await readFile('src-tauri/tauri.conf.json', 'utf8'));
+const imagePolicy = configuration.app.security.csp.split(';').find(directive => directive.trim().startsWith('img-src'));
+assert.ok(imagePolicy);
 let browser;
 let fixtureCreated = false;
 try {
   await server.listen();
   browser = await chromium.launch({ channel: 'chrome', headless: true });
   const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+  await page.route('**/owner-avatar.svg', route => route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28"><rect width="28" height="28" fill="#6366f1"/><circle cx="14" cy="10" r="5" fill="white"/><path d="M4 28a10 10 0 0 1 20 0" fill="white"/></svg>'}));
+  await page.route('**/missing-avatar.png', route => route.fulfill({status:404,body:''}));
   const errors = [];
   page.on('pageerror', error => { errors.push(error.message); console.error(error.message); });
-  await writeFile('.debug-shortcut.html', `<!doctype html><html><body><div id="root"></div><script type="module">
+  await writeFile('.debug-shortcut.html', `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${imagePolicy}"></head><body><div id="root"></div><script type="module">
       import React from 'react';
       import { createRoot } from 'react-dom/client';
       import { DriveFileBrowser } from '/src/browser/DriveFileBrowser.tsx';
@@ -34,10 +39,10 @@ try {
         owners:[{permissionId:'source',emailAddress:'source@example.test'}], isOwner:true,
         canTransferOwnership:false, webViewLink:null };
       const items = [
-        {...base,id:'shortcut-course',name:'Courses',folderId:'target-course',shortcutTargetId:'target-course'},
+        {...base,id:'shortcut-course',name:'Courses',owners:[{permissionId:'source',emailAddress:'source@example.test',avatarUrl:'https://lh3.googleusercontent.com/owner-avatar.svg'}],folderId:'target-course',shortcutTargetId:'target-course'},
         {...base,id:'shortcut-study',name:'Huyền học',folderId:'target-study',shortcutTargetId:'target-study'},
         {...base,id:'folder',name:'Ordinary folder',mimeType:'application/vnd.google-apps.folder',isFolder:true,folderId:'folder',shortcutTargetId:null},
-        {...base,id:'file-shortcut',name:'Document shortcut',folderId:null,shortcutTargetId:'document'},
+        {...base,id:'file-shortcut',name:'Document shortcut',isOwner:false,owners:[{permissionId:'other',emailAddress:'alexandra.long.owner@example.test',avatarUrl:'/missing-avatar.png'}],folderId:null,shortcutTargetId:'document'},
         {...base,id:'blocked-shortcut',name:'Unavailable folder',folderId:'blocked',shortcutTargetId:'blocked'},
       ];
       globalThis.requests = [];
@@ -57,6 +62,13 @@ try {
   await page.getByText('Document shortcut', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Courses', exact: true }).count(), 1,
     'Folder shortcuts must render as navigable folders, not zero-byte files');
+  const ownRow = page.getByRole('row').filter({has:page.getByRole('button',{name:'Courses',exact:true})});
+  await page.waitForFunction(() => globalThis.document.querySelector('.owner-cell img')?.naturalWidth > 0, undefined, {timeout:5000});
+  assert.equal(await ownRow.locator('.owner-name').innerText(), 'Me');
+  const sharedOwner = page.getByRole('row').filter({hasText:'Document shortcut'}).locator('.owner-cell');
+  await sharedOwner.locator('img').waitFor({state:'detached'});
+  assert.equal(await sharedOwner.locator('.avatar-circle').innerText(), 'AL');
+  assert.equal(await sharedOwner.locator('.owner-name').innerText(), 'alexandra.long.owner@example.test');
   if (process.env['GDOM_QA_SCREENSHOT']) await page.screenshot({ path: process.env['GDOM_QA_SCREENSHOT'], fullPage: true });
   async function verifyOpened(folderId) {
     await page.getByText('Nested document', { exact:true }).waitFor();

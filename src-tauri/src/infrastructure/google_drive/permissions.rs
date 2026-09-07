@@ -208,6 +208,7 @@ fn drive_file_snapshot_from_raw(raw: RawFileResponse) -> DriveFileSnapshot {
             .map(|owner| DriveFolderOwner {
                 permission_id: GooglePermissionId::new(owner.permission_id),
                 email_address: owner.email_address,
+                avatar_url: None,
             })
             .collect(),
         trashed: raw.trashed.unwrap_or(false),

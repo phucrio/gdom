@@ -140,6 +140,7 @@ impl DriveTransferPort for MockDrive {
                 owners: vec![crate::application::drive_folder::DriveFolderOwner {
                     permission_id: GooglePermissionId::new(SOURCE_PERM),
                     email_address: None,
+                    avatar_url: None,
                 }],
                 trashed: false,
                 drive_id: None,

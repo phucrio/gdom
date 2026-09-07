@@ -5,6 +5,7 @@ import { ContextMenu, type ContextMenuItemAction } from "./ContextMenu.tsx";
 import { formatDate, formatFileSize, getFileIcon } from "./format.ts";
 import { RenameDialog, TrashConfirmDialog } from "./ItemActionDialogs.tsx";
 import { ItemDetailsDialog } from "./ItemDetailsDialog.tsx";
+import { OwnerCell } from "./OwnerCell.tsx";
 import { OwnerPicker } from "./OwnerPicker.tsx";
 
 export type BreadcrumbItem = {
@@ -393,10 +394,6 @@ export function DriveFileBrowser({
                 const { display: modDate, full: fullDate } = formatDate(item.modifiedTime);
                 const sizeStr = item.folderId ? "—" : formatFileSize(item.size);
 
-                const ownerDisplay = item.isOwner
-                  ? "Me"
-                  : item.owners[0]?.emailAddress ?? "Unknown";
-                const ownerFull = item.owners.map((o) => o.emailAddress).filter(Boolean).join(", ");
 
                 return (
                   <tr
@@ -440,8 +437,8 @@ export function DriveFileBrowser({
                         )}
                       </div>
                     </td>
-                    <td className="col-owner" title={ownerFull || undefined}>
-                      {ownerDisplay}
+                    <td className="col-owner">
+                      <OwnerCell item={item} account={account} accounts={accounts} />
                     </td>
                     <td className="col-modified" title={fullDate}>
                       {modDate}

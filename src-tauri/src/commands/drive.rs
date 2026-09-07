@@ -51,6 +51,7 @@ pub(crate) async fn list_drive_files_inner(
                 .map(|o| crate::commands::drive_dto::DriveFileOwnerDto {
                     permission_id: o.permission_id.as_str().to_string(),
                     email_address: o.email_address,
+                    avatar_url: o.avatar_url,
                 })
                 .collect();
             crate::commands::drive_dto::DriveFileItemDto {

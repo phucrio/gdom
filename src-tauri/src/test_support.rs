@@ -214,6 +214,7 @@ pub fn drive_child(
         owners: vec![DriveFolderOwner {
             permission_id: GooglePermissionId::new(owner),
             email_address: Some("owner@gmail.com".into()),
+            avatar_url: None,
         }],
         drive_id: drive_id.map(ToOwned::to_owned),
         quota_bytes_used: quota,

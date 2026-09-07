@@ -236,6 +236,7 @@ export const DRIVE_COMMANDS = {
 } as const;
 
 export type DriveFileOwnerDto = AssertNoSecrets<{
+  avatarUrl?: string | null;
   permissionId: string;
   emailAddress: string | null;
 }>;

@@ -7,6 +7,7 @@ use crate::commands::dto::JobDto;
 pub struct DriveFileOwnerDto {
     pub permission_id: String,
     pub email_address: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -21,7 +21,7 @@ const ABOUT_PATH: &str =
     "/drive/v3/about?fields=user%28permissionId%2CemailAddress%2CdisplayName%2CphotoLink%29";
 const ABOUT_QUOTA_PATH: &str = "/drive/v3/about?fields=storageQuota";
 const LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress),driveId,size,quotaBytesUsed,trashed,shortcutDetails,capabilities,modifiedTime,webViewLink)";
-const BROWSE_LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress),driveId,size,quotaBytesUsed,trashed,shortcutDetails,capabilities,modifiedTime,webViewLink)";
+const BROWSE_LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress,photoLink),driveId,size,quotaBytesUsed,trashed,shortcutDetails,capabilities,modifiedTime,webViewLink)";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const USER_AGENT: &str = concat!("gdom/", env!("CARGO_PKG_VERSION"));
 const LIST_PAGE_SIZE: &str = "1000";
@@ -408,6 +408,7 @@ fn drive_child_from_raw(raw: RawFileResponse) -> DriveChild {
             .map(|owner| DriveFolderOwner {
                 permission_id: GooglePermissionId::new(owner.permission_id),
                 email_address: owner.email_address,
+                avatar_url: owner.photo_link,
             })
             .collect(),
         drive_id: raw.drive_id,
@@ -506,6 +507,8 @@ struct RawStorageQuota {
 #[serde(rename_all = "camelCase")]
 struct RawOwner {
     permission_id: String,
+    #[serde(default)]
+    photo_link: Option<String>,
     #[serde(default)]
     email_address: Option<String>,
 }
@@ -742,6 +745,7 @@ impl DriveFolderLookupPort for GoogleDriveClient {
                     .map(|owner| DriveFolderOwner {
                         permission_id: owner.permission_id,
                         email_address: owner.email_address,
+                        avatar_url: None,
                     })
                     .collect(),
             })
