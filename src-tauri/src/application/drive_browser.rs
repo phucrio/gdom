@@ -16,6 +16,10 @@ pub struct BrowseFolderRequest {
 pub type BrowserFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, DriveFolderLookupError>> + Send + 'a>>;
 pub trait DriveBrowserPort: Send + Sync {
+    fn storage_quota<'a>(
+        &'a self,
+        token: &'a AccessToken,
+    ) -> BrowserFuture<'a, super::StorageQuota>;
     fn list_files<'a>(
         &'a self,
         token: &'a AccessToken,
@@ -140,6 +144,16 @@ impl<AccountPersistence: AccountStorePort + Send + Sync + 'static>
                 .collect(),
             next_page_token: page.next_page_token,
         })
+    }
+    pub async fn storage_quota(
+        &self,
+        account_id: AccountId,
+    ) -> Result<super::StorageQuota, DriveBrowserError> {
+        let (_, token) = self.authorize_account(account_id).await?;
+        self.drive
+            .storage_quota(&token)
+            .await
+            .map_err(DriveBrowserError::Drive)
     }
     pub async fn rename_file(
         &self,

@@ -10,6 +10,29 @@ use crate::commands::dto::JobDto;
 use crate::commands::error::CommandError;
 use crate::state::AppState;
 
+pub(crate) async fn get_account_storage_inner(
+    state: &AppState,
+    input: crate::commands::dto::AccountIdInput,
+) -> Result<crate::commands::drive_dto::StorageQuotaDto, CommandError> {
+    let quota = state
+        .drive_browser
+        .storage_quota(parse_account_id(&input.account_id)?)
+        .await
+        .map_err(map_browser_error)?;
+    Ok(crate::commands::drive_dto::StorageQuotaDto {
+        usage_bytes: quota.usage_bytes,
+        limit_bytes: quota.limit_bytes,
+    })
+}
+
+#[tauri::command]
+pub async fn get_account_storage(
+    state: State<'_, AppState>,
+    input: crate::commands::dto::AccountIdInput,
+) -> Result<crate::commands::drive_dto::StorageQuotaDto, CommandError> {
+    get_account_storage_inner(&state, input).await
+}
+
 pub(crate) async fn list_drive_files_inner(
     state: &AppState,
     input: ListDriveFilesInput,

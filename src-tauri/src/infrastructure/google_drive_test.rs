@@ -328,6 +328,34 @@ async fn list_children_maps_rate_limit() {
 }
 
 #[tokio::test]
+async fn storage_quota_distinguishes_missing_usage_from_zero_and_unlimited() {
+    for body in [
+        "{}",
+        r#"{"storageQuota":{}}"#,
+        r#"{"storageQuota":{"usage":"invalid"}}"#,
+        r#"{"storageQuota":{"usage":"0","limit":"invalid"}}"#,
+    ] {
+        let (base_url, _) = serve_once("200 OK", body);
+        let client = GoogleDriveClient::for_test(base_url).unwrap();
+        assert_eq!(
+            client
+                .storage_quota(&AccessToken::new("test".into()))
+                .await
+                .unwrap_err(),
+            GoogleDriveError::InvalidResponse
+        );
+    }
+    let (base_url, _) = serve_once("200 OK", r#"{"storageQuota":{"usage":"0"}}"#);
+    let client = GoogleDriveClient::for_test(base_url).unwrap();
+    let quota = client
+        .storage_quota(&AccessToken::new("test".into()))
+        .await
+        .unwrap();
+    assert_eq!(quota.usage_bytes, 0);
+    assert_eq!(quota.limit_bytes, None);
+}
+
+#[tokio::test]
 async fn storage_quota_uses_caller_bearer_and_parses_limit() {
     let body = r#"{"storageQuota":{"limit":"5000","usage":"120"}}"#;
     let (base_url, request) = serve_once("200 OK", body);

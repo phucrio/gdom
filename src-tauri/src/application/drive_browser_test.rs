@@ -41,6 +41,18 @@ impl RecordingBrowser {
     }
 }
 impl DriveBrowserPort for RecordingBrowser {
+    fn storage_quota<'a>(
+        &'a self,
+        token: &'a AccessToken,
+    ) -> BrowserFuture<'a, crate::application::StorageQuota> {
+        self.record(token);
+        Box::pin(async {
+            Ok(crate::application::StorageQuota {
+                usage_bytes: 120,
+                limit_bytes: Some(5000),
+            })
+        })
+    }
     fn list_files<'a>(
         &'a self,
         token: &'a AccessToken,
@@ -135,6 +147,10 @@ async fn browser_routes_every_operation_to_selected_account() {
             .await
             .unwrap();
         service.trash_file(account_id, "file").await.unwrap();
+        assert_eq!(
+            service.storage_quota(account_id).await.unwrap().usage_bytes,
+            120
+        );
     }
     assert_eq!(
         *drive.0.lock().unwrap(),
@@ -142,6 +158,8 @@ async fn browser_routes_every_operation_to_selected_account() {
             "account-1",
             "account-1",
             "account-1",
+            "account-1",
+            "account-2",
             "account-2",
             "account-2",
             "account-2"
@@ -179,6 +197,7 @@ async fn browser_rejects_missing_and_disconnected_accounts_even_with_cached_toke
                 .is_err()
         );
         assert!(service.trash_file(account_id, "file").await.is_err());
+        assert!(service.storage_quota(account_id).await.is_err());
     }
     assert_eq!(drive.0.lock().unwrap().len(), 1);
 }

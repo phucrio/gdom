@@ -17,6 +17,7 @@ import {
   type ListJobsFilter,
   type OAuthConfigDto,
   type RootValidation,
+  type StorageQuotaDto,
 } from "./types.ts";
 
 async function invokeCommand<T>(command: string, args?: InvokeArgs): Promise<T> {
@@ -44,6 +45,7 @@ async function invokeCommand<T>(command: string, args?: InvokeArgs): Promise<T> 
 export function createTauriBackend(): BackendPort {
   return {
     listAccounts: () => invokeCommand<AccountDto[]>(ACCOUNT_COMMANDS.listAccounts),
+    getAccountStorage: (accountId) => invokeCommand<StorageQuotaDto>(DRIVE_COMMANDS.getAccountStorage, { input: { accountId } }),
     getOAuthConfig: () => invokeCommand<OAuthConfigDto>(ACCOUNT_COMMANDS.getOAuthConfig),
     resetOAuthConfig: () => invokeCommand<OAuthConfigDto>(ACCOUNT_COMMANDS.resetOAuthConfig),
     beginAccountConnection: (attemptId) => invokeCommand<void>(ACCOUNT_COMMANDS.beginAccountConnection, { attemptId }),

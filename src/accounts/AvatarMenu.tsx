@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { BackendPort } from "../ipc/port.ts";
 import type { AccountDto } from "../ipc/types.ts";
 import { accountDisplayLabel } from "./status.ts";
+import { AccountStorageUsage } from "./AccountStorageUsage.tsx";
 
 type AvatarMenuProps = {
   activeAccount: AccountDto | null;
@@ -187,6 +188,8 @@ export function AvatarMenu({
           </div>
 
           <div className="avatar-dropdown-divider" role="separator" />
+
+          <AccountStorageUsage key={`${activeAccount.id}:${activeAccount.authStatus}`} accountId={activeAccount.id} connected={!isNeedsReconnect} backend={backend} />
 
           <p className="dropdown-section-title">All accounts</p>
           <div className="dropdown-account-list" role="group">
