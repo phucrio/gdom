@@ -116,7 +116,7 @@ async fn get_oauth_config_inner(state: &AppState) -> Result<OAuthConfigDto, Comm
     })
 }
 
-fn require_desktop_client_secret(config: &OAuthConfig) -> Result<(), CommandError> {
+pub(super) fn require_desktop_client_secret(config: &OAuthConfig) -> Result<(), CommandError> {
     if config.has_client_secret() {
         Ok(())
     } else {
@@ -206,57 +206,6 @@ pub async fn reset_oauth_config(
     state: tauri::State<'_, AppState>,
 ) -> Result<OAuthConfigDto, CommandError> {
     reset_oauth_config_inner(&state).await
-}
-
-#[tauri::command]
-pub async fn connect_account(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<AccountDto, CommandError> {
-    let _lock = state.connect_account_lock.try_lock().map_err(|_| {
-        CommandError::OAuth("Another account connection is already in progress".into())
-    })?;
-
-    let config = {
-        let guard = state.oauth_config.read().await;
-        guard.clone().unwrap_or_else(OAuthConfig::default_config)
-    };
-    require_desktop_client_secret(&config)?;
-
-    let session = DesktopOAuthSession::start(&config.client_id)
-        .await
-        .map_err(|e| CommandError::OAuth(e.to_string()))?;
-
-    let authorization_url = session.authorization_url().to_owned();
-    open::that_detached(&authorization_url)
-        .map_err(|e| CommandError::BrowserLaunchFailed(e.to_string()))?;
-
-    let grant = session
-        .receive_callback()
-        .await
-        .map_err(|e| CommandError::OAuth(e.to_string()))?;
-
-    let grant = OAuthGrant::new(
-        grant.authorization_code().to_owned(),
-        grant.pkce_verifier().to_owned(),
-        grant.redirect_uri().to_owned(),
-    );
-
-    let fallback_id = AccountId::new(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(1),
-    );
-
-    let account = state
-        .connect_account_use_case
-        .connect_account(grant, fallback_id)
-        .await?;
-
-    let _ = app.emit("account-registry-changed", ());
-
-    Ok(AccountDto::from(account))
 }
 
 async fn disconnect_account_inner(
@@ -365,8 +314,7 @@ pub async fn reauthenticate_account(
         .map_err(|e| CommandError::OAuth(e.to_string()))?;
 
     let authorization_url = session.authorization_url().to_owned();
-    open::that_detached(&authorization_url)
-        .map_err(|e| CommandError::BrowserLaunchFailed(e.to_string()))?;
+    super::account_connection::launch_authorization_browser(&authorization_url).await?;
 
     let grant = session
         .receive_callback()

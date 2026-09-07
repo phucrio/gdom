@@ -4,9 +4,12 @@ import type { AccountDto, DriveFileItemDto, JobDto } from "../ipc/types.ts";
 import { ContextMenu, type ContextMenuItemAction } from "./ContextMenu.tsx";
 import { formatDate, formatFileSize, getFileIcon } from "./format.ts";
 import { RenameDialog, TrashConfirmDialog } from "./ItemActionDialogs.tsx";
+import { ItemDetailsDialog } from "./ItemDetailsDialog.tsx";
+import { OwnerCell } from "./OwnerCell.tsx";
 import { OwnerPicker } from "./OwnerPicker.tsx";
 
 export type BreadcrumbItem = {
+  resourceKey: string | null;
   id: string;
   name: string;
 };
@@ -29,9 +32,9 @@ export function DriveFileBrowser({
   onAddAccount,
 }: DriveFileBrowserProps) {
   const [breadcrumbs, setBreadcrumbs] = useState<BreadcrumbItem[]>([
-    { id: "root", name: "My Drive" },
+    { id: "root", name: "My Drive", resourceKey: null },
   ]);
-  const currentFolder = breadcrumbs[breadcrumbs.length - 1] ?? { id: "root", name: "My Drive" };
+  const currentFolder = breadcrumbs[breadcrumbs.length - 1] ?? { id: "root", name: "My Drive", resourceKey: null };
 
   const [items, setItems] = useState<DriveFileItemDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,6 +52,8 @@ export function DriveFileBrowser({
   const [menuItems, setMenuItems] = useState<DriveFileItemDto[]>([]);
 
   // Dialog States
+  const [detailsTarget, setDetailsTarget] = useState<DriveFileItemDto | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<DriveFileItemDto | null>(null);
   const [trashTargets, setTrashTargets] = useState<DriveFileItemDto[]>([]);
   const [ownerPickerOpen, setOwnerPickerOpen] = useState(false);
@@ -57,7 +62,7 @@ export function DriveFileBrowser({
   const activeReqIdRef = useRef(0);
 
   const loadFolder = useCallback(
-    async (folderId: string, pageToken: string | null = null, append = false) => {
+    async (folder: BreadcrumbItem, pageToken: string | null = null, append = false) => {
       const reqId = ++activeReqIdRef.current;
       if (!append) {
         setLoading(true);
@@ -78,7 +83,8 @@ export function DriveFileBrowser({
 
         const res = await backend.listDriveFiles({
           accountId: account.id,
-          folderId: folderId === "root" ? null : folderId,
+          folderId: folder.id === "root" ? null : folder.id,
+          folderResourceKey: folder.resourceKey,
           pageToken,
           pageSize: 50,
           orderBy: orderParam,
@@ -106,11 +112,13 @@ export function DriveFileBrowser({
     setSelectedIds(new Set());
     setMenuAnchor(null);
     setMenuItems([]);
+    setDetailsTarget(null);
+    setOpenError(null);
     setRenameTarget(null);
     setTrashTargets([]);
     setOwnerPickerOpen(false);
-    void loadFolder(currentFolder.id);
-  }, [currentFolder.id, loadFolder]);
+    void loadFolder(currentFolder);
+  }, [currentFolder, loadFolder]);
 
   function handleSort(field: "name" | "modifiedTime") {
     if (sortField === field) {
@@ -153,12 +161,31 @@ export function DriveFileBrowser({
     }
   }
 
+  async function openInGoogleDrive(item: DriveFileItemDto) {
+    setOpenError(null);
+    try {
+      await backend.openDriveItem({accountId: account.id, fileId: item.id, resourceKey: item.resourceKey ?? null});
+    } catch (error: unknown) {
+      setOpenError(error instanceof Error ? error.message : "Failed to open Google Drive.");
+    }
+  }
+
   function handleRowDoubleClick(item: DriveFileItemDto) {
-    if (item.isFolder) {
-      setBreadcrumbs((prev) => [...prev, { id: item.id, name: item.name }]);
+    const folderId = item.folderId;
+    if (folderId) {
+      setSelectedIds(new Set());
+      setMenuAnchor(null);
+      setMenuItems([]);
+      setBreadcrumbs((previous) => {
+        const ancestorIndex = previous.findIndex(crumb => crumb.id === folderId);
+        return ancestorIndex >= 0
+          ? previous.slice(0, ancestorIndex + 1).map((crumb, index) => index === ancestorIndex
+            ? { ...crumb, resourceKey: item.folderResourceKey ?? crumb.resourceKey } : crumb)
+          : [...previous, { id: folderId, name: item.name, resourceKey: item.folderResourceKey ?? null }];
+      });
       onAnnounce(`Opened folder ${item.name}`);
-    } else if (item.webViewLink) {
-      window.open(item.webViewLink, "_blank");
+    } else {
+      void openInGoogleDrive(item);
     }
   }
 
@@ -195,17 +222,13 @@ export function DriveFileBrowser({
     const first = targetItems[0];
     switch (action) {
       case "open":
-        if (first?.isFolder) {
-          setBreadcrumbs((prev) => [...prev, { id: first.id, name: first.name }]);
-          onAnnounce(`Opened folder ${first.name}`);
-        } else if (first?.webViewLink) {
-          window.open(first.webViewLink, "_blank");
-        }
+        if (first) handleRowDoubleClick(first);
         break;
       case "openGoogleDrive":
-        if (first?.webViewLink) {
-          window.open(first.webViewLink, "_blank");
-        }
+        if (first) void openInGoogleDrive(first);
+        break;
+      case "viewDetails":
+        if (first) setDetailsTarget(first);
         break;
       case "rename":
         if (first) {
@@ -235,7 +258,7 @@ export function DriveFileBrowser({
       newName,
     });
     onAnnounce(`Renamed to "${newName}".`);
-    void loadFolder(currentFolder.id);
+    void loadFolder(currentFolder);
   }
 
   async function handleTrashConfirm() {
@@ -246,7 +269,7 @@ export function DriveFileBrowser({
       });
     }
     onAnnounce(`Moved ${trashTargets.length} item(s) to trash.`);
-    void loadFolder(currentFolder.id);
+    void loadFolder(currentFolder);
   }
 
   const selectedList = items.filter((i) => selectedIds.has(i.id));
@@ -294,7 +317,7 @@ export function DriveFileBrowser({
             className="secondary-button icon-button"
             title="Refresh files"
             aria-label="Refresh files"
-            onClick={() => void loadFolder(currentFolder.id)}
+            onClick={() => void loadFolder(currentFolder)}
             disabled={loading}
           >
             ↻ Refresh
@@ -355,7 +378,7 @@ export function DriveFileBrowser({
                   <button
                     type="button"
                     className="secondary-button"
-                    onClick={() => void loadFolder(currentFolder.id)}
+                    onClick={() => void loadFolder(currentFolder)}
                   >
                     Retry
                   </button>
@@ -370,14 +393,10 @@ export function DriveFileBrowser({
             ) : (
               items.map((item) => {
                 const isSelected = selectedIds.has(item.id);
-                const icon = getFileIcon(item.mimeType, item.isFolder);
+                const icon = getFileIcon(item.mimeType, Boolean(item.folderId));
                 const { display: modDate, full: fullDate } = formatDate(item.modifiedTime);
-                const sizeStr = item.isFolder ? "—" : formatFileSize(item.size);
+                const sizeStr = item.folderId ? "—" : formatFileSize(item.size);
 
-                const ownerDisplay = item.isOwner
-                  ? "Me"
-                  : item.owners[0]?.emailAddress ?? "Unknown";
-                const ownerFull = item.owners.map((o) => o.emailAddress).filter(Boolean).join(", ");
 
                 return (
                   <tr
@@ -397,7 +416,7 @@ export function DriveFileBrowser({
                     <td
                       className="col-name"
                       onClick={(e) => {
-                        if (item.isFolder && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                        if (item.folderId && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
                           e.stopPropagation();
                           handleRowDoubleClick(item);
                         }
@@ -405,7 +424,7 @@ export function DriveFileBrowser({
                     >
                       <div className="name-cell">
                         <span className="item-icon" aria-hidden="true">{icon}</span>
-                        {item.isFolder ? (
+                        {item.folderId ? (
                           <button
                             type="button"
                             className="folder-link-button"
@@ -421,8 +440,8 @@ export function DriveFileBrowser({
                         )}
                       </div>
                     </td>
-                    <td className="col-owner" title={ownerFull || undefined}>
-                      {ownerDisplay}
+                    <td className="col-owner">
+                      <OwnerCell item={item} account={account} accounts={accounts} />
                     </td>
                     <td className="col-modified" title={fullDate}>
                       {modDate}
@@ -453,7 +472,7 @@ export function DriveFileBrowser({
             <button
               type="button"
               className="secondary-button"
-              onClick={() => void loadFolder(currentFolder.id, nextPageToken, true)}
+              onClick={() => void loadFolder(currentFolder, nextPageToken, true)}
               disabled={loadingMore}
             >
               {loadingMore ? "Loading more…" : "Load more files"}
@@ -461,6 +480,9 @@ export function DriveFileBrowser({
           </div>
         )}
       </div>
+
+      {openError && <p className="error" role="alert">{openError}</p>}
+      {detailsTarget && <ItemDetailsDialog item={detailsTarget} onClose={() => setDetailsTarget(null)} />}
 
       {/* Context Menu Component */}
       <ContextMenu

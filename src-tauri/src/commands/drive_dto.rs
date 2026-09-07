@@ -7,6 +7,7 @@ use crate::commands::dto::JobDto;
 pub struct DriveFileOwnerDto {
     pub permission_id: String,
     pub email_address: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -16,6 +17,9 @@ pub struct DriveFileItemDto {
     pub name: String,
     pub mime_type: String,
     pub is_folder: bool,
+    pub folder_id: Option<String>,
+    pub folder_resource_key: Option<String>,
+    pub resource_key: Option<String>,
     pub size: Option<i64>,
     pub modified_time: Option<String>,
     pub owners: Vec<DriveFileOwnerDto>,
@@ -37,9 +41,18 @@ pub struct DriveFileListDto {
 pub struct ListDriveFilesInput {
     pub account_id: String,
     pub folder_id: Option<String>,
+    pub folder_resource_key: Option<String>,
     pub page_token: Option<String>,
     pub page_size: Option<u32>,
     pub order_by: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenDriveItemInput {
+    pub account_id: String,
+    pub file_id: String,
+    pub resource_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]

@@ -269,6 +269,9 @@ pub(crate) async fn collect_roots(
             quota_bytes_used: snapshot.quota_bytes_used,
             trashed: snapshot.trashed,
             shortcut_target_id: None,
+            shortcut_target_mime_type: None,
+            shortcut_target_resource_key: None,
+            resource_key: None,
             modified_time: None,
             web_view_link: None,
         };

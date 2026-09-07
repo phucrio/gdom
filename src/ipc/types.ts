@@ -214,6 +214,8 @@ export type RootValidation = AssertNoSecrets<{
 }>;
 
 export const ACCOUNT_COMMANDS = {
+  beginAccountConnection: "begin_account_connection",
+  cancelAccountConnection: "cancel_account_connection",
   listAccounts: "list_accounts",
   configureOAuth: "configure_oauth",
   getOAuthConfig: "get_oauth_config",
@@ -228,6 +230,7 @@ export const ACCOUNT_COMMANDS = {
 } as const;
 
 export const DRIVE_COMMANDS = {
+  openDriveItem: "open_drive_item",
   listDriveFiles: "list_drive_files",
   renameDriveItem: "rename_drive_item",
   trashDriveItem: "trash_drive_item",
@@ -235,6 +238,7 @@ export const DRIVE_COMMANDS = {
 } as const;
 
 export type DriveFileOwnerDto = AssertNoSecrets<{
+  avatarUrl?: string | null;
   permissionId: string;
   emailAddress: string | null;
 }>;
@@ -244,6 +248,9 @@ export type DriveFileItemDto = AssertNoSecrets<{
   name: string;
   mimeType: string;
   isFolder: boolean;
+  folderId: string | null;
+  folderResourceKey?: string | null;
+  resourceKey?: string | null;
   size: number | null;
   modifiedTime: string | null;
   owners: DriveFileOwnerDto[];
@@ -261,9 +268,16 @@ export type DriveFileListDto = AssertNoSecrets<{
 export type ListDriveFilesInput = AssertNoSecrets<{
   accountId: string;
   folderId?: string | null;
+  folderResourceKey?: string | null;
   pageToken?: string | null;
   pageSize?: number | null;
   orderBy?: string | null;
+}>;
+
+export type OpenDriveItemInput = AssertNoSecrets<{
+  accountId: string;
+  fileId: string;
+  resourceKey?: string | null;
 }>;
 
 export type RenameDriveItemInput = AssertNoSecrets<{

@@ -84,11 +84,15 @@ mod tests {
             owners: vec![DriveFolderOwner {
                 permission_id: GooglePermissionId::new("perm-source"),
                 email_address: None,
+                avatar_url: None,
             }],
             drive_id: None,
             quota_bytes_used: Some(10),
             trashed: false,
             shortcut_target_id: None,
+            shortcut_target_mime_type: None,
+            shortcut_target_resource_key: None,
+            resource_key: None,
             modified_time: None,
             web_view_link: None,
         }
@@ -129,6 +133,7 @@ mod tests {
         item.owners = vec![DriveFolderOwner {
             permission_id: GooglePermissionId::new("perm-target"),
             email_address: None,
+            avatar_url: None,
         }];
         assert_eq!(
             classify_drive_child(&item, &source(), &target()),
@@ -142,6 +147,7 @@ mod tests {
         item.owners = vec![DriveFolderOwner {
             permission_id: GooglePermissionId::new("someone-else"),
             email_address: None,
+            avatar_url: None,
         }];
         assert_eq!(
             classify_drive_child(&item, &source(), &target()),

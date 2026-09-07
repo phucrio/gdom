@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DriveFileItemDto } from "../ipc/types.ts";
 
 export type ContextMenuItemAction =
+  | "viewDetails"
   | "open"
   | "openGoogleDrive"
   | "rename"
@@ -69,7 +70,7 @@ export function ContextMenu({
 
   const isSingle = targetItems.length === 1;
   const single = targetItems[0];
-  const isFolder = single?.isFolder ?? false;
+  const isFolder = Boolean(single?.folderId);
   const canTransfer = targetItems.every((item) => item.canTransferOwnership);
 
   return (
@@ -97,7 +98,7 @@ export function ContextMenu({
         </button>
       )}
 
-      {isSingle && single?.webViewLink && (
+      {isSingle && (
         <button
           type="button"
           className="context-menu-item"
@@ -109,6 +110,13 @@ export function ContextMenu({
         >
           Open in Google Drive
         </button>
+      )}
+
+      {isSingle && (
+        <button type="button" className="context-menu-item" role="menuitem" onClick={() => {
+          onClose();
+          onAction("viewDetails", targetItems);
+        }}>View details</button>
       )}
 
       {isSingle && (

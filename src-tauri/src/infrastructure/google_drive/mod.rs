@@ -21,7 +21,7 @@ const ABOUT_PATH: &str =
     "/drive/v3/about?fields=user%28permissionId%2CemailAddress%2CdisplayName%2CphotoLink%29";
 const ABOUT_QUOTA_PATH: &str = "/drive/v3/about?fields=storageQuota";
 const LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress),driveId,size,quotaBytesUsed,trashed,shortcutDetails,capabilities,modifiedTime,webViewLink)";
-const BROWSE_LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress),driveId,size,quotaBytesUsed,trashed,shortcutDetails,capabilities,modifiedTime,webViewLink)";
+const BROWSE_LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,owners(permissionId,emailAddress,photoLink),driveId,size,quotaBytesUsed,trashed,resourceKey,shortcutDetails,capabilities,modifiedTime,webViewLink)";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const USER_AGENT: &str = concat!("gdom/", env!("CARGO_PKG_VERSION"));
 const LIST_PAGE_SIZE: &str = "1000";
@@ -217,17 +217,14 @@ impl GoogleDriveClient {
     pub async fn list_browse_children(
         &self,
         token: &AccessToken,
-        folder_id: Option<&str>,
-        page_token: Option<&str>,
-        page_size: Option<u32>,
-        order_by: Option<&str>,
+        request: &crate::application::drive_browser::BrowseFolderRequest,
     ) -> Result<DriveChildPage, GoogleDriveError> {
-        let parent_id = match folder_id {
+        let parent_id = match request.folder_id.as_deref() {
             Some(id) if !id.trim().is_empty() && id.trim() != "root" => id.trim(),
             _ => "root",
         };
         let query = children_query(parent_id);
-        let page_size_str = page_size.unwrap_or(50).clamp(1, 100).to_string();
+        let page_size_str = request.page_size.unwrap_or(50).clamp(1, 100).to_string();
         let query_string = {
             let mut encoded = url::form_urlencoded::Serializer::new(String::new());
             encoded.append_pair("q", &query);
@@ -235,10 +232,10 @@ impl GoogleDriveClient {
             encoded.append_pair("pageSize", &page_size_str);
             encoded.append_pair("supportsAllDrives", "true");
             encoded.append_pair("fields", BROWSE_LIST_FIELDS);
-            if let Some(token) = page_token.filter(|t| !t.is_empty()) {
+            if let Some(token) = request.page_token.as_deref().filter(|t| !t.is_empty()) {
                 encoded.append_pair("pageToken", token);
             }
-            if let Some(order) = order_by.filter(|o| !o.is_empty()) {
+            if let Some(order) = request.order_by.as_deref().filter(|o| !o.is_empty()) {
                 encoded.append_pair("orderBy", order);
             } else {
                 encoded.append_pair("orderBy", "folder,name");
@@ -247,10 +244,19 @@ impl GoogleDriveClient {
         };
         let url = format!("{}/drive/v3/files?{query_string}", self.base_url);
 
-        let response = self
-            .client
-            .get(url)
-            .bearer_auth(token.expose_secret())
+        let mut http_request = self.client.get(url).bearer_auth(token.expose_secret());
+        if parent_id != "root"
+            && let Some(resource_key) = request
+                .folder_resource_key
+                .as_deref()
+                .filter(|key| !key.is_empty())
+        {
+            http_request = http_request.header(
+                "X-Goog-Drive-Resource-Keys",
+                format!("{parent_id}/{resource_key}"),
+            );
+        }
+        let response = http_request
             .send()
             .await
             .map_err(|_| GoogleDriveError::Transport)?;
@@ -408,11 +414,21 @@ fn drive_child_from_raw(raw: RawFileResponse) -> DriveChild {
             .map(|owner| DriveFolderOwner {
                 permission_id: GooglePermissionId::new(owner.permission_id),
                 email_address: owner.email_address,
+                avatar_url: owner.photo_link,
             })
             .collect(),
         drive_id: raw.drive_id,
         quota_bytes_used: parse_i64_string(raw.quota_bytes_used.or(raw.size)),
         trashed: raw.trashed.unwrap_or(false),
+        shortcut_target_mime_type: raw
+            .shortcut_details
+            .as_ref()
+            .and_then(|details| details.target_mime_type.clone()),
+        shortcut_target_resource_key: raw
+            .shortcut_details
+            .as_ref()
+            .and_then(|details| details.target_resource_key.clone()),
+        resource_key: raw.resource_key,
         shortcut_target_id: raw.shortcut_details.and_then(|details| details.target_id),
         modified_time: raw.modified_time,
         web_view_link: raw.web_view_link,
@@ -456,6 +472,7 @@ struct RawFileResponse {
     quota_bytes_used: Option<String>,
     #[serde(default)]
     shortcut_details: Option<RawShortcutDetails>,
+    resource_key: Option<String>,
     #[serde(default)]
     pub(super) permissions: Option<Vec<RawPermission>>,
     #[serde(default)]
@@ -469,6 +486,9 @@ struct RawFileResponse {
 struct RawShortcutDetails {
     #[serde(default)]
     target_id: Option<String>,
+    #[serde(default)]
+    target_mime_type: Option<String>,
+    target_resource_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -500,6 +520,8 @@ struct RawStorageQuota {
 #[serde(rename_all = "camelCase")]
 struct RawOwner {
     permission_id: String,
+    #[serde(default)]
+    photo_link: Option<String>,
     #[serde(default)]
     email_address: Option<String>,
 }
@@ -736,6 +758,7 @@ impl DriveFolderLookupPort for GoogleDriveClient {
                     .map(|owner| DriveFolderOwner {
                         permission_id: owner.permission_id,
                         email_address: owner.email_address,
+                        avatar_url: None,
                     })
                     .collect(),
             })

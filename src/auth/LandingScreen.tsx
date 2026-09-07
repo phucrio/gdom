@@ -7,6 +7,7 @@ import {
   LIMITED_USE_SENTENCE,
   SYSTEM_BROWSER_OAUTH_EXPLANATION,
 } from "../legal/copy.ts";
+import { useAccountConnection } from "../accounts/useAccountConnection.ts";
 import { GoogleMark } from "../accounts/GoogleMark.tsx";
 import gdomIcon from "../assets/gdom-icon.svg?no-inline";
 
@@ -23,9 +24,10 @@ export function LandingScreen({
   onConnected,
   onOpenLegal,
 }: LandingScreenProps) {
+  const connection = useAccountConnection(backend, onAnnounce);
   const [config, setConfig] = useState<OAuthConfigDto | null>(null);
   const [configLoaded, setConfigLoaded] = useState(false);
-  const [signingIn, setSigningIn] = useState(false);
+  const signingIn = connection.busy;
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -56,19 +58,26 @@ export function LandingScreen({
       );
       return;
     }
-    setSigningIn(true);
     setError(null);
     onAnnounce("Opening Google sign-in in the system browser.");
     try {
-      await backend.connectAccount();
+      const account = await connection.connect();
+      if (!account) return;
       onAnnounce("Sign in successful.");
       onConnected();
     } catch (caught: unknown) {
       const msg = caught instanceof Error ? caught.message : "Sign in failed.";
       setError(msg);
       onAnnounce(msg);
-    } finally {
-      setSigningIn(false);
+    }
+  }
+
+  async function handleCancel() {
+    try {
+      await connection.cancel();
+      setError(null);
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : "Could not cancel sign-in.");
     }
   }
 
@@ -113,12 +122,17 @@ export function LandingScreen({
               type="button"
               className="primary-button landing-cta"
               onClick={() => void handleSignIn()}
-              disabled={signingIn}
+              disabled={signingIn || connection.cancelling}
               aria-busy={signingIn}
             >
               <GoogleMark />
               <span>{signingIn ? "Opening system browser…" : "Sign in with Google"}</span>
             </button>
+            {(signingIn || connection.cancelling) && (
+              <button type="button" className="ghost-button" disabled={connection.cancelling} onClick={() => void handleCancel()}>
+                {connection.cancelling ? "Cancelling…" : "Cancel sign-in"}
+              </button>
+            )}
           </div>
         )}
 

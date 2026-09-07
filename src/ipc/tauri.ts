@@ -46,7 +46,9 @@ export function createTauriBackend(): BackendPort {
     listAccounts: () => invokeCommand<AccountDto[]>(ACCOUNT_COMMANDS.listAccounts),
     getOAuthConfig: () => invokeCommand<OAuthConfigDto>(ACCOUNT_COMMANDS.getOAuthConfig),
     resetOAuthConfig: () => invokeCommand<OAuthConfigDto>(ACCOUNT_COMMANDS.resetOAuthConfig),
-    connectAccount: () => invokeCommand<AccountDto>(ACCOUNT_COMMANDS.connectAccount),
+    beginAccountConnection: (attemptId) => invokeCommand<void>(ACCOUNT_COMMANDS.beginAccountConnection, { attemptId }),
+    cancelAccountConnection: (attemptId) => invokeCommand<void>(ACCOUNT_COMMANDS.cancelAccountConnection, { attemptId }),
+    connectAccount: (attemptId) => invokeCommand<AccountDto>(ACCOUNT_COMMANDS.connectAccount, { attemptId }),
     reauthenticateAccount: (accountId) =>
       invokeCommand<AccountDto>(ACCOUNT_COMMANDS.reauthenticateAccount, {
         input: { accountId },
@@ -68,6 +70,7 @@ export function createTauriBackend(): BackendPort {
         input: { accountId, confirmation },
       }),
 
+    openDriveItem: (input) => invokeCommand<void>(DRIVE_COMMANDS.openDriveItem, { input }),
     listDriveFiles: (input) =>
       invokeCommand<DriveFileListDto>(DRIVE_COMMANDS.listDriveFiles, { input }),
     renameDriveItem: (input) =>

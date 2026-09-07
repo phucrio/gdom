@@ -148,7 +148,8 @@ pub struct AppState {
 
     pub oauth_config: Arc<RwLock<Option<OAuthConfig>>>,
 
-    pub connect_account_lock: tokio::sync::Mutex<()>,
+    pub connect_account_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) account_connections: crate::commands::account_connection::AccountConnections,
 
     pub connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
 
@@ -191,7 +192,8 @@ impl AppState {
             account_store,
             credential_store,
             oauth_config,
-            connect_account_lock: tokio::sync::Mutex::new(()),
+            connect_account_lock: Arc::new(tokio::sync::Mutex::new(())),
+            account_connections: Default::default(),
             connect_account_use_case,
             account_lifecycle_use_case,
             token_provider,
@@ -227,7 +229,8 @@ impl AppState {
             account_store,
             credential_store,
             oauth_config,
-            connect_account_lock: tokio::sync::Mutex::new(()),
+            connect_account_lock: Arc::new(tokio::sync::Mutex::new(())),
+            account_connections: Default::default(),
             connect_account_use_case,
             account_lifecycle_use_case,
             token_provider,

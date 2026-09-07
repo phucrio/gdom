@@ -1527,3 +1527,27 @@ code {
 .status-indicator.error { color: var(--danger); font-weight: bold; }
 .status-indicator.skipped { color: var(--muted); }
 .status-indicator.pending { color: var(--accent); }
+
+.item-details dd {
+  margin-inline-start: 0;
+  margin-block-end: 1rem;
+  overflow-wrap: anywhere;
+}
+.item-details dt {
+  font-weight: 600;
+}
+
+.owner-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.owner-cell .avatar-circle {
+  flex-shrink: 0;
+}
+.owner-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

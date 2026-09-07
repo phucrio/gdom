@@ -8,6 +8,7 @@ import type {
   ListDriveFilesInput,
   ListJobsFilter,
   OAuthConfigDto,
+  OpenDriveItemInput,
   RenameDriveItemInput,
   RootValidation,
   StartTransferOperationInput,
@@ -19,13 +20,16 @@ export type BackendPort = {
   listAccounts(): Promise<AccountDto[]>;
   getOAuthConfig(): Promise<OAuthConfigDto>;
   resetOAuthConfig(): Promise<OAuthConfigDto>;
-  connectAccount(): Promise<AccountDto>;
+  beginAccountConnection(attemptId: string): Promise<void>;
+  cancelAccountConnection(attemptId: string): Promise<void>;
+  connectAccount(attemptId: string): Promise<AccountDto>;
   reauthenticateAccount(accountId: string): Promise<AccountDto>;
   updateAccountLabel(accountId: string, label: string | null): Promise<AccountDto>;
   disconnectAccount(accountId: string): Promise<void>;
   removeAccount(accountId: string): Promise<void>;
   deleteLocalAccountData(accountId: string, confirmation: true): Promise<void>;
 
+  openDriveItem(input: OpenDriveItemInput): Promise<void>;
   listDriveFiles(input: ListDriveFilesInput): Promise<DriveFileListDto>;
   renameDriveItem(input: RenameDriveItemInput): Promise<void>;
   trashDriveItem(input: TrashDriveItemInput): Promise<void>;

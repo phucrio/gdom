@@ -31,13 +31,14 @@ describe("GDOM application icons", () => {
     expect(source).not.toMatch(/(?:href|src)=["'](?:https?:|data:|\/\/)/i);
   });
 
-  it("uses external SVG assets without relaxing the image CSP", () => {
+  it("uses external SVG assets with only the approved avatar image host", () => {
     const app = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
     const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
     const config = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
     expect(app).toContain('import gdomIcon from "./assets/gdom-icon.svg?no-inline"');
     expect(html).toContain('href="/src/assets/gdom-icon.svg?no-inline"');
-    expect(config.app.security.csp).toMatch(/img-src 'self' asset:;/);
+    expect(config.app.security.csp.split(";").find(directive => directive.trim().startsWith("img-src"))?.trim())
+      .toBe("img-src 'self' asset: https://*.googleusercontent.com");
     expect(config.app.security.csp).not.toContain("data:");
   });
 

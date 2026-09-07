@@ -10,6 +10,7 @@ use crate::domain::GooglePermissionId;
 pub struct DriveFolderOwner {
     pub permission_id: GooglePermissionId,
     pub email_address: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
