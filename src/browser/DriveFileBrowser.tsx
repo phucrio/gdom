@@ -9,6 +9,7 @@ import { OwnerCell } from "./OwnerCell.tsx";
 import { OwnerPicker } from "./OwnerPicker.tsx";
 
 export type BreadcrumbItem = {
+  resourceKey: string | null;
   id: string;
   name: string;
 };
@@ -31,9 +32,9 @@ export function DriveFileBrowser({
   onAddAccount,
 }: DriveFileBrowserProps) {
   const [breadcrumbs, setBreadcrumbs] = useState<BreadcrumbItem[]>([
-    { id: "root", name: "My Drive" },
+    { id: "root", name: "My Drive", resourceKey: null },
   ]);
-  const currentFolder = breadcrumbs[breadcrumbs.length - 1] ?? { id: "root", name: "My Drive" };
+  const currentFolder = breadcrumbs[breadcrumbs.length - 1] ?? { id: "root", name: "My Drive", resourceKey: null };
 
   const [items, setItems] = useState<DriveFileItemDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,7 +62,7 @@ export function DriveFileBrowser({
   const activeReqIdRef = useRef(0);
 
   const loadFolder = useCallback(
-    async (folderId: string, pageToken: string | null = null, append = false) => {
+    async (folder: BreadcrumbItem, pageToken: string | null = null, append = false) => {
       const reqId = ++activeReqIdRef.current;
       if (!append) {
         setLoading(true);
@@ -82,7 +83,8 @@ export function DriveFileBrowser({
 
         const res = await backend.listDriveFiles({
           accountId: account.id,
-          folderId: folderId === "root" ? null : folderId,
+          folderId: folder.id === "root" ? null : folder.id,
+          folderResourceKey: folder.resourceKey,
           pageToken,
           pageSize: 50,
           orderBy: orderParam,
@@ -115,8 +117,8 @@ export function DriveFileBrowser({
     setRenameTarget(null);
     setTrashTargets([]);
     setOwnerPickerOpen(false);
-    void loadFolder(currentFolder.id);
-  }, [currentFolder.id, loadFolder]);
+    void loadFolder(currentFolder);
+  }, [currentFolder, loadFolder]);
 
   function handleSort(field: "name" | "modifiedTime") {
     if (sortField === field) {
@@ -162,7 +164,7 @@ export function DriveFileBrowser({
   async function openInGoogleDrive(item: DriveFileItemDto) {
     setOpenError(null);
     try {
-      await backend.openDriveItem(item.id);
+      await backend.openDriveItem({accountId: account.id, fileId: item.id, resourceKey: item.resourceKey ?? null});
     } catch (error: unknown) {
       setOpenError(error instanceof Error ? error.message : "Failed to open Google Drive.");
     }
@@ -177,8 +179,9 @@ export function DriveFileBrowser({
       setBreadcrumbs((previous) => {
         const ancestorIndex = previous.findIndex(crumb => crumb.id === folderId);
         return ancestorIndex >= 0
-          ? previous.slice(0, ancestorIndex + 1)
-          : [...previous, { id: folderId, name: item.name }];
+          ? previous.slice(0, ancestorIndex + 1).map((crumb, index) => index === ancestorIndex
+            ? { ...crumb, resourceKey: item.folderResourceKey ?? crumb.resourceKey } : crumb)
+          : [...previous, { id: folderId, name: item.name, resourceKey: item.folderResourceKey ?? null }];
       });
       onAnnounce(`Opened folder ${item.name}`);
     } else {
@@ -255,7 +258,7 @@ export function DriveFileBrowser({
       newName,
     });
     onAnnounce(`Renamed to "${newName}".`);
-    void loadFolder(currentFolder.id);
+    void loadFolder(currentFolder);
   }
 
   async function handleTrashConfirm() {
@@ -266,7 +269,7 @@ export function DriveFileBrowser({
       });
     }
     onAnnounce(`Moved ${trashTargets.length} item(s) to trash.`);
-    void loadFolder(currentFolder.id);
+    void loadFolder(currentFolder);
   }
 
   const selectedList = items.filter((i) => selectedIds.has(i.id));
@@ -314,7 +317,7 @@ export function DriveFileBrowser({
             className="secondary-button icon-button"
             title="Refresh files"
             aria-label="Refresh files"
-            onClick={() => void loadFolder(currentFolder.id)}
+            onClick={() => void loadFolder(currentFolder)}
             disabled={loading}
           >
             ↻ Refresh
@@ -375,7 +378,7 @@ export function DriveFileBrowser({
                   <button
                     type="button"
                     className="secondary-button"
-                    onClick={() => void loadFolder(currentFolder.id)}
+                    onClick={() => void loadFolder(currentFolder)}
                   >
                     Retry
                   </button>
@@ -469,7 +472,7 @@ export function DriveFileBrowser({
             <button
               type="button"
               className="secondary-button"
-              onClick={() => void loadFolder(currentFolder.id, nextPageToken, true)}
+              onClick={() => void loadFolder(currentFolder, nextPageToken, true)}
               disabled={loadingMore}
             >
               {loadingMore ? "Loading more…" : "Load more files"}

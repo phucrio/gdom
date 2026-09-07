@@ -32,16 +32,16 @@ try {
       mockIPC((command, args) => {
         if (command !== 'open_drive_item') throw new Error('Unexpected command: ' + command);
         if (globalThis.failOpen) throw new Error('Browser could not be opened');
-        globalThis.openedItems.push(args.fileId);
+        globalThis.openedItems.push(args.input);
       });
       const account = { id:'source', email:'source@example.test', googlePermissionId:'source', authStatus:'CONNECTED', displayName:'Test account' };
       const base = { mimeType:'application/vnd.google-apps.shortcut', isFolder:false, size:0, modifiedTime:null,
         owners:[{permissionId:'source',emailAddress:'source@example.test'}], isOwner:true,
         canTransferOwnership:false, webViewLink:null };
       const items = [
-        {...base,id:'shortcut-course',name:'Courses',owners:[{permissionId:'source',emailAddress:'source@example.test',avatarUrl:'https://lh3.googleusercontent.com/owner-avatar.svg'}],folderId:'target-course',shortcutTargetId:'target-course'},
-        {...base,id:'shortcut-study',name:'Huyền học',folderId:'target-study',shortcutTargetId:'target-study'},
-        {...base,id:'folder',name:'Ordinary folder',mimeType:'application/vnd.google-apps.folder',isFolder:true,folderId:'folder',shortcutTargetId:null},
+        {...base,id:'shortcut-course',name:'Courses',owners:[{permissionId:'source',emailAddress:'source@example.test',avatarUrl:'https://lh3.googleusercontent.com/owner-avatar.svg'}],folderId:'target-course',folderResourceKey:'course-key',resourceKey:'shortcut-key',shortcutTargetId:'target-course'},
+        {...base,id:'shortcut-study',name:'Huyền học',folderId:'target-study',folderResourceKey:'study-key',shortcutTargetId:'target-study'},
+        {...base,id:'folder',name:'Ordinary folder',mimeType:'application/vnd.google-apps.folder',isFolder:true,folderId:'folder',folderResourceKey:'native-key',shortcutTargetId:null},
         {...base,id:'file-shortcut',name:'Document shortcut',isOwner:false,owners:[{permissionId:'other',emailAddress:'alexandra.long.owner@example.test',avatarUrl:'/missing-avatar.png'}],folderId:null,shortcutTargetId:'document'},
         {...base,id:'blocked-shortcut',name:'Unavailable folder',folderId:'blocked',shortcutTargetId:'blocked'},
       ];
@@ -49,7 +49,8 @@ try {
       const backend = {...createTauriBackend(), listDriveFiles: async input => {
         globalThis.requests.push(input);
         if(input.folderId === 'blocked') throw new Error('Access denied to shared folder');
-        return {items: input.folderId ? [{...base,id:'child',name:'Nested document',folderId:null,shortcutTargetId:null}, {...base,id:'self',name:'This folder',folderId:input.folderId,shortcutTargetId:input.folderId}, {...base,id:'ancestor',name:'Back to root',folderId:'root',shortcutTargetId:'root'}] : items,nextPageToken:null};
+        if(input.pageToken) return {items:[{...base,id:'more',name:'More document',folderId:null,shortcutTargetId:null}],nextPageToken:null};
+        return {items: input.folderId ? [{...base,id:'child',name:'Nested document',folderId:null,shortcutTargetId:null}, {...base,id:'self',name:'This folder',folderId:input.folderId,shortcutTargetId:input.folderId}, {...base,id:'ancestor',name:'Back to root',folderId:'root',shortcutTargetId:'root'}, {...base,id:'nested',name:'Nested folder',isFolder:true,folderId:'nested',folderResourceKey:'nested-key',shortcutTargetId:null}] : items,nextPageToken:input.folderId==='target-course'?'more':null};
       }};
       createRoot(document.getElementById('root')).render(React.createElement(DriveFileBrowser, {
         account,accounts:[account],backend,onAnnounce:()=>{},onMigrationStarted:()=>{},onAddAccount:()=>{}
@@ -75,10 +76,30 @@ try {
     const request = await page.evaluate(() => globalThis.requests.at(-1));
     assert.equal(request.folderId, folderId);
     assert.equal(request.accountId, 'source');
+    assert.equal(request.folderResourceKey, { 'target-course':'course-key','target-study':'study-key',folder:'native-key' }[folderId]);
+    await page.getByRole('button',{name:'Refresh files',exact:true}).click();
+    await page.getByText('Nested document',{exact:true}).waitFor();
+    const refreshed = await page.evaluate(()=>globalThis.requests.at(-1));
+    assert.equal(refreshed.folderResourceKey, request.folderResourceKey);
+    if(folderId === 'target-course') {
+      await page.getByRole('button',{name:'Load more files',exact:true}).click();
+      await page.getByText('More document',{exact:true}).waitFor();
+      const paged = await page.evaluate(()=>globalThis.requests.at(-1));
+      assert.equal(paged.pageToken,'more');
+      assert.equal(paged.folderResourceKey,'course-key');
+      await page.getByRole('button',{name:'Nested folder',exact:true}).click();
+      await page.waitForFunction(()=>globalThis.requests.at(-1).folderId==='nested');
+      await page.getByRole('button',{name:'Courses',exact:true}).click();
+      await page.getByText('Nested document',{exact:true}).waitFor();
+      const returned = await page.evaluate(()=>globalThis.requests.at(-1));
+      assert.equal(returned.folderId,'target-course');
+      assert.equal(returned.folderResourceKey,'course-key');
+    }
     await page.getByRole('button', { name:'This folder', exact:true }).click();
     assert.equal(await page.locator('.breadcrumb-item').count(), 2);
     await page.getByRole('button', {name:'Back to root',exact:true}).click();
     await page.getByText('Document shortcut', {exact:true}).waitFor();
+    assert.equal((await page.evaluate(()=>globalThis.requests.at(-1))).folderResourceKey,null);
   }
   await page.getByRole('button', {name:'Courses',exact:true}).click();
   await verifyOpened('target-course');
@@ -95,11 +116,11 @@ try {
   await page.getByRole('button', {name:'Action menu for Document shortcut',exact:true}).click();
   await page.getByRole('menuitem', {name:'Open',exact:true}).click();
   await page.waitForFunction(() => globalThis.openedItems.length === 1);
-  assert.deepEqual(await page.evaluate(() => globalThis.openedItems), ['file-shortcut']);
+  assert.deepEqual(await page.evaluate(() => globalThis.openedItems), [{accountId:'source',fileId:'file-shortcut',resourceKey:null}]);
   await page.getByRole('button', {name:'Action menu for Courses',exact:true}).click();
   await page.getByRole('menuitem', {name:'Open in Google Drive',exact:true}).click();
   await page.waitForFunction(() => globalThis.openedItems.length === 2);
-  assert.deepEqual(await page.evaluate(() => globalThis.openedItems), ['file-shortcut','shortcut-course']);
+  assert.deepEqual(await page.evaluate(() => globalThis.openedItems), [{accountId:'source',fileId:'file-shortcut',resourceKey:null},{accountId:'source',fileId:'shortcut-course',resourceKey:'shortcut-key'}]);
   await page.getByRole('button', {name:'Action menu for Huyền học',exact:true}).click();
   await page.getByRole('menuitem', {name:'View details',exact:true}).click();
   const dialog = page.getByRole('dialog', {name:'Item details'});

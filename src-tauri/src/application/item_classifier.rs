@@ -91,6 +91,8 @@ mod tests {
             trashed: false,
             shortcut_target_id: None,
             shortcut_target_mime_type: None,
+            shortcut_target_resource_key: None,
+            resource_key: None,
             modified_time: None,
             web_view_link: None,
         }

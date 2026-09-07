@@ -249,6 +249,8 @@ export type DriveFileItemDto = AssertNoSecrets<{
   mimeType: string;
   isFolder: boolean;
   folderId: string | null;
+  folderResourceKey?: string | null;
+  resourceKey?: string | null;
   size: number | null;
   modifiedTime: string | null;
   owners: DriveFileOwnerDto[];
@@ -266,9 +268,16 @@ export type DriveFileListDto = AssertNoSecrets<{
 export type ListDriveFilesInput = AssertNoSecrets<{
   accountId: string;
   folderId?: string | null;
+  folderResourceKey?: string | null;
   pageToken?: string | null;
   pageSize?: number | null;
   orderBy?: string | null;
+}>;
+
+export type OpenDriveItemInput = AssertNoSecrets<{
+  accountId: string;
+  fileId: string;
+  resourceKey?: string | null;
 }>;
 
 export type RenameDriveItemInput = AssertNoSecrets<{

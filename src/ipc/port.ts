@@ -8,6 +8,7 @@ import type {
   ListDriveFilesInput,
   ListJobsFilter,
   OAuthConfigDto,
+  OpenDriveItemInput,
   RenameDriveItemInput,
   RootValidation,
   StartTransferOperationInput,
@@ -28,7 +29,7 @@ export type BackendPort = {
   removeAccount(accountId: string): Promise<void>;
   deleteLocalAccountData(accountId: string, confirmation: true): Promise<void>;
 
-  openDriveItem(fileId: string): Promise<void>;
+  openDriveItem(input: OpenDriveItemInput): Promise<void>;
   listDriveFiles(input: ListDriveFilesInput): Promise<DriveFileListDto>;
   renameDriveItem(input: RenameDriveItemInput): Promise<void>;
   trashDriveItem(input: TrashDriveItemInput): Promise<void>;

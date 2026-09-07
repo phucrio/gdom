@@ -27,6 +27,8 @@ pub struct DriveChild {
     pub trashed: bool,
     pub shortcut_target_id: Option<String>,
     pub shortcut_target_mime_type: Option<String>,
+    pub shortcut_target_resource_key: Option<String>,
+    pub resource_key: Option<String>,
     pub modified_time: Option<String>,
     pub web_view_link: Option<String>,
 }

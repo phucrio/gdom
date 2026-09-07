@@ -221,6 +221,8 @@ pub fn drive_child(
         trashed,
         shortcut_target_id: shortcut_target.map(ToOwned::to_owned),
         shortcut_target_mime_type: None,
+        shortcut_target_resource_key: None,
+        resource_key: None,
         modified_time: None,
         web_view_link: None,
     }

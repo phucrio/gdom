@@ -8,6 +8,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 #[derive(Default)]
 pub struct BrowseFolderRequest {
     pub folder_id: Option<String>,
+    pub folder_resource_key: Option<String>,
     pub page_token: Option<String>,
     pub page_size: Option<u32>,
     pub order_by: Option<String>,
@@ -66,10 +67,10 @@ impl<AccountPersistence: AccountStorePort + Send + Sync + 'static>
             drive,
         }
     }
-    async fn authorize_account(
+    pub async fn load_connected_account(
         &self,
         account_id: AccountId,
-    ) -> Result<(ConnectedAccount, AccessToken), DriveBrowserError> {
+    ) -> Result<ConnectedAccount, DriveBrowserError> {
         let account = self
             .account_store
             .find_by_id(account_id)
@@ -100,6 +101,13 @@ impl<AccountPersistence: AccountStorePort + Send + Sync + 'static>
                 ));
             }
         }
+        Ok(account)
+    }
+    async fn authorize_account(
+        &self,
+        account_id: AccountId,
+    ) -> Result<(ConnectedAccount, AccessToken), DriveBrowserError> {
+        let account = self.load_connected_account(account_id).await?;
         let token = self
             .token_provider
             .get_access_token(account_id)

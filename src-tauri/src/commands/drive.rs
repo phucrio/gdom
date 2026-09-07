@@ -3,8 +3,8 @@ use tauri::State;
 
 use crate::commands::account::parse_account_id;
 use crate::commands::drive_dto::{
-    DriveFileListDto, ListDriveFilesInput, RenameDriveItemInput, StartTransferOperationInput,
-    TrashDriveItemInput,
+    DriveFileListDto, ListDriveFilesInput, OpenDriveItemInput, RenameDriveItemInput,
+    StartTransferOperationInput, TrashDriveItemInput,
 };
 use crate::commands::dto::JobDto;
 use crate::commands::error::CommandError;
@@ -21,6 +21,7 @@ pub(crate) async fn list_drive_files_inner(
             account_id,
             crate::application::drive_browser::BrowseFolderRequest {
                 folder_id: input.folder_id,
+                folder_resource_key: input.folder_resource_key,
                 page_token: input.page_token,
                 page_size: input.page_size,
                 order_by: input.order_by,
@@ -45,6 +46,13 @@ pub(crate) async fn list_drive_files_inner(
             } else {
                 None
             };
+            let folder_resource_key = if is_folder {
+                file.resource_key.clone()
+            } else if folder_id.is_some() {
+                file.shortcut_target_resource_key.clone()
+            } else {
+                None
+            };
             let owners = file
                 .owners
                 .into_iter()
@@ -60,6 +68,8 @@ pub(crate) async fn list_drive_files_inner(
                 mime_type: file.mime_type,
                 is_folder,
                 folder_id,
+                folder_resource_key,
+                resource_key: file.resource_key,
                 size: file.quota_bytes_used,
                 modified_time: file.modified_time,
                 owners,
@@ -173,20 +183,48 @@ fn map_browser_error(error: crate::application::drive_browser::DriveBrowserError
 }
 
 #[tauri::command]
-pub fn open_drive_item(file_id: String) -> Result<(), CommandError> {
-    let url = drive_item_url(&file_id)?;
+pub async fn open_drive_item(
+    state: State<'_, AppState>,
+    input: OpenDriveItemInput,
+) -> Result<(), CommandError> {
+    let url = drive_item_url_inner(&state, input).await?;
     open::that(url.as_str()).map_err(|_| {
         CommandError::BrowserLaunchFailed("could not open Google Drive in the browser".into())
     })
 }
 
-fn drive_item_url(file_id: &str) -> Result<url::Url, CommandError> {
+pub(crate) async fn drive_item_url_inner(
+    state: &AppState,
+    input: OpenDriveItemInput,
+) -> Result<url::Url, CommandError> {
+    let account = state
+        .drive_browser
+        .load_connected_account(parse_account_id(&input.account_id)?)
+        .await
+        .map_err(map_browser_error)?;
+    drive_item_url(
+        &input.file_id,
+        account.email(),
+        input.resource_key.as_deref(),
+    )
+}
+
+fn drive_item_url(
+    file_id: &str,
+    account_email: &str,
+    resource_key: Option<&str>,
+) -> Result<url::Url, CommandError> {
     if file_id.trim().is_empty() {
         return Err(CommandError::DriveApi("file ID must not be empty".into()));
     }
     let mut url = url::Url::parse("https://drive.google.com/open")
         .map_err(|_| CommandError::Internal("invalid Google Drive URL".into()))?;
-    url.query_pairs_mut().append_pair("id", file_id);
+    url.query_pairs_mut()
+        .append_pair("id", file_id)
+        .append_pair("authuser", account_email);
+    if let Some(key) = resource_key.filter(|key| !key.is_empty()) {
+        url.query_pairs_mut().append_pair("resourcekey", key);
+    }
     Ok(url)
 }
 
@@ -196,17 +234,22 @@ mod browser_url_tests {
 
     #[test]
     fn drive_item_url_requires_id_and_keeps_untrusted_input_in_query() {
-        assert!(drive_item_url("").is_err());
-        assert!(drive_item_url("  ").is_err());
+        assert!(drive_item_url("", "user@gmail.com", None).is_err());
+        assert!(drive_item_url("  ", "user@gmail.com", None).is_err());
         let file_id = "file&next=https://example.invalid/#part";
-        let url = drive_item_url(file_id).unwrap();
+        let url =
+            drive_item_url(file_id, "user+tag@gmail.com", Some("key&authuser=evil#x")).unwrap();
         assert_eq!(url.scheme(), "https");
         assert_eq!(url.host_str(), Some("drive.google.com"));
         assert_eq!(url.path(), "/open");
         assert_eq!(url.fragment(), None);
         assert_eq!(
             url.query_pairs().collect::<Vec<_>>(),
-            vec![("id".into(), file_id.into())]
+            vec![
+                ("id".into(), file_id.into()),
+                ("authuser".into(), "user+tag@gmail.com".into()),
+                ("resourcekey".into(), "key&authuser=evil#x".into())
+            ]
         );
     }
 }
