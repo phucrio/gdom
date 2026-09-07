@@ -1415,6 +1415,7 @@ mod tests {
         .await
         .unwrap();
         assert_ne!(retried.status, "PAUSED");
+        state.job_service.await_idle(job_a_id).await;
 
         sqlx::query("UPDATE migration_jobs SET status = 'RUNNING' WHERE id = ?1")
             .bind(&job_a.id)
