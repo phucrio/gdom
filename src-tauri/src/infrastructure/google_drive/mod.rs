@@ -3,6 +3,7 @@ use std::{error::Error, fmt, time::Duration};
 use reqwest::StatusCode;
 use serde::Deserialize;
 
+mod browser;
 mod permissions;
 
 use crate::{

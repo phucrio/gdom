@@ -14,43 +14,27 @@ pub(crate) async fn list_drive_files_inner(
     input: ListDriveFilesInput,
 ) -> Result<DriveFileListDto, CommandError> {
     let account_id = parse_account_id(&input.account_id)?;
-    let account = state
-        .account_store
-        .find_by_id(account_id)
-        .await
-        .map_err(|e| CommandError::Database(e.to_string()))?
-        .ok_or_else(|| {
-            CommandError::AccountNotFound(format!("Account {} not found", account_id.value()))
-        })?;
-
-    let token = state
-        .token_provider
-        .get_access_token(account_id)
-        .await
-        .map_err(|e| CommandError::OAuth(e.to_string()))?;
-
     let page = state
-        .drive_client
-        .list_browse_children(
-            &token,
-            input.folder_id.as_deref(),
-            input.page_token.as_deref(),
-            input.page_size,
-            input.order_by.as_deref(),
+        .drive_browser
+        .list_files(
+            account_id,
+            crate::application::drive_browser::BrowseFolderRequest {
+                folder_id: input.folder_id,
+                page_token: input.page_token,
+                page_size: input.page_size,
+                order_by: input.order_by,
+            },
         )
         .await
-        .map_err(|e| CommandError::DriveApi(e.to_string()))?;
+        .map_err(map_browser_error)?;
 
-    let active_perm = account.google_permission_id().as_str();
     let items = page
-        .files
+        .items
         .into_iter()
-        .map(|file| {
+        .map(|item| {
+            let file = item.file;
+            let is_owner = item.is_owner;
             let is_folder = file.mime_type == "application/vnd.google-apps.folder";
-            let is_owner = file
-                .owners
-                .iter()
-                .any(|o| o.permission_id.as_str() == active_perm);
             let owners = file
                 .owners
                 .into_iter()
@@ -86,17 +70,17 @@ pub(crate) async fn rename_drive_item_inner(
     input: RenameDriveItemInput,
 ) -> Result<(), CommandError> {
     let account_id = parse_account_id(&input.account_id)?;
-    let token = state
-        .token_provider
-        .get_access_token(account_id)
-        .await
-        .map_err(|e| CommandError::OAuth(e.to_string()))?;
-
     state
-        .drive_client
-        .rename_file(&token, &input.file_id, &input.new_name)
+        .drive_browser
+        .rename_file(
+            account_id,
+            crate::application::drive_browser::RenameFileRequest {
+                file_id: input.file_id,
+                new_name: input.new_name,
+            },
+        )
         .await
-        .map_err(|e| CommandError::DriveApi(e.to_string()))?;
+        .map_err(map_browser_error)?;
 
     Ok(())
 }
@@ -106,17 +90,11 @@ pub(crate) async fn trash_drive_item_inner(
     input: TrashDriveItemInput,
 ) -> Result<(), CommandError> {
     let account_id = parse_account_id(&input.account_id)?;
-    let token = state
-        .token_provider
-        .get_access_token(account_id)
-        .await
-        .map_err(|e| CommandError::OAuth(e.to_string()))?;
-
     state
-        .drive_client
-        .trash_file(&token, &input.file_id)
+        .drive_browser
+        .trash_file(account_id, &input.file_id)
         .await
-        .map_err(|e| CommandError::DriveApi(e.to_string()))?;
+        .map_err(map_browser_error)?;
 
     Ok(())
 }
@@ -167,4 +145,17 @@ pub async fn start_transfer_operation(
     input: StartTransferOperationInput,
 ) -> Result<JobDto, CommandError> {
     start_transfer_operation_inner(&state, input).await
+}
+
+fn map_browser_error(error: crate::application::drive_browser::DriveBrowserError) -> CommandError {
+    use crate::application::drive_browser::DriveBrowserError;
+    match error {
+        DriveBrowserError::AccountNotFound => {
+            CommandError::AccountNotFound("account not found".into())
+        }
+        DriveBrowserError::Database(error) => CommandError::Database(error.to_string()),
+        DriveBrowserError::Authorization(error) => CommandError::OAuth(error.to_string()),
+        DriveBrowserError::Drive(error) => CommandError::DriveApi(error.to_string()),
+        DriveBrowserError::InvalidInput(message) => CommandError::DriveApi(message.into()),
+    }
 }

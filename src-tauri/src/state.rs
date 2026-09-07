@@ -137,6 +137,7 @@ impl OAuthConfig {
 // ---------------------------------------------------------------------------
 
 pub struct AppState {
+    pub drive_browser: crate::application::drive_browser::DriveBrowserService<SqliteAccountStore>,
     pub account_store: Arc<SqliteAccountStore>,
 
     #[cfg(target_os = "windows")]
@@ -156,8 +157,6 @@ pub struct AppState {
     pub token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
 
     pub job_store: Arc<crate::infrastructure::SqliteJobStore>,
-
-    pub drive_client: Arc<crate::infrastructure::google_drive::GoogleDriveClient>,
 
     pub job_service: Arc<
         crate::application::JobService<SqliteAccountStore, crate::infrastructure::SqliteJobStore>,
@@ -184,6 +183,11 @@ impl AppState {
         >,
     ) -> Self {
         Self {
+            drive_browser: crate::application::drive_browser::DriveBrowserService::new(
+                account_store.clone(),
+                token_provider.clone(),
+                drive_client.clone(),
+            ),
             account_store,
             credential_store,
             oauth_config,
@@ -192,7 +196,6 @@ impl AppState {
             account_lifecycle_use_case,
             token_provider,
             job_store,
-            drive_client,
             job_service,
         }
     }
@@ -216,6 +219,11 @@ impl AppState {
         >,
     ) -> Self {
         Self {
+            drive_browser: crate::application::drive_browser::DriveBrowserService::new(
+                account_store.clone(),
+                token_provider.clone(),
+                drive_client.clone(),
+            ),
             account_store,
             credential_store,
             oauth_config,
@@ -224,7 +232,6 @@ impl AppState {
             account_lifecycle_use_case,
             token_provider,
             job_store,
-            drive_client,
             job_service,
         }
     }
