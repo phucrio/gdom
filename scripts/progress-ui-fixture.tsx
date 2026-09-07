@@ -38,6 +38,7 @@ const transition = async (command: string, status: JobDto["status"]) => {
   commands.push(command); current = { ...current, status }; emit(); return current;
 };
 const backend: BackendPort = {
+  getAccountStorage: async () => ({ usageBytes: 107374182400, limitBytes: 5497558138880 }),
   beginAccountConnection: unsupported,
   cancelAccountConnection: unsupported,
   listAccounts: async () => { if (failAccounts) throw new Error("Registry unavailable"); return [source, target]; },

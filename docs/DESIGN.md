@@ -198,4 +198,6 @@ Use `ux-visual-interface` for detailed screen execution and `ux-design-systems` 
 
 ## Shared primitives
 
+The account menu includes a Google storage summary for the active account: percentage, used/total bytes, and a native meter with the indigo accent. Use existing surface, text, radius, and spacing tokens (12 px padding, 8 px gap). Fetch on menu open and account change; show loading, retryable error, and unavailable-limit states without substituting zero usage. Storage is the account total across Google services, not only Drive files.
+
 Use the existing semantic HTML and these reusable visual primitives across reachable product screens: primary, secondary, ghost, and danger buttons; field controls; status badges; notices; dialogs; file-type icons; account selection rows; job cards; and the reserved migration-progress region. Each primitive has default, hover, focus-visible, disabled, pending, error, and reduced-motion behavior where applicable. Do not introduce parallel one-off variants without updating this contract.

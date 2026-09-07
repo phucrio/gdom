@@ -9,6 +9,7 @@ import {
 } from "../legal/copy.ts";
 import { useAccountConnection } from "../accounts/useAccountConnection.ts";
 import { GoogleMark } from "../accounts/GoogleMark.tsx";
+import { CONNECT_CONFIG_LOAD_FAILED, CONNECT_SECRET_REQUIRED } from "../accounts/copy.ts";
 import gdomIcon from "../assets/gdom-icon.svg?no-inline";
 
 type LandingScreenProps = {
@@ -42,7 +43,7 @@ export function LandingScreen({
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load OAuth configuration.");
+          setError(err instanceof Error ? err.message : CONNECT_CONFIG_LOAD_FAILED);
           setConfigLoaded(true);
         }
       });
@@ -53,9 +54,7 @@ export function LandingScreen({
 
   async function handleSignIn() {
     if (!config?.canSignIn) {
-      setError(
-        "Google Desktop OAuth client secret is missing. Set GDOM_GOOGLE_CLIENT_SECRET before starting the app.",
-      );
+      setError(CONNECT_SECRET_REQUIRED);
       return;
     }
     setError(null);
@@ -111,9 +110,9 @@ export function LandingScreen({
           <p className="landing-status" role="status">Checking configuration…</p>
         ) : !config?.canSignIn ? (
           <div className="config-guidance" role="alert">
-            <p className="config-guidance-title">OAuth Configuration Required</p>
+            <p className="config-guidance-title">Google sign-in unavailable</p>
             <p className="config-guidance-body">
-              Local testing requires <code>GDOM_GOOGLE_CLIENT_SECRET</code> to be set in your terminal environment before running the app. Ensure Google Drive API is enabled in your Google Cloud Console.
+              {CONNECT_SECRET_REQUIRED}
             </p>
           </div>
         ) : (

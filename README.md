@@ -22,7 +22,7 @@ Tracking: [issue #19](https://github.com/phucrio/gdom/issues/19).
 - OAuth tokens remain in the Rust backend; refresh tokens live in Windows Credential Manager.
 - Backend logs are written to the local app-data `logs/gdom.log` file, rotated at 10 MB and kept to five files. Tokens and secrets are redacted before a line is stored.
 - OAuth requests full Drive access because GDOM must list and transfer arbitrary existing items; the consent flow must justify this immediately before opening the system browser.
-- Dry run and a mandatory canary precede bulk transfer. There is no automatic rollback.
+- Dry run and a mandatory canary precede bulk transfer. In the Drive browser, **Start transfer** authorizes the selected operation: a fully verified canary proceeds to the remaining items automatically; canary problems stop for review. There is no automatic rollback.
 - Live Drive mutation requires explicit user confirmation. Automated tests use mock HTTP by default. Ordinary CI never calls live Drive.
 
 ## Architecture decisions

@@ -4,6 +4,12 @@ use crate::application::{
     drive_browser::{BrowseFolderRequest, BrowserFuture, DriveBrowserPort, RenameFileRequest},
 };
 impl DriveBrowserPort for GoogleDriveClient {
+    fn storage_quota<'a>(
+        &'a self,
+        token: &'a AccessToken,
+    ) -> BrowserFuture<'a, crate::application::StorageQuota> {
+        Box::pin(async move { Ok(GoogleDriveClient::storage_quota(self, token).await?) })
+    }
     fn list_files<'a>(
         &'a self,
         token: &'a AccessToken,

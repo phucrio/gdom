@@ -230,12 +230,18 @@ export const ACCOUNT_COMMANDS = {
 } as const;
 
 export const DRIVE_COMMANDS = {
+  getAccountStorage: "get_account_storage",
   openDriveItem: "open_drive_item",
   listDriveFiles: "list_drive_files",
   renameDriveItem: "rename_drive_item",
   trashDriveItem: "trash_drive_item",
   startTransferOperation: "start_transfer_operation",
 } as const;
+
+export type StorageQuotaDto = AssertNoSecrets<{
+  usageBytes: number;
+  limitBytes: number | null;
+}>;
 
 export type DriveFileOwnerDto = AssertNoSecrets<{
   avatarUrl?: string | null;

@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::dto::JobDto;
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageQuotaDto {
+    pub usage_bytes: u64,
+    pub limit_bytes: Option<u64>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriveFileOwnerDto {

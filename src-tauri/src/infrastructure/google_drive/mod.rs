@@ -204,13 +204,14 @@ impl GoogleDriveClient {
             .await
             .map_err(|_| GoogleDriveError::InvalidResponse)?;
 
-        let quota = raw.storage_quota.unwrap_or(RawStorageQuota {
-            limit: None,
-            usage: None,
-        });
+        let quota = raw.storage_quota.ok_or(GoogleDriveError::InvalidResponse)?;
         Ok(StorageQuota {
-            limit_bytes: parse_u64_string(quota.limit),
-            usage_bytes: parse_u64_string(quota.usage).unwrap_or(0),
+            limit_bytes: quota
+                .limit
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .map_err(|_| GoogleDriveError::InvalidResponse)?,
+            usage_bytes: parse_u64_string(quota.usage).ok_or(GoogleDriveError::InvalidResponse)?,
         })
     }
 

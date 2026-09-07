@@ -114,10 +114,9 @@ await page.getByRole("button", { name: "Expand migration details" }).click();
   await page.evaluate(() => window.progressQa.setStatus("CANARY_REVIEW"));
   const approve = page.getByRole("button", { name: "Approve remaining transfers", exact: true });
   await approve.waitFor();
-  assert.equal(await approve.isDisabled(), true);
-  await page.getByLabel("Re-enter target email:").fill("wrong@gmail.com");
-  assert.equal(await approve.isDisabled(), true);
-  await page.getByLabel("Re-enter target email:").fill("target@gmail.com");
+  assert.equal(await approve.isEnabled(), true);
+  assert.equal(await page.locator("#canary-confirmation-email").count(), 0);
+  assert.equal(await page.evaluate(() => window.progressQa.commands.includes("continueMigration")), false, "Canary review must wait for explicit approval");
   await page.screenshot({ path: join(output, "canary-review-desktop.png"), fullPage: true });
   for (const width of [375, 768]) {
     await page.setViewportSize({ width, height: 900 });

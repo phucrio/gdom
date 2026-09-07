@@ -13,11 +13,13 @@ import type {
   RootValidation,
   StartTransferOperationInput,
   TrashDriveItemInput,
+  StorageQuotaDto,
 } from "./types.ts";
 
 /** UI-owned backend contract. Transport and secrets stay behind the adapter. */
 export type BackendPort = {
   listAccounts(): Promise<AccountDto[]>;
+  getAccountStorage(accountId: string): Promise<StorageQuotaDto>;
   getOAuthConfig(): Promise<OAuthConfigDto>;
   resetOAuthConfig(): Promise<OAuthConfigDto>;
   beginAccountConnection(attemptId: string): Promise<void>;

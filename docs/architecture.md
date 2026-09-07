@@ -227,7 +227,7 @@ sequenceDiagram
 Before advancing to bulk migration, a job must execute a canary run:
 1. **Canary Selection**: A bounded subset of items (default size 5) is selected.
 2. **Canary Execution (`RUNNING_CANARY`)**: Runs the transfer algorithm on the canary subset.
-3. **Canary Review Gate (`CANARY_REVIEW`)**: Live migration pauses automatically. Bulk execution requires explicit user review and confirmation (re-entering target email). It never advances automatically.
+3. **Canary Review Gate (`CANARY_REVIEW`)**: **Start transfer** in the Drive browser authorizes the selected job, including remaining items. After every canary item is verified, the backend persists the bulk phase and continues under the same mutation lease without another confirmation. Failed or unverified canary items stop this automatic progression for review. The separate step-by-step wizard retains explicit canary/bulk review. Paused jobs and jobs recovered after restart still require explicit resume; another queued job never starts automatically.
 4. **Bulk Execution (`RUNNING`)**: After user confirmation, the remaining eligible items are processed in leaf-first order.
 
 ### 6.3 Idempotent Transfer Algorithm

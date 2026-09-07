@@ -61,6 +61,7 @@ pub fn run() {
             commands::job::retry_failed_items,
             commands::job::queue_job,
             commands::drive::list_drive_files,
+            commands::drive::get_account_storage,
             commands::drive::open_drive_item,
             commands::drive::rename_drive_item,
             commands::drive::trash_drive_item,

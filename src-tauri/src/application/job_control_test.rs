@@ -240,6 +240,118 @@ fn mutation_methods(captured: &Mutex<Vec<String>>) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn automatic_transfer_continues_only_after_verified_canary() {
+    for canary_fails in [false, true] {
+        let transferred = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let received = Arc::clone(&transferred);
+        let env = build_env(move |request| {
+            let path = request_path(request).unwrap_or("");
+            let file_id = path
+                .strip_prefix("/drive/v3/files/")
+                .and_then(|rest| rest.split(['/', '?']).next())
+                .unwrap_or("");
+            if canary_fails && file_id == "file-0" {
+                return ("404 Not Found".into(), "{}".into());
+            }
+            match request_method(request) {
+                Some("GET") => (
+                    "200 OK".into(),
+                    file_json(file_id, false, received.lock().unwrap().contains(file_id)),
+                ),
+                Some("PATCH") => {
+                    received.lock().unwrap().insert(file_id.to_string());
+                    ("200 OK".into(), format!(r#"{{"id":"{TARGET_PERM}","role":"owner"}}"#))
+                }
+                _ => (
+                    "200 OK".into(),
+                    format!(r#"{{"id":"{TARGET_PERM}","type":"user","role":"writer","pendingOwner":true}}"#),
+                ),
+            }
+        }).await;
+        let job = seed_ready_job(
+            &env.job_store,
+            90,
+            1,
+            2,
+            "source@gmail.com",
+            "target@gmail.com",
+            SOURCE_PERM,
+            TARGET_PERM,
+        )
+        .await;
+        env.job_store
+            .commit_scan_batch(
+                job.id(),
+                &ItemBatchCommit {
+                    items: (0..6)
+                        .map(|index| {
+                            eligible_item(
+                                job.id(),
+                                900 + index,
+                                &format!("file-{index}"),
+                                6 - index as i64,
+                            )
+                        })
+                        .collect(),
+                    checkpoints_upsert: Vec::new(),
+                    checkpoints_delete: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        env.job_service
+            .run_auto_mutation_if_ready(job.id())
+            .await
+            .unwrap();
+        env.job_service.await_idle(job.id()).await;
+
+        let finished = env.job_service.get_job(job.id()).await.unwrap();
+        assert_eq!(
+            finished.status(),
+            if canary_fails {
+                JobStatus::CanaryReview
+            } else {
+                JobStatus::Completed
+            }
+        );
+        assert_eq!(
+            transferred.lock().unwrap().contains("file-5"),
+            !canary_fails
+        );
+        let last_event = env
+            .job_store
+            .latest_job_event(job.id())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            last_event.previous_state.as_deref(),
+            Some(if canary_fails {
+                JobStatus::RunningCanary.as_str()
+            } else {
+                JobStatus::Running.as_str()
+            })
+        );
+        assert!(
+            env.job_store
+                .current_mutation_lease()
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let events = env.events.snapshot();
+        assert_eq!(
+            events.iter().any(|event| matches!(event,
+                crate::application::JobRuntimeEvent::JobStatusChanged { status, .. }
+                    if status == JobStatus::Running.as_str()
+            )),
+            !canary_fails
+        );
+    }
+}
+
+#[tokio::test]
 async fn quick_transfer_scan_start_failure_preserves_locked_nonrecursive_scope() {
     let env = build_env(|_| {
         (

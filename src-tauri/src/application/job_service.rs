@@ -728,7 +728,21 @@ where
             events: Some(self.events.as_ref()),
             progress_total,
         };
-        Ok(crate::application::transfer::execute_auto_transfer(&run, job).await?)
+        let halt = crate::application::transfer::execute_auto_transfer(&run, job).await?;
+        if job.status() == JobStatus::CanaryReview {
+            let cohort = self.job_store.list_canary_cohort(job.id()).await?;
+            if !cohort.is_empty()
+                && cohort
+                    .iter()
+                    .all(|item| item.state == crate::domain::item::ItemState::Verified)
+            {
+                job.start_bulk()?;
+                self.persist_status(job, Some(JobStatus::CanaryReview.as_str()), "JOB_STATUS")
+                    .await?;
+                return Ok(execute_bulk(&run, job).await?);
+            }
+        }
+        Ok(halt)
     }
 
     async fn persist_paused(
@@ -1282,8 +1296,11 @@ where
             let mut running = started;
             Self::set_control_flag(&worker.transfer_pause_flags, job_id, false).await;
             Self::set_control_flag(&worker.transfer_cancel_flags, job_id, false).await;
-            let previous = running.status().as_str().to_string();
+            let mut previous = running.status().as_str().to_string();
             let result = worker.run_transfer_auto(&mut running).await;
+            if let Ok(persisted) = worker.get_job(job_id).await {
+                previous = persisted.status().as_str().to_string();
+            }
             if running.status() == JobStatus::Cancelled {
                 let _ = worker.job_store.cancel_unstarted_items(job_id).await;
             }

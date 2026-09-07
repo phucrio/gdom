@@ -126,7 +126,7 @@ export function OwnerPicker({
 
         <div className="owner-picker-notice" role="note">
           <p>
-            Choose a recipient, review the transfer, then start it. GDOM sends the ownership request from the source account and accepts it with the recipient account. Completed transfers are not automatically reversed.
+            Choose a recipient, review the transfer, then start it. GDOM checks a small sample first and automatically transfers the remaining items if the sample succeeds. Completed transfers are not automatically reversed.
           </p>
         </div>
 
