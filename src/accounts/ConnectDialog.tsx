@@ -12,8 +12,6 @@ import { Dialog } from "../ui/Dialog.tsx";
 import { useAccountConnection } from "./useAccountConnection.ts";
 import { GoogleMark } from "./GoogleMark.tsx";
 import {
-  CONNECT_ADVANCED_HELP,
-  CONNECT_ADVANCED_SUMMARY,
   CONNECT_BACK,
   CONNECT_BROWSER_ANNOUNCEMENT,
   CONNECT_CANCEL,
@@ -179,25 +177,18 @@ export function ConnectDialog({
           </p>
         )}
 
-        <details className="advanced-options">
-          <summary>{CONNECT_ADVANCED_SUMMARY}</summary>
-          <div className="advanced-options-form">
-            <p className="muted">{CONNECT_ADVANCED_HELP}</p>
-            {usingCustom && config?.clientId ? (
-              <p className="muted">Using stored client ID {config.clientId}</p>
-            ) : null}
-            <div className="dialog-actions">
-              <button
-                type="button"
-                className="ghost-button"
-                disabled={busy || !configLoaded || !usingCustom}
-                onClick={() => void handleResetDefault()}
-              >
-                {CONNECT_RESET_DEFAULT}
-              </button>
-            </div>
+        {usingCustom && (
+          <div className="dialog-actions">
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={busy || !configLoaded}
+              onClick={() => void handleResetDefault()}
+            >
+              {CONNECT_RESET_DEFAULT}
+            </button>
           </div>
-        </details>
+        )}
 
         {error !== null && (
           <p className="error" role="alert">
