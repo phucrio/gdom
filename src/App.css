@@ -1521,7 +1521,7 @@ button:not(:disabled):active { transform: translateY(1px); }
   border-bottom: none;
   border-radius: 8px 8px 0 0;
   box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
-  max-height: 320px;
+  max-height: min(320px, 40dvh);
   display: flex;
   flex-direction: column;
 }

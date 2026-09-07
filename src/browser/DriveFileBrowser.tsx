@@ -425,7 +425,7 @@ export function DriveFileBrowser({
                     >
                       <div className="name-cell">
                         <span className="item-icon"><FileTypeIcon kind={iconKind} /></span>
-                        {item.isFolder ? (
+                        {item.folderId !== null ? (
                           <button
                             type="button"
                             className="folder-link-button"

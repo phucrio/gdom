@@ -28,6 +28,10 @@ describe("format utilities", () => {
     expect(getFileIconKind("archive.TAR.GZ", "application/octet-stream", false)).toBe("archive");
     expect(getFileIconKind("guide.EPUB", "application/octet-stream", false)).toBe("ebook");
     expect(getFileIconKind("guide", "application/epub+zip", false)).toBe("ebook");
+    expect(getFileIconKind("data.pdf", "text/csv", false)).toBe("spreadsheet");
+    expect(getFileIconKind("README", "text/plain", false)).toBe("document");
+    expect(getFileIconKind("config", "application/json", false)).toBe("code");
+    expect(getFileIconKind("archive.pdf", "application/gzip", false)).toBe("archive");
     expect(getFileIconKind("notes.md", "text/plain", false)).toBe("markdown");
     expect(getFileIconKind("notes", "text/markdown", false)).toBe("markdown");
     expect(getFileIconKind("Document", "application/vnd.google-apps.document", false)).toBe("google-doc");

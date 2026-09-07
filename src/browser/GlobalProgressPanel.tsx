@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { BackendPort } from "../ipc/port.ts";
 import { canResumeJob, progressCounts } from "./progress.ts";
 import { useProgressSnapshot } from "./useProgressSnapshot.ts";
@@ -18,6 +18,8 @@ export function GlobalProgressPanel(props: GlobalProgressPanelProps) {
   return props.jobId ? <ProgressPanel key={props.jobId} {...props} jobId={props.jobId} /> : null;
 }
 
+const TERMINAL_JOB_STATUSES = new Set(["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELLED", "FAILED"]);
+
 function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
   GlobalProgressPanelProps & { jobId: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -27,6 +29,12 @@ function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
   const [confirmationEmail, setConfirmationEmail] = useState("");
   const { job, items, hasMore, loadingItems, loadError, refresh: fetchJob } =
     useProgressSnapshot(backend, jobId, expanded ? page : 0);
+
+  useEffect(() => {
+    if (job !== null && TERMINAL_JOB_STATUSES.has(job.status)) {
+      setConfirmCancel(false);
+    }
+  }, [job?.status]);
 
   function handleScroll(event: React.UIEvent<HTMLDivElement>) {
     const element = event.currentTarget;
@@ -106,7 +114,7 @@ function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
   const isScanning = job.status === "SCANNING";
   const isRunning = isScanning || job.status === "RUNNING" || job.status === "RUNNING_CANARY";
   const isPaused = canResumeJob(job);
-  const isFinished = ["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELLED", "FAILED"].includes(job.status);
+  const isFinished = TERMINAL_JOB_STATUSES.has(job.status);
   const { total, processed, percent, succeeded: succeededCount, failed: failedCount, skipped: skippedCount } = progressCounts(job);
 
   return (
