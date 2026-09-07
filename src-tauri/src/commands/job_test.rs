@@ -83,7 +83,7 @@ mod tests {
         let job_service = Arc::new(JobService::new(
             account_store.clone(),
             job_store.clone(),
-            Arc::new(drive_client) as Arc<dyn crate::application::DrivePort>,
+            Arc::new(drive_client.clone()) as Arc<dyn crate::application::DrivePort>,
             token_provider.clone(),
         ));
 
@@ -95,6 +95,7 @@ mod tests {
             account_lifecycle_use_case,
             token_provider,
             job_store,
+            Arc::new(drive_client),
             job_service,
         )
     }
@@ -369,7 +370,7 @@ mod tests {
         let job_service = Arc::new(JobService::new(
             account_store.clone(),
             job_store.clone(),
-            Arc::new(drive) as Arc<dyn crate::application::DrivePort>,
+            Arc::new(drive.clone()) as Arc<dyn crate::application::DrivePort>,
             token_provider.clone(),
         ));
         AppState::new(
@@ -380,6 +381,7 @@ mod tests {
             account_lifecycle_use_case,
             token_provider,
             job_store,
+            Arc::new(drive),
             job_service,
         )
     }

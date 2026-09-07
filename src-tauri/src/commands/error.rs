@@ -42,6 +42,8 @@ pub enum CommandError {
     ExportFailed(String),
     ScanInProgress(String),
     TransferInProgress(String),
+    DriveApi(String),
+    CannotTransferOwnership(String),
 }
 
 impl fmt::Display for CommandError {
@@ -74,6 +76,8 @@ impl fmt::Display for CommandError {
             Self::ExportFailed(msg) => write!(f, "export failed: {msg}"),
             Self::ScanInProgress(msg) => write!(f, "scan in progress: {msg}"),
             Self::TransferInProgress(msg) => write!(f, "transfer in progress: {msg}"),
+            Self::DriveApi(msg) => write!(f, "drive api error: {msg}"),
+            Self::CannotTransferOwnership(msg) => write!(f, "cannot transfer ownership: {msg}"),
         }
     }
 }

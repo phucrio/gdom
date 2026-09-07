@@ -157,6 +157,8 @@ pub struct AppState {
 
     pub job_store: Arc<crate::infrastructure::SqliteJobStore>,
 
+    pub drive_client: Arc<crate::infrastructure::google_drive::GoogleDriveClient>,
+
     pub job_service: Arc<
         crate::application::JobService<SqliteAccountStore, crate::infrastructure::SqliteJobStore>,
     >,
@@ -173,6 +175,7 @@ impl AppState {
         account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
         token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
         job_store: Arc<crate::infrastructure::SqliteJobStore>,
+        drive_client: Arc<crate::infrastructure::google_drive::GoogleDriveClient>,
         job_service: Arc<
             crate::application::JobService<
                 SqliteAccountStore,
@@ -189,6 +192,7 @@ impl AppState {
             account_lifecycle_use_case,
             token_provider,
             job_store,
+            drive_client,
             job_service,
         }
     }
@@ -203,6 +207,7 @@ impl AppState {
         account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
         token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
         job_store: Arc<crate::infrastructure::SqliteJobStore>,
+        drive_client: Arc<crate::infrastructure::google_drive::GoogleDriveClient>,
         job_service: Arc<
             crate::application::JobService<
                 SqliteAccountStore,
@@ -219,6 +224,7 @@ impl AppState {
             account_lifecycle_use_case,
             token_provider,
             job_store,
+            drive_client,
             job_service,
         }
     }
@@ -498,6 +504,12 @@ mod tests {
             lifecycle_use_case,
             token_provider,
             job_store,
+            Arc::new(
+                crate::infrastructure::google_drive::GoogleDriveClient::for_test(
+                    "http://localhost".into(),
+                )
+                .unwrap(),
+            ),
             job_service,
         );
 
@@ -551,6 +563,12 @@ mod tests {
             lifecycle_use_case,
             token_provider,
             job_store,
+            Arc::new(
+                crate::infrastructure::google_drive::GoogleDriveClient::for_test(
+                    "http://localhost".into(),
+                )
+                .unwrap(),
+            ),
             job_service,
         );
 

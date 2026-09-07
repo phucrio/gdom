@@ -58,6 +58,10 @@ pub fn run() {
             commands::job::cancel_migration,
             commands::job::retry_failed_items,
             commands::job::queue_job,
+            commands::drive::list_drive_files,
+            commands::drive::rename_drive_item,
+            commands::drive::trash_drive_item,
+            commands::drive::start_transfer_operation,
         ])
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
@@ -151,11 +155,12 @@ pub fn run() {
                 Arc::clone(&account_store),
             ));
 
+            let drive_arc = Arc::new(drive_client);
             let job_service = Arc::new(
                 application::JobService::new(
                     Arc::clone(&account_store),
                     Arc::clone(&job_store),
-                    Arc::new(drive_client) as Arc<dyn application::DrivePort>,
+                    drive_arc.clone() as Arc<dyn application::DrivePort>,
                     Arc::clone(&token_provider),
                 )
                 .with_event_sink(Arc::new(runtime::TauriJobEventSink::new(
@@ -177,6 +182,7 @@ pub fn run() {
                 account_lifecycle_use_case,
                 token_provider,
                 job_store,
+                drive_arc,
                 job_service,
             );
 

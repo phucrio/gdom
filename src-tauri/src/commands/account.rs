@@ -488,10 +488,11 @@ mod tests {
         let lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase> =
             Arc::new(lifecycle_service);
 
+        let drive_arc = Arc::new(drive_client);
         let job_service = Arc::new(crate::application::JobService::new(
             account_store.clone(),
             job_store.clone(),
-            Arc::new(drive_client) as Arc<dyn crate::application::DrivePort>,
+            drive_arc.clone() as Arc<dyn crate::application::DrivePort>,
             token_provider.clone(),
         ));
 
@@ -503,6 +504,7 @@ mod tests {
             lifecycle_use_case,
             token_provider,
             job_store,
+            drive_arc,
             job_service,
         )
     }
