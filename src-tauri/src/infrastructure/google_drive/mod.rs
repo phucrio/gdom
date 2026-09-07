@@ -413,6 +413,10 @@ fn drive_child_from_raw(raw: RawFileResponse) -> DriveChild {
         drive_id: raw.drive_id,
         quota_bytes_used: parse_i64_string(raw.quota_bytes_used.or(raw.size)),
         trashed: raw.trashed.unwrap_or(false),
+        shortcut_target_mime_type: raw
+            .shortcut_details
+            .as_ref()
+            .and_then(|details| details.target_mime_type.clone()),
         shortcut_target_id: raw.shortcut_details.and_then(|details| details.target_id),
         modified_time: raw.modified_time,
         web_view_link: raw.web_view_link,
@@ -469,6 +473,8 @@ struct RawFileResponse {
 struct RawShortcutDetails {
     #[serde(default)]
     target_id: Option<String>,
+    #[serde(default)]
+    target_mime_type: Option<String>,
 }
 
 #[derive(Deserialize)]

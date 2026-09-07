@@ -219,6 +219,7 @@ pub fn drive_child(
         quota_bytes_used: quota,
         trashed,
         shortcut_target_id: shortcut_target.map(ToOwned::to_owned),
+        shortcut_target_mime_type: None,
         modified_time: None,
         web_view_link: None,
     }

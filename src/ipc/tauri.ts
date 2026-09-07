@@ -68,6 +68,7 @@ export function createTauriBackend(): BackendPort {
         input: { accountId, confirmation },
       }),
 
+    openDriveItem: (fileId) => invokeCommand<void>(DRIVE_COMMANDS.openDriveItem, { fileId }),
     listDriveFiles: (input) =>
       invokeCommand<DriveFileListDto>(DRIVE_COMMANDS.listDriveFiles, { input }),
     renameDriveItem: (input) =>

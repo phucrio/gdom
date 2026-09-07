@@ -127,6 +127,28 @@ mod tests {
                     "size": "2048",
                     "owners": [{"permissionId": "other-perm", "emailAddress": "other@gmail.com"}],
                     "modifiedTime": "2026-09-02T12:00:00Z"
+                },
+                {
+                    "id": "folder-shortcut",
+                    "name": "Shared folder shortcut",
+                    "mimeType": "application/vnd.google-apps.shortcut",
+                    "shortcutDetails": {
+                        "targetId": "shared-folder",
+                        "targetMimeType": "application/vnd.google-apps.folder"
+                    },
+                    "owners": [{"permissionId": SOURCE_PERM}]
+                },
+                {
+                    "id": "file-shortcut",
+                    "name": "Document shortcut",
+                    "mimeType": "application/vnd.google-apps.shortcut",
+                    "shortcutDetails": {"targetId": "document", "targetMimeType": "application/pdf"}
+                },
+                {
+                    "id": "unknown-shortcut",
+                    "name": "Shortcut without target type",
+                    "mimeType": "application/vnd.google-apps.shortcut",
+                    "shortcutDetails": {"targetId": "unknown"}
                 }
             ],
             "nextPageToken": "token-next-page"
@@ -160,7 +182,7 @@ mod tests {
         .await
         .expect("list drive files");
 
-        assert_eq!(res.items.len(), 2);
+        assert_eq!(res.items.len(), 5);
         assert_eq!(res.next_page_token.as_deref(), Some("token-next-page"));
 
         let folder = &res.items[0];
@@ -176,6 +198,22 @@ mod tests {
         assert!(!file.is_owner);
         assert!(!file.can_transfer_ownership);
         assert_eq!(file.size, Some(2048));
+
+        let serialized = serde_json::to_value(&res).unwrap();
+        assert_eq!(serialized["items"][0]["folderId"], "folder-1");
+        assert!(serialized["items"][1]["folderId"].is_null());
+        assert_eq!(serialized["items"][2]["folderId"], "shared-folder");
+        assert!(serialized["items"][3]["folderId"].is_null());
+        assert!(serialized["items"][4]["folderId"].is_null());
+        let shortcut = &res.items[2];
+        assert_eq!(shortcut.id, "folder-shortcut");
+        assert!(!shortcut.is_folder);
+        assert!(shortcut.is_owner);
+        assert!(shortcut.can_transfer_ownership);
+        assert_eq!(
+            shortcut.shortcut_target_id.as_deref(),
+            Some("shared-folder")
+        );
     }
 
     #[tokio::test]

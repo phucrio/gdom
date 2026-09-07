@@ -16,6 +16,7 @@ pub struct DriveFileItemDto {
     pub name: String,
     pub mime_type: String,
     pub is_folder: bool,
+    pub folder_id: Option<String>,
     pub size: Option<i64>,
     pub modified_time: Option<String>,
     pub owners: Vec<DriveFileOwnerDto>,

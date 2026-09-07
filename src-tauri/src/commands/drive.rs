@@ -1,3 +1,4 @@
+use crate::application::drive_tree::{FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE};
 use tauri::State;
 
 use crate::commands::account::parse_account_id;
@@ -34,7 +35,16 @@ pub(crate) async fn list_drive_files_inner(
         .map(|item| {
             let file = item.file;
             let is_owner = item.is_owner;
-            let is_folder = file.mime_type == "application/vnd.google-apps.folder";
+            let is_folder = file.mime_type == FOLDER_MIME_TYPE;
+            let folder_id = if is_folder {
+                Some(file.id.clone())
+            } else if file.mime_type == SHORTCUT_MIME_TYPE
+                && file.shortcut_target_mime_type.as_deref() == Some(FOLDER_MIME_TYPE)
+            {
+                file.shortcut_target_id.clone()
+            } else {
+                None
+            };
             let owners = file
                 .owners
                 .into_iter()
@@ -48,6 +58,7 @@ pub(crate) async fn list_drive_files_inner(
                 name: file.name,
                 mime_type: file.mime_type,
                 is_folder,
+                folder_id,
                 size: file.quota_bytes_used,
                 modified_time: file.modified_time,
                 owners,
@@ -157,5 +168,44 @@ fn map_browser_error(error: crate::application::drive_browser::DriveBrowserError
         DriveBrowserError::Authorization(error) => CommandError::OAuth(error.to_string()),
         DriveBrowserError::Drive(error) => CommandError::DriveApi(error.to_string()),
         DriveBrowserError::InvalidInput(message) => CommandError::DriveApi(message.into()),
+    }
+}
+
+#[tauri::command]
+pub fn open_drive_item(file_id: String) -> Result<(), CommandError> {
+    let url = drive_item_url(&file_id)?;
+    open::that(url.as_str()).map_err(|_| {
+        CommandError::BrowserLaunchFailed("could not open Google Drive in the browser".into())
+    })
+}
+
+fn drive_item_url(file_id: &str) -> Result<url::Url, CommandError> {
+    if file_id.trim().is_empty() {
+        return Err(CommandError::DriveApi("file ID must not be empty".into()));
+    }
+    let mut url = url::Url::parse("https://drive.google.com/open")
+        .map_err(|_| CommandError::Internal("invalid Google Drive URL".into()))?;
+    url.query_pairs_mut().append_pair("id", file_id);
+    Ok(url)
+}
+
+#[cfg(test)]
+mod browser_url_tests {
+    use super::*;
+
+    #[test]
+    fn drive_item_url_requires_id_and_keeps_untrusted_input_in_query() {
+        assert!(drive_item_url("").is_err());
+        assert!(drive_item_url("  ").is_err());
+        let file_id = "file&next=https://example.invalid/#part";
+        let url = drive_item_url(file_id).unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("drive.google.com"));
+        assert_eq!(url.path(), "/open");
+        assert_eq!(url.fragment(), None);
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            vec![("id".into(), file_id.into())]
+        );
     }
 }

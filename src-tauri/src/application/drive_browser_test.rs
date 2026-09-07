@@ -62,6 +62,7 @@ impl DriveBrowserPort for RecordingBrowser {
                     quota_bytes_used: None,
                     trashed: false,
                     shortcut_target_id: None,
+                    shortcut_target_mime_type: None,
                     modified_time: None,
                     web_view_link: None,
                 }],

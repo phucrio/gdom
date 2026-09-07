@@ -228,6 +228,7 @@ export const ACCOUNT_COMMANDS = {
 } as const;
 
 export const DRIVE_COMMANDS = {
+  openDriveItem: "open_drive_item",
   listDriveFiles: "list_drive_files",
   renameDriveItem: "rename_drive_item",
   trashDriveItem: "trash_drive_item",
@@ -244,6 +245,7 @@ export type DriveFileItemDto = AssertNoSecrets<{
   name: string;
   mimeType: string;
   isFolder: boolean;
+  folderId: string | null;
   size: number | null;
   modifiedTime: string | null;
   owners: DriveFileOwnerDto[];
