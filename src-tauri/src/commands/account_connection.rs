@@ -153,6 +153,7 @@ pub async fn connect_account(
     let mut attempt = state.account_connections.take(&attempt_id).await?;
     let grant = attempt
         .wait_for_authorization(async {
+            super::account::recover_custom_oauth_secret(&state).await?;
             let config = state
                 .oauth_config
                 .read()

@@ -1,55 +1,71 @@
-#[cfg(any(target_os = "windows", test))]
 use crate::domain::AccountId;
 
-#[cfg(any(target_os = "windows", test))]
 const SERVICE: &str = "gdom.google.oauth.refresh-token";
 
-#[cfg(any(target_os = "windows", test))]
 const OAUTH_CLIENT_SERVICE: &str = "gdom.google.oauth.client-secret";
 
-#[cfg(any(target_os = "windows", test))]
 const OAUTH_CLIENT_ACCOUNT: &str = "client-secret";
 
-#[cfg(any(target_os = "windows", test))]
 fn credential_username(account_id: AccountId) -> String {
     format!("account-{}", account_id.value())
 }
 
-#[cfg(any(target_os = "windows", test))]
-pub struct WindowsCredentialStore {
-    store: std::sync::Arc<keyring_core::CredentialStore>,
+#[derive(Default)]
+pub struct NativeCredentialStore {
+    #[cfg(test)]
+    mock_store: Option<std::sync::Arc<keyring_core::CredentialStore>>,
 }
 
-#[cfg(any(target_os = "windows", test))]
-impl WindowsCredentialStore {
-    #[cfg(target_os = "windows")]
-    pub fn new() -> Result<Self, RefreshTokenStoreError> {
-        let store = windows_native_keyring_store::Store::new()
-            .map_err(|_| RefreshTokenStoreError::Unavailable)?;
-        Ok(Self { store })
+impl NativeCredentialStore {
+    pub const fn new() -> Self {
+        Self {
+            #[cfg(test)]
+            mock_store: None,
+        }
     }
 
-    /// Create a `WindowsCredentialStore` backed by an in-memory mock.
+    fn store(
+        &self,
+    ) -> Result<std::sync::Arc<keyring_core::CredentialStore>, RefreshTokenStoreError> {
+        #[cfg(test)]
+        if let Some(store) = &self.mock_store {
+            return Ok(std::sync::Arc::clone(store));
+        }
+
+        // Reconnect on each operation so an unavailable desktop keychain can recover.
+        #[cfg(target_os = "windows")]
+        let store = windows_native_keyring_store::Store::new();
+        #[cfg(target_os = "macos")]
+        let store = apple_native_keyring_store::keychain::Store::new();
+        #[cfg(target_os = "linux")]
+        let store = dbus_secret_service_keyring_store::Store::new();
+        match store {
+            Ok(store) => Ok(store),
+            Err(_) => Err(RefreshTokenStoreError::Unavailable),
+        }
+    }
+
+    /// Create a `NativeCredentialStore` backed by an in-memory mock.
     /// Available only in test builds.
     #[cfg(test)]
     pub fn new_mock() -> Self {
         let store: std::sync::Arc<keyring_core::CredentialStore> =
             keyring_core::mock::Store::new().expect("mock credential store initializes");
-        Self { store }
+        Self {
+            mock_store: Some(store),
+        }
     }
 
     fn entry(&self, account_id: AccountId) -> Result<keyring_core::Entry, RefreshTokenStoreError> {
-        self.store
+        self.store()?
             .build(SERVICE, &credential_username(account_id), None)
             .map_err(|_| RefreshTokenStoreError::Unavailable)
     }
 }
 
-#[cfg(any(target_os = "windows", test))]
 use crate::application::{RefreshToken, RefreshTokenStore, RefreshTokenStoreError};
 
-#[cfg(any(target_os = "windows", test))]
-impl RefreshTokenStore for WindowsCredentialStore {
+impl RefreshTokenStore for NativeCredentialStore {
     fn save(
         &self,
         account_id: AccountId,
@@ -76,7 +92,7 @@ impl RefreshTokenStore for WindowsCredentialStore {
     }
 
     fn save_oauth_secret(&self, secret: &str) -> Result<(), RefreshTokenStoreError> {
-        self.store
+        self.store()?
             .build(OAUTH_CLIENT_SERVICE, OAUTH_CLIENT_ACCOUNT, None)
             .map_err(|_| RefreshTokenStoreError::Unavailable)?
             .set_password(secret)
@@ -85,7 +101,7 @@ impl RefreshTokenStore for WindowsCredentialStore {
 
     fn load_oauth_secret(&self) -> Result<Option<String>, RefreshTokenStoreError> {
         match self
-            .store
+            .store()?
             .build(OAUTH_CLIENT_SERVICE, OAUTH_CLIENT_ACCOUNT, None)
             .map_err(|_| RefreshTokenStoreError::Unavailable)?
             .get_password()
@@ -98,7 +114,7 @@ impl RefreshTokenStore for WindowsCredentialStore {
 
     fn delete_oauth_secret(&self) -> Result<(), RefreshTokenStoreError> {
         match self
-            .store
+            .store()?
             .build(OAUTH_CLIENT_SERVICE, OAUTH_CLIENT_ACCOUNT, None)
             .map_err(|_| RefreshTokenStoreError::Unavailable)?
             .delete_credential()
@@ -116,12 +132,14 @@ mod tests {
     use crate::application::{RefreshToken, RefreshTokenStore};
     use crate::domain::AccountId;
 
-    use super::{WindowsCredentialStore, credential_username};
+    use super::{NativeCredentialStore, credential_username};
 
-    fn store() -> WindowsCredentialStore {
+    fn store() -> NativeCredentialStore {
         let store: Arc<keyring_core::CredentialStore> =
             keyring_core::mock::Store::new().expect("mock credential store initializes");
-        WindowsCredentialStore { store }
+        NativeCredentialStore {
+            mock_store: Some(store),
+        }
     }
 
     #[test]
@@ -237,5 +255,73 @@ mod tests {
 
         store.delete_oauth_secret().expect("delete succeeds");
         assert_eq!(store.load_oauth_secret().expect("load succeeds"), None);
+    }
+
+    #[test]
+    fn unavailable_keychain_can_retry_without_losing_credential() {
+        let store = store();
+        let account = AccountId::new(7);
+        store
+            .save(account, RefreshToken::new("retained-secret".to_owned()))
+            .expect("save credential");
+        let entry = store.entry(account).expect("entry exists");
+        let credential: &keyring_core::mock::Cred =
+            entry.as_any().downcast_ref().expect("mock credential");
+        credential.set_error(keyring_core::Error::NoDefaultStore);
+
+        assert!(matches!(
+            store.load(account),
+            Err(crate::application::RefreshTokenStoreError::Unavailable)
+        ));
+        assert_eq!(
+            store
+                .load(account)
+                .expect("retry succeeds")
+                .expect("credential retained")
+                .expose_secret(),
+            "retained-secret"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an unlocked native desktop keychain and GDOM_NATIVE_KEYCHAIN_TESTS=1"]
+    fn native_keychain_round_trip() {
+        assert_eq!(
+            std::env::var("GDOM_NATIVE_KEYCHAIN_TESTS").as_deref(),
+            Ok("1")
+        );
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let service = format!("gdom.native-smoke.{}.{unique_id}", std::process::id());
+        let native = NativeCredentialStore::new();
+        let entry = native
+            .store()
+            .expect("native store available")
+            .build(&service, "synthetic-account", None)
+            .expect("synthetic entry");
+        let result = (|| -> Result<String, crate::application::RefreshTokenStoreError> {
+            entry
+                .set_password("synthetic-credential-only")
+                .map_err(|_| crate::application::RefreshTokenStoreError::Unavailable)?;
+            let reopened = native
+                .store()?
+                .build(&service, "synthetic-account", None)
+                .map_err(|_| crate::application::RefreshTokenStoreError::Unavailable)?;
+            reopened
+                .get_password()
+                .map_err(|_| crate::application::RefreshTokenStoreError::Unavailable)
+        })();
+        let cleanup = entry.delete_credential();
+        assert!(cleanup.is_ok(), "synthetic credential cleanup failed");
+        assert_eq!(
+            result.expect("credential round trip"),
+            "synthetic-credential-only"
+        );
+        assert!(matches!(
+            entry.get_password(),
+            Err(keyring_core::Error::NoEntry)
+        ));
     }
 }

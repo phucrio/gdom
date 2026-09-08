@@ -2,7 +2,7 @@ import { createRoot } from "react-dom/client";
 import { useState } from "react";
 import { App } from "../src/App.tsx";
 import type { BackendPort } from "../src/ipc/port.ts";
-import type { AccountDto, DriveFileItemDto, JobDto, JobItemDto } from "../src/ipc/types.ts";
+import type { AccountDto, DriveFileItemDto, JobDto, JobItemDto, UpdateStatusDto } from "../src/ipc/types.ts";
 
 const account = (id: string): AccountDto => ({ id, email: `${id}@gmail.com`, displayName: id,
   googlePermissionId: id, label: null, authStatus: "CONNECTED", connectedAt: "2026-09-07",
@@ -42,11 +42,38 @@ function unsupported(): never { throw new Error("Unsupported synthetic fixture c
 const transition = async (command: string, status: JobDto["status"]) => {
   commands.push(command); current = { ...current, status }; emit(); return current;
 };
+let updateStatus: UpdateStatusDto = { phase: "unavailable", installedVersion: "0.1.0", targetVersion: null, notes: null, downloadedBytes: 0, totalBytes: null, error: null };
+let updateRelease: (() => void) | null = null;
+let updateBusy = true;
+let emptyAccounts = false;
+let checkFailure = false;
 const backend: BackendPort = {
+  getUpdateStatus: async () => updateStatus,
+  checkForUpdates: async () => {
+    commands.push("checkForUpdates");
+    if (checkFailure) throw new Error("Update service is offline.");
+    updateStatus = { ...updateStatus, phase: "available", targetVersion: "0.1.1", notes: `Update improvements.
+<script>plain text</script>` };
+    return updateStatus;
+  },
+  downloadUpdate: async ({ confirmed }) => {
+    if (!confirmed) throw new Error("Confirmation required");
+    commands.push("downloadUpdate");
+    updateStatus = { ...updateStatus, phase: "downloading", downloadedBytes: 25, totalBytes: 100 };
+    await new Promise<void>((resolve) => { updateRelease = resolve; });
+    updateStatus = { ...updateStatus, phase: "ready", downloadedBytes: 100 };
+    return updateStatus;
+  },
+  installUpdate: async ({ confirmed }) => {
+    if (!confirmed) throw new Error("Confirmation required");
+    commands.push("installUpdate");
+    updateStatus = { ...updateStatus, phase: updateBusy ? "deferred" : "installing" };
+    return updateStatus;
+  },
   getAccountStorage: async () => ({ usageBytes: 107374182400, limitBytes: 5497558138880 }),
   beginAccountConnection: unsupported,
   cancelAccountConnection: unsupported,
-  listAccounts: async () => { if (failAccounts) throw new Error("Registry unavailable"); return [source, target]; },
+  listAccounts: async () => { if (failAccounts) throw new Error("Registry unavailable"); return emptyAccounts ? [] : [source, target]; },
   listJobs: async () => queueJobs ?? [current, { ...current, id: "other-job", sourceAccountId: "other", targetAccountId: "else", status: "COMPLETED" }],
   getJob: async (id) => {
     jobRequests += 1;
@@ -68,7 +95,7 @@ const backend: BackendPort = {
   startCanary: () => transition("startCanary", "RUNNING_CANARY"),
   cancelMigration: () => transition("cancelMigration", "CANCELLED"),
   reauthenticateAccount: async () => { commands.push("reauthenticateAccount"); source.authStatus = "CONNECTED"; emit(); return source; },
-  getOAuthConfig: unsupported, resetOAuthConfig: unsupported, connectAccount: unsupported,
+  getOAuthConfig: async () => { throw new Error("Sign-in fixture unavailable"); }, resetOAuthConfig: unsupported, connectAccount: unsupported,
   updateAccountLabel: unsupported, disconnectAccount: unsupported, removeAccount: unsupported,
   deleteLocalAccountData: unsupported, renameDriveItem: unsupported, trashDriveItem: unsupported,
   startTransferOperation: async (input) => { if (failStartTransfer) throw new Error("Transfer start unavailable"); commands.push(`startTransferOperation:${input.sourceAccountId}:${input.targetAccountId}:${input.rootFileIds.join(",")}:${input.recursive}`); return current; }, createJob: unsupported, updateDraftJobAccounts: unsupported,
@@ -104,6 +131,12 @@ function Fixture() {
   const [generation, setGeneration] = useState(0);
   Object.assign(window, { progressQa: {
     commands,
+    updateScenario(phase: UpdateStatusDto["phase"]) { updateStatus = { ...updateStatus, phase }; setGeneration((value) => value + 1); },
+    unknownDownloadSize() { updateStatus = { ...updateStatus, totalBytes: null }; },
+    finishDownload() { updateRelease?.(); updateRelease = null; },
+    finishWork() { updateBusy = false; },
+    emptyAccounts(value: boolean) { emptyAccounts = value; emit(); },
+    failUpdateCheck(value: boolean) { checkFailure = value; },
     holdQueue() { queueGate = new Promise<void>((resolve) => { releaseQueue = resolve; }); },
     releaseQueue() { releaseQueue?.(); queueGate = null; releaseQueue = null; },
     failQueue(value: boolean) { failQueue = value; },

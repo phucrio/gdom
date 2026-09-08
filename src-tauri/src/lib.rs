@@ -21,13 +21,17 @@ use infrastructure::{
 };
 use state::{AppState, OAuthConfig};
 
-#[cfg(target_os = "windows")]
-use infrastructure::secrets::WindowsCredentialStore;
+use infrastructure::secrets::NativeCredentialStore;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            commands::updates::get_update_status,
+            commands::updates::check_for_updates,
+            commands::updates::download_update,
+            commands::updates::install_update,
             commands::account::list_accounts,
             commands::account::configure_oauth,
             commands::account::get_oauth_config,
@@ -71,18 +75,17 @@ pub fn run() {
             commands::drive::start_transfer_operation,
         ])
         .setup(|app| {
-            let app_data_dir = app.path().app_data_dir().map_err(|e| {
-                format!("failed to resolve app data directory: {e}")
-            })?;
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("failed to resolve app data directory: {e}"))?;
 
-            std::fs::create_dir_all(&app_data_dir).map_err(|e| {
-                format!("failed to create app data directory: {e}")
-            })?;
+            std::fs::create_dir_all(&app_data_dir)
+                .map_err(|e| format!("failed to create app data directory: {e}"))?;
 
             let log_dir = app_data_dir.join(gdom_logs::LOG_DIR_NAME);
-            let log_guard = gdom_logs::init_file_logging(&log_dir).map_err(|e| {
-                format!("failed to initialize file logging: {e}")
-            })?;
+            let log_guard = gdom_logs::init_file_logging(&log_dir)
+                .map_err(|e| format!("failed to initialize file logging: {e}"))?;
             tracing::info!(
                 path = %gdom_logs::log_file_path(&log_dir).display(),
                 "file logging initialized"
@@ -90,44 +93,42 @@ pub fn run() {
 
             let db_path = app_data_dir.join("gdom.db");
 
-            let account_store = tauri::async_runtime::block_on(
-                SqliteAccountStore::open(&db_path),
-            )
-            .map_err(|e| format!("failed to open account database: {e}"))?;
+            let account_store = tauri::async_runtime::block_on(SqliteAccountStore::open(&db_path))
+                .map_err(|e| format!("failed to open account database: {e}"))?;
 
-            #[cfg(target_os = "windows")]
-            let credential_store = Arc::new(
-                WindowsCredentialStore::new()
-                    .map_err(|e| format!("failed to initialize credential store: {e}"))?,
-            );
+            let credential_store = Arc::new(NativeCredentialStore::new());
 
-            #[cfg(not(target_os = "windows"))]
-            return Err("GDOM requires Windows — credential store adapters for other platforms are not yet available".into());
+            let db_client_id =
+                tauri::async_runtime::block_on(account_store.get_setting("oauth.client_id"))
+                    .map_err(|e| format!("failed to read oauth.client_id: {e}"))?;
 
-            let db_client_id = tauri::async_runtime::block_on(
-                account_store.get_setting("oauth.client_id"),
-            )
-            .map_err(|e| format!("failed to read oauth.client_id: {e}"))?;
-
-            let keychain_client_secret = credential_store
-                .load_oauth_secret()
-                .map_err(|e| format!("failed to read oauth secret from credential store: {e}"))?;
+            let keychain_client_secret = match credential_store.load_oauth_secret() {
+                Ok(secret) => secret,
+                Err(_) => {
+                    tracing::warn!("credential store unavailable; unlock it before signing in");
+                    None
+                }
+            };
 
             let oauth_config = Some(
-                OAuthConfig::resolve(
-                    db_client_id.as_deref(),
-                    keychain_client_secret,
-                    |key| std::env::var(key),
-                )
+                OAuthConfig::resolve(db_client_id.as_deref(), keychain_client_secret, |key| {
+                    std::env::var(key)
+                })
                 .0,
             );
 
             let account_store = Arc::new(account_store);
             let shared_oauth_config = Arc::new(tokio::sync::RwLock::new(oauth_config));
 
-            let token_service = Arc::new(DynamicGoogleTokenClient::new(Arc::clone(
-                &shared_oauth_config,
-            )));
+            let authentication_lock = Arc::new(tokio::sync::Mutex::new(()));
+            let token_service = Arc::new(
+                DynamicGoogleTokenClient::new(Arc::clone(&shared_oauth_config))
+                    .with_secret_recovery(
+                        Arc::clone(&account_store),
+                        credential_store.clone(),
+                        Arc::clone(&authentication_lock),
+                    ),
+            );
 
             let drive_client = GoogleDriveClient::new()
                 .map_err(|e| format!("failed to initialize Google Drive client: {e}"))?;
@@ -145,13 +146,16 @@ pub fn run() {
                 account_store.pool().clone(),
             ));
 
-            let lifecycle_service = application::AccountLifecycleService::new(
-                token_service.clone(),
-                drive_client.clone(),
-                Arc::clone(&account_store),
-                Arc::clone(&credential_store),
-            )
-            .with_job_store(Arc::clone(&job_store) as Arc<dyn application::job_store::JobStorePort>);
+            let lifecycle_service =
+                application::AccountLifecycleService::new(
+                    token_service.clone(),
+                    drive_client.clone(),
+                    Arc::clone(&account_store),
+                    Arc::clone(&credential_store),
+                )
+                .with_job_store(
+                    Arc::clone(&job_store) as Arc<dyn application::job_store::JobStorePort>
+                );
 
             let account_lifecycle_use_case: Arc<dyn AccountLifecycleUseCase> =
                 Arc::new(lifecycle_service);
@@ -180,8 +184,7 @@ pub fn run() {
                 format!("failed to reconcile unfinished migration jobs on startup: {e}")
             })?;
 
-            #[allow(unreachable_code)]
-            let state = AppState::new(
+            let mut state = AppState::new(
                 account_store,
                 credential_store,
                 shared_oauth_config,
@@ -193,7 +196,12 @@ pub fn run() {
                 job_service,
             );
 
+            state.connect_account_lock = authentication_lock;
+
             app.manage(log_guard);
+            app.manage(commands::updates::UpdateState::new(
+                app.package_info().version.to_string(),
+            ));
             app.manage(state);
 
             Ok(())

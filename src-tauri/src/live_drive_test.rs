@@ -5,10 +5,12 @@ use live_support::gate::{Manifest, check_environment, selected_fixture, validate
 #[tokio::test]
 #[ignore = "requires dedicated Gmail fixtures and explicit local authorization; never run in CI"]
 async fn dedicated_gmail_canary() {
-    let mut diagnostics = live_support::diagnostics::Diagnostics {
+    let diagnostics = live_support::diagnostics::Diagnostics {
         stage: "Enable the live opt-in on Windows outside CI",
         output_directory: None,
     };
+    #[cfg(target_os = "windows")]
+    let mut diagnostics = diagnostics;
     let outcome = async {
         check_environment(
             std::env::var("GDOM_LIVE_DRIVE_TESTS").ok().as_deref(),
@@ -17,10 +19,12 @@ async fn dedicated_gmail_canary() {
                 .any(|key| std::env::var_os(key).is_some()),
         )?;
         #[cfg(target_os = "windows")]
-        live_support::run::run(&mut diagnostics).await?;
+        {
+            live_support::run::run(&mut diagnostics).await?;
+            Ok::<(), Box<dyn std::error::Error>>(())
+        }
         #[cfg(not(target_os = "windows"))]
-        return Err::<(), Box<dyn std::error::Error>>("live harness requires Windows".into());
-        Ok::<(), Box<dyn std::error::Error>>(())
+        Err::<(), Box<dyn std::error::Error>>("live harness requires Windows".into())
     }
     .await;
     if let Err(error) = outcome {
@@ -54,6 +58,9 @@ fn disabled_or_ci_environment_blocks_before_loading_any_manifest() {
 }
 #[test]
 fn manifest_rejects_shared_accounts_or_out_of_scope_items() {
+    let parsed = manifest();
+    assert_eq!(parsed.database, std::path::PathBuf::from("outside.db"));
+    assert_eq!(parsed.output_directory, std::path::PathBuf::from("outside"));
     assert!(validate_manifest(&manifest()).is_ok());
     let mut duplicate = manifest();
     duplicate.accounts[2].account_id = "2".into();

@@ -2,7 +2,7 @@
 
 Local-first desktop software for planning and executing Google Drive ownership transfers between connected personal Gmail accounts.
 
-GDOM runs on Windows 11. It connects personal Gmail accounts (`@gmail.com` / `@googlemail.com`) through the system browser, stores refresh tokens in Windows Credential Manager, and keeps Drive metadata and checkpoints in local SQLite. Source and target are chosen per job from an Account Registry; accounts have no permanent role.
+GDOM targets Windows 11, macOS and Linux on x64 and ARM64. It connects personal Gmail accounts (`@gmail.com` / `@googlemail.com`) through the system browser, stores refresh tokens in Windows Credential Manager, macOS Keychain or Linux Secret Service, and keeps Drive metadata and checkpoints in local SQLite. Source and target are chosen per job from an Account Registry; accounts have no permanent role.
 
 ## Current status
 
@@ -18,8 +18,8 @@ Tracking: [issue #19](https://github.com/phucrio/gdom/issues/19).
 - A job has exactly one distinct source and target; the pair becomes immutable when scanning starts.
 - Only one job may issue ownership mutations at a time.
 - Consumer-account transfers require a source `pendingOwner` request and a target acceptance; every request must use the account-specific OAuth token.
-- Google sign-in uses a Desktop OAuth client (RFC 8252). The client ID is embedded; the client secret is never committed. Local testing sets `GDOM_GOOGLE_CLIENT_SECRET`; CI package builds inject `GDOM_DEFAULT_CLIENT_SECRET` from a repository secret.
-- OAuth tokens remain in the Rust backend; refresh tokens live in Windows Credential Manager.
+- Google sign-in uses a Desktop OAuth client (RFC 8252). The client ID is embedded; the client secret is never committed. Local testing sets `GDOM_GOOGLE_CLIENT_SECRET`; signed release builds inject `GDOM_DEFAULT_CLIENT_SECRET` from the protected `release` environment secret.
+- OAuth tokens remain in the Rust backend; refresh tokens live in the operating system credential store.
 - Backend logs are written to the local app-data `logs/gdom.log` file, rotated at 10 MB and kept to five files. Tokens and secrets are redacted before a line is stored.
 - OAuth requests full Drive access because GDOM must list and transfer arbitrary existing items; the consent flow must justify this immediately before opening the system browser.
 - Dry run and a mandatory canary precede bulk transfer. In the Drive browser, **Start transfer** authorizes the selected operation: a fully verified canary proceeds to the remaining items automatically; canary problems stop for review. There is no automatic rollback.
@@ -41,7 +41,7 @@ pnpm tauri dev
 
 Google's Desktop token endpoint requires that secret. Do not commit it. Enable the Google Drive API on the Cloud project and add your Gmail as an OAuth test user. If a leftover custom client ID is stored from an older build, use **Advanced → Use GDOM default**.
 
-Release installers are built on `main` / `workflow_dispatch` with `GDOM_DEFAULT_CLIENT_SECRET` from GitHub Actions repository secrets.
+CI builds six unsigned test packages. Version tags build signed draft releases with `GDOM_DEFAULT_CLIENT_SECRET` and updater signing settings from GitHub Actions. Follow [RELEASING.md](RELEASING.md) for SemVer, changelog, platform prerequisites, signing and publication.
 
 For frontend-only work:
 
@@ -49,7 +49,7 @@ For frontend-only work:
 pnpm dev
 ```
 
-Windows 11 is the supported runtime. Linux and macOS secure-store adapters are deferred beyond the MVP. The repository enforces LF for all tracked text files, so do not override `.gitattributes` with machine-specific line-ending conversions.
+The build matrix covers Windows and macOS installers plus Linux AppImages, each on x64 and ARM64. Linux needs a compatible graphical desktop and unlocked Secret Service login collection; Ubuntu 22.04 is the build baseline. Native install and upgrade acceptance is tracked separately from compilation and remains required before claiming release readiness. The repository enforces LF for all tracked text files, so do not override `.gitattributes` with machine-specific line-ending conversions.
 
 ## License
 

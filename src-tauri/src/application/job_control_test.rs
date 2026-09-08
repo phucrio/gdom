@@ -19,7 +19,7 @@ use crate::infrastructure::SqliteJobStore;
 use crate::infrastructure::account_store::SqliteAccountStore;
 use crate::infrastructure::google_drive::GoogleDriveClient;
 use crate::infrastructure::google_token::DynamicGoogleTokenClient;
-use crate::infrastructure::secrets::WindowsCredentialStore;
+use crate::infrastructure::secrets::NativeCredentialStore;
 use crate::state::OAuthConfig;
 use crate::test_support::{
     SOURCE_PERM, SOURCE_TOKEN, TARGET_PERM, TARGET_TOKEN, request_method, request_path,
@@ -181,7 +181,7 @@ where
     let account_store = Arc::new(SqliteAccountStore::open_in_memory().await.unwrap());
     seed_accounts(&account_store).await;
     let job_store = Arc::new(SqliteJobStore::new(account_store.pool().clone()));
-    let cred_store = Arc::new(WindowsCredentialStore::new_mock());
+    let cred_store = Arc::new(NativeCredentialStore::new_mock());
     let oauth_config = Arc::new(RwLock::new(Some(OAuthConfig::new("test-client", None))));
     let token_service = Arc::new(DynamicGoogleTokenClient::new(oauth_config));
     let token_provider = Arc::new(AccountTokenProvider::new(
@@ -1460,3 +1460,6 @@ async fn paused_scan_queue_removal_resumes_saved_page_without_losing_items() {
     }));
     assert!(mutation_methods(&env.captured).is_empty());
 }
+
+#[path = "update_installation_test.rs"]
+mod update_installation_test;

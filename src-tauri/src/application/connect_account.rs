@@ -76,7 +76,7 @@ impl fmt::Display for TokenExchangeError {
                 formatter.write_str("token exchange rejected client credentials")
             }
             Self::InvalidRequest => formatter.write_str(
-                "Google rejected the token request. Desktop OAuth clients require a client secret stored in Windows Credential Manager, not in application source",
+                "Google rejected the token request. Desktop OAuth clients require a client secret stored in the system credential store, not in application source",
             ),
             Self::RateLimited => formatter.write_str("token exchange rate limit reached"),
             Self::Unavailable => formatter.write_str("token service is unavailable"),

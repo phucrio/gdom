@@ -345,3 +345,23 @@ export const IPC_EVENTS = {
   canaryCompleted: "canary-completed",
   migrationCompleted: "migration-completed",
 } as const;
+
+export const UPDATE_COMMANDS = {
+  getUpdateStatus: "get_update_status",
+  checkForUpdates: "check_for_updates",
+  downloadUpdate: "download_update",
+  installUpdate: "install_update",
+} as const;
+
+export type UpdateStatusDto = {
+  readonly phase: "idle" | "checking" | "upToDate" | "available" | "downloading" |
+    "ready" | "deferred" | "installing" | "error" | "unavailable";
+  readonly installedVersion: string;
+  readonly targetVersion: string | null;
+  readonly notes: string | null;
+  readonly downloadedBytes: number;
+  readonly totalBytes: number | null;
+  readonly error: string | null;
+};
+
+export type ConfirmUpdateInput = { readonly confirmed: boolean };

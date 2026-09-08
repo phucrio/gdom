@@ -118,6 +118,7 @@ pub fn selected_fixture<'a>(
     Ok(fixture)
 }
 
+#[cfg(target_os = "windows")]
 pub fn source_revision() -> LiveResult<String> {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

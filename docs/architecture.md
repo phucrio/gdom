@@ -24,7 +24,7 @@ graph TD
 
     subgraph External ["External & OS Services"]
         GoogleDrive["Google Drive API v3"]
-        Keychain["OS Keychain<br/>(Windows Credential Manager)"]
+        Keychain["OS Credential Store<br/>Windows Credential Manager / macOS Keychain / Linux Secret Service"]
         SQLite["SQLite (WAL Mode)<br/>Local Persistent DB"]
     end
 
@@ -40,7 +40,7 @@ graph TD
 ```
 
 ### Key Architectural Characteristics
-- **Local-First & Sovereign**: Runs entirely on the user's desktop (Windows 11 runtime). All credentials, metadata, and checkpoints remain on the local machine.
+- **Local-First & Sovereign**: Runs entirely on the user's desktop (Windows 11, macOS or Linux; x64 and ARM64). All credentials, metadata, and checkpoints remain on the local machine.
 - **Zero Cloud Intermediary**: No remote server or proxy receives OAuth tokens, user profiles, or Drive metadata.
 - **Strict Clean Architecture**: Core domain logic is completely decoupled from UI frameworks, database engines, and Google API SDKs.
 - **Deterministic & Resumable**: All state changes are committed to local SQLite storage with WAL mode, enabling seamless cross-session resumption and crash recovery.
@@ -114,7 +114,7 @@ src-tauri/src/
 - **Responsibility**: Implements application ports using concrete technologies:
   - `google_oauth.rs` & `oauth_listener.rs`: PKCE flow, loopback redirect listener, OAuth token exchange.
   - `google_drive.rs`: Google Drive API v3 HTTP client with typed request/response models.
-  - `secrets.rs`: Windows Credential Manager adapter via `keyring`.
+  - `secrets.rs`: Native credential adapter using Windows Credential Manager, macOS Keychain or Linux Secret Service through `keyring-core`. Linux requires an initialized, unlocked login collection. Unavailable secure storage produces a recoverable error; it never falls back to plaintext.
   - `account_store.rs`: SQLite persistence for account registry and metadata.
 - **Sanitization**: Masks secrets in logs; wraps credentials in `SecretString`.
 
@@ -140,8 +140,8 @@ src-tauri/src/
 GDOM deals with highly sensitive permissions (full Google Drive access). The architecture enforces strict security controls:
 
 ### 4.1 Token Isolation & Keyring Storage
-- **Frontend Isolation**: OAuth access and refresh tokens **never** cross the IPC boundary to the React WebView. The frontend only receives opaque account IDs, permission IDs, emails, and display names. Google Desktop client secrets also stay out of the WebView; local runs read `GDOM_GOOGLE_CLIENT_SECRET`, and CI package builds inject `GDOM_DEFAULT_CLIENT_SECRET` at compile time.
-- **Refresh Token Storage**: Refresh tokens are stored exclusively in the OS keychain (Windows Credential Manager for MVP) keyed by internal `AccountId` or `GooglePermissionId`.
+- **Frontend Isolation**: OAuth access and refresh tokens **never** cross the IPC boundary to the React WebView. The frontend only receives opaque account IDs, permission IDs, emails, and display names. Google Desktop client secrets also stay out of the WebView; local runs read `GDOM_GOOGLE_CLIENT_SECRET`, and signed release builds inject `GDOM_DEFAULT_CLIENT_SECRET` at compile time; ordinary PR packages do not require production secrets.
+- **Refresh Token Storage**: Refresh tokens are stored exclusively in the native OS credential store (Windows Credential Manager, macOS Keychain or Linux Secret Service) keyed by internal `AccountId` or `GooglePermissionId`.
 - **Access Tokens**: Ephemeral access tokens are held strictly in memory and refreshed on-demand.
 - **Redaction**: Credentials, authorization codes, PKCE verifiers, and tokens implement custom `Debug` formats (e.g., `OAuthGrant([REDACTED])`) to prevent accidental log leaks.
 

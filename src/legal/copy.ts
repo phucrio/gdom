@@ -5,7 +5,7 @@ export const FULL_DRIVE_SCOPE_JUSTIFICATION =
   "GDOM requests full Google Drive access so it can list and transfer ownership of arbitrary existing items in the folders you select. The narrower per-file scope cannot provide the complete Drive listing this workflow needs. GDOM does not download, upload, copy, or analyze file content.";
 
 export const SYSTEM_BROWSER_OAUTH_EXPLANATION =
-  "Google sign-in opens in your system browser, not inside this window. GDOM never shows or stores access tokens, refresh tokens, authorization codes, or PKCE verifiers in the interface. Refresh tokens stay in the Windows Credential Manager; access tokens stay in backend memory.";
+  "Google sign-in opens in your system browser, not inside this window. GDOM never shows or stores access tokens, refresh tokens, authorization codes, or PKCE verifiers in the interface. Refresh tokens stay in your operating system’s secure credential store; access tokens stay in backend memory.";
 
 export const PRIVACY_POLICY_TITLE = "Privacy Policy";
 

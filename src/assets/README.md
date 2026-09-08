@@ -4,7 +4,7 @@
 
 The app header and browser favicon use this same SVG with Vite's `?no-inline` suffix. Keeping it as an emitted file avoids a `data:` image URI, which the existing Tauri image CSP does not allow. Do not relax the CSP to display the logo.
 
-All packaged desktop icons in `src-tauri/icons/` are generated from the SVG, including Windows ICO, macOS ICNS, PNG sizes, and the Square/Store logos. Keeping ICNS assets does not add macOS runtime support.
+All packaged desktop icons in `src-tauri/icons/` are generated from the SVG, including Windows ICO, macOS ICNS, PNG sizes, and the Square/Store logos. Platform runtime, installer and updater support is defined in [RELEASING.md](../../RELEASING.md).
 
 ## Regenerate
 
@@ -19,7 +19,7 @@ pnpm test
 
 The generator invokes the installed Tauri CLI without a shell, stages output in a temporary directory, and copies only desktop icon files. ICNS representation chunks are sorted before writing so container ordering does not create spurious diffs. Mobile outputs are discarded. Commit the SVG and regenerated desktop icons together. Do not hand-edit individual PNG/ICO/ICNS files or add another copy of the master SVG.
 
-`pnpm icons:check` regenerates into a temporary directory and checks the committed files byte-for-byte. It fails rather than rewriting stale assets. Windows CI runs this check alongside tests for PNG format and dimensions, configured paths, ICO resolutions, ICNS structure, and CSP-safe asset references. The filesystem-based asset tests use `.mjs` so Node types are not added to the browser TypeScript project.
+`pnpm icons:check` regenerates into a temporary directory and checks the committed files byte-for-byte. It fails rather than rewriting stale assets. The frontend CI lane runs this check alongside tests for PNG format and dimensions, configured paths, ICO resolutions, ICNS structure, and CSP-safe asset references. The filesystem-based asset tests use `.mjs` so Node types are not added to the browser TypeScript project.
 
 ## Review
 

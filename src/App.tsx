@@ -16,6 +16,8 @@ import { LegalDialogs } from "./legal/LegalDialogs.tsx";
 import { BRAND_NAME, READY_ANNOUNCEMENT } from "./nav/copy.ts";
 import { PrimaryNav } from "./nav/PrimaryNav.tsx";
 import { useWorkspaceNav } from "./nav/useWorkspaceNav.ts";
+import { UpdateControl } from "./updates/UpdateControl.tsx";
+import { useUpdates } from "./updates/useUpdates.ts";
 import "./App.css";
 
 type AppProps = {
@@ -23,6 +25,7 @@ type AppProps = {
 };
 
 export function App({ backend }: AppProps) {
+  const updates = useUpdates(backend);
   const accounts = useAccountRegistry(backend);
   const jobs = useJobCatalog(backend);
   const { view, goTo } = useWorkspaceNav();
@@ -81,6 +84,7 @@ export function App({ backend }: AppProps) {
 
   if (accounts.loadError && accounts.accounts.length === 0) {
     return <main className="app-shell">
+      <UpdateControl updates={updates} />
       <p className="error" role="alert">{accounts.loadError}</p>
       <button type="button" onClick={accounts.refresh}>Retry loading accounts</button>
     </main>;
@@ -90,6 +94,7 @@ export function App({ backend }: AppProps) {
   if (!accounts.loading && accounts.accounts.length === 0) {
     return (
       <div className="app-shell landing-shell">
+        <div className="update-landing-control"><UpdateControl updates={updates} /></div>
         <LandingScreen
           backend={backend}
           onAnnounce={announce}
@@ -118,6 +123,7 @@ export function App({ backend }: AppProps) {
         />
 
         <div className="topbar-right">
+          <UpdateControl updates={updates} />
           <div className="legal-links">
             <button
               type="button"

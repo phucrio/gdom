@@ -736,6 +736,7 @@ button:not(:disabled):active { transform: translateY(1px); }
 
 .landing-shell {
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
   min-height: 100vh;
@@ -1634,3 +1635,8 @@ button:not(:disabled):active { transform: translateY(1px); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.update-landing-control { display: flex; width: 100%; justify-content: flex-end; padding: 16px; }
+.update-details > p { overflow-wrap: anywhere; }
+.update-details progress { width: 100%; accent-color: var(--accent); }
+.update-notes { white-space: pre-wrap; overflow-wrap: anywhere; }

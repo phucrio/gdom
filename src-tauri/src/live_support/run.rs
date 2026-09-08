@@ -12,7 +12,7 @@ use crate::{
     },
     infrastructure::{
         SqliteJobStore, account_store::SqliteAccountStore, google_drive::GoogleDriveClient,
-        google_token::DynamicGoogleTokenClient, secrets::WindowsCredentialStore,
+        google_token::DynamicGoogleTokenClient, secrets::NativeCredentialStore,
     },
     state::OAuthConfig,
 };
@@ -80,7 +80,7 @@ pub async fn run(diagnostics: &mut super::diagnostics::Diagnostics) -> LiveResul
         return Err("accounts must have distinct Google identities".into());
     }
     diagnostics.stage = "Check local OAuth setup and reconnect the dedicated accounts through GDOM";
-    let credentials = Arc::new(WindowsCredentialStore::new()?);
+    let credentials = Arc::new(NativeCredentialStore::new());
     let client_id = store.get_setting("oauth.client_id").await?;
     let configuration = OAuthConfig::resolve(
         client_id.as_deref(),

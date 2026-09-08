@@ -2,11 +2,11 @@
 
 ## Scope
 
-GDOM starts as a Tauri 2 desktop app with React/TypeScript in the webview and Rust in the trusted backend. It runs on Windows 11 and serves only the owner's personal Gmail accounts. Google Workspace, Shared Drives, service accounts, content copying, telemetry, and automatic rollback are out of scope.
+GDOM is a Tauri 2 desktop app with React/TypeScript in the webview and Rust in the trusted backend. It targets Windows 11, macOS and Linux, each on x64 and ARM64, and serves only the owner's personal Gmail accounts. Google Workspace, Shared Drives, service accounts, content copying, telemetry, and automatic rollback are out of scope.
 
-The MVP stores refresh tokens only in Windows Credential Manager. Linux remains a development and test host; Linux and macOS secure-store adapters are deferred until those platforms become supported runtimes.
+**Superseded platform decision:** The initial MVP targeted Windows 11 with Windows Credential Manager and deferred macOS/Linux runtime support. Issue #1 extends the build and runtime scope to all six OS/architecture combinations. Refresh tokens now use Windows Credential Manager, macOS Keychain or Linux Secret Service through the native credential adapter, with no plaintext fallback. Native installer and upgrade acceptance remains required before claiming release readiness; see [RELEASING.md](../RELEASING.md).
 
-Tracked text uses LF through `.gitattributes` and `.editorconfig`, independent of each developer's Windows or Linux Git configuration. Windows batch files are the sole CRLF exception. CI runs the validation lane on Windows.
+Tracked text uses LF through `.gitattributes` and `.editorconfig`, independent of each developer's Windows or Linux Git configuration. Windows batch files are the sole CRLF exception. CI runs frontend validation once and native Rust validation, credential smoke tests and packaging across all six OS/architecture targets.
 
 Development and production use separate Google Cloud projects. The personal production app will use an External OAuth consent screen in the In production state. OAuth authorization always uses the system browser and loopback callback, never the Tauri WebView.
 
@@ -64,7 +64,7 @@ Desktop OAuth clients are public clients per RFC 8252. Google's token endpoint f
 The client ID is embedded in source. The secret is never in git and never enters the React WebView:
 
 1. Local testing: set `GDOM_GOOGLE_CLIENT_SECRET` (optional `GDOM_GOOGLE_CLIENT_ID`) in the process environment before `pnpm tauri dev`. Secret-only binds to the embedded client ID.
-2. Release / CI package: inject `GDOM_DEFAULT_CLIENT_SECRET` at compile time from the GitHub Actions repository secret of the same name (`option_env!`).
+2. Signed release package: inject `GDOM_DEFAULT_CLIENT_SECRET` at compile time from the GitHub Actions protected `release` environment secret of the same name (`option_env!`).
 
 There is no in-app JSON import. Enable the Google Drive API on the Cloud project and add test users on the OAuth consent screen before live sign-in.
 

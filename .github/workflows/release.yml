@@ -1,0 +1,70 @@
+name: Prepare signed release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/release.mjs preflight "$GITHUB_REF_NAME"
+      - name: Refuse existing releases, including drafts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | .tag_name')
+          if printf '%s\n' "$existing" | grep -Fxq "$GITHUB_REF_NAME"; then
+            echo 'This version already has a release. Never overwrite published artifacts or existing drafts.'
+            exit 1
+          fi
+
+  gates-and-builds:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+    with:
+      signed: true
+
+  draft:
+    needs: gates-and-builds
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-input
+      - run: node scripts/release.mjs preflight "$GITHUB_REF_NAME"
+      - run: node scripts/release.mjs aggregate release-input release-output
+      - name: Create draft once with all six signed bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | .tag_name')
+          if printf '%s\n' "$existing" | grep -Fxq "$GITHUB_REF_NAME"; then
+            echo 'Refusing to change an existing release.'
+            exit 1
+          fi
+          notes="$RUNNER_TEMP/release-notes.md"
+          mv release-output/release-notes.md "$notes"
+          gh release create "$GITHUB_REF_NAME" release-output/* --verify-tag --draft --title "GDOM $GITHUB_REF_NAME" --notes-file "$notes"

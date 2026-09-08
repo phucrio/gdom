@@ -8,9 +8,9 @@ Welcome to **GDOM (Google Drive Owner Migrator)**. This guide provides AI agents
 
 **GDOM** is a local-first desktop application engineered to safely and recursively transfer Google Drive file and folder ownership between connected personal Gmail accounts (`@gmail.com` / `@googlemail.com`).
 
-- **Runtime Target**: Windows 11 desktop application.
+- **Runtime Targets**: Windows 11, macOS and Linux desktop applications, each on x64 and ARM64.
 - **Frontend Stack**: React 19, TypeScript (~5.8), Vite, pnpm.
-- **Backend Stack**: Tauri 2, Rust (2024 edition), Tokio, SQLite (WAL mode), Windows Credential Manager (`keyring`).
+- **Backend Stack**: Tauri 2, Rust (2024 edition), Tokio, SQLite (WAL mode), OS-native credential stores (Windows Credential Manager, macOS Keychain, Linux Secret Service).
 - **License**: GNU General Public License v3.0 or later (`GPL-3.0-or-later`).
 
 ---
@@ -21,7 +21,7 @@ Any modification made by an agent or developer must uphold these invariants:
 
 1. **Token Isolation**:
    - OAuth access and refresh tokens **never** cross into the React frontend WebView.
-   - Refresh tokens are stored exclusively in the OS Keychain (Windows Credential Manager).
+   - Refresh tokens are stored exclusively in the OS credential store (Windows Credential Manager, macOS Keychain or Linux Secret Service).
    - Access tokens are held strictly in memory.
    - Secrets and tokens must implement redacted debug formatting (never print to logs).
 2. **Token Routing Invariant**:
@@ -48,6 +48,7 @@ Detailed architectural specifications, engineering standards, and product decisi
 
 | Document | Description |
 |---|---|
+| [RELEASING.md](RELEASING.md) | **Release procedure**: Compatibility-first SemVer, changelog, six-platform build/sign/draft/publish checks and recovery. |
 | [docs/DESIGN.md](docs/DESIGN.md) | **UI/UX Design Direction**: Approved visual and interaction contract, file-type icons, responsive layouts, progress feedback, accessibility, and acceptance criteria. |
 | [docs/architecture.md](docs/architecture.md) | **System Architecture**: Clean Architecture layers, multi-account domain model, security boundaries, loopback listener design, and token-routing invariants. |
 | [docs/code-convention.md](docs/code-convention.md) | **Code Conventions**: Rust 2024 idioms, strict TypeScript standards, error handling without unwrap, WCAG 2.2 AA accessibility, LF line endings, and Conventional commit rules. |
@@ -62,7 +63,7 @@ Detailed architectural specifications, engineering standards, and product decisi
 
 ```
 gdom/
-|-- .github/workflows/ci.yml       # Windows-based CI pipeline
+|-- .github/workflows/ci.yml       # Six-target desktop CI pipeline
 |-- docs/                          # Architecture, conventions, ADRs, policies
 |-- src/                           # Frontend React application
 |   |-- App.tsx                    # Main shell component
@@ -115,7 +116,7 @@ Keep developer setup instructions in contributor documentation, never in release
 
 - Enable Google Drive API in the OAuth client's Google Cloud project and add dedicated Gmail test accounts as OAuth test users.
 - For local sign-in, set `GDOM_GOOGLE_CLIENT_SECRET` in the shell before launching the app. Never commit or log the value.
-- Release builds receive `GDOM_DEFAULT_CLIENT_SECRET` at compile time from the GitHub Actions repository secret. Verify sign-in readiness before distributing an installer.
+- Release builds receive `GDOM_DEFAULT_CLIENT_SECRET` at compile time from the GitHub Actions protected `release` environment secret. Verify sign-in readiness before distributing an installer.
 - If a stored custom OAuth client overrides the bundled client, use **Restore default sign-in settings** in the connect-account dialog to reset it explicitly. Do not silently overwrite custom settings.
 
 ```powershell

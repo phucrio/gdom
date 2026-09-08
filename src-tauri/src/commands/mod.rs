@@ -6,6 +6,7 @@ pub mod dto;
 pub mod error;
 pub mod job;
 pub mod job_actions;
+pub mod updates;
 
 #[cfg(test)]
 mod drive_test;
