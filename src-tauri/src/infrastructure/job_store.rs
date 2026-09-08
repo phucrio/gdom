@@ -71,6 +71,25 @@ async fn insert_job(
 }
 
 impl JobStorePort for SqliteJobStore {
+    fn queued_from_status<'a>(&'a self, job_id: JobId) -> JobStoreFuture<'a, Option<JobStatus>> {
+        Box::pin(async move {
+            let previous: Option<String> = sqlx::query_scalar(
+                "SELECT previous_state FROM migration_events
+                 WHERE job_id = ?1 AND event_type = 'QUEUE_UPDATED' AND previous_state <> 'QUEUED'
+                 ORDER BY created_at DESC, id DESC LIMIT 1",
+            )
+            .bind(job_id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| JobStorePortError::Database(error.to_string()))?;
+            previous
+                .map(|status| {
+                    JobStatus::from_str(&status)
+                        .map_err(|error| JobStorePortError::Database(error.to_string()))
+                })
+                .transpose()
+        })
+    }
     fn persist_queue_changes<'a>(
         &'a self,
         expected: &'a [MigrationJob],

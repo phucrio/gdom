@@ -79,7 +79,8 @@ const backend: BackendPort = {
     const jobs = queueJobs ?? [];
     const selected = jobs.find((job) => job.id === id);
     if (!selected) throw new Error("Missing queue job");
-    const queued = jobs.filter((job) => job.status === "QUEUED" && job.id !== id);
+    const queued = jobs.filter((job) => job.status === "QUEUED" && job.id !== id)
+      .sort((left, right) => (left.queuePosition ?? 0) - (right.queuePosition ?? 0));
     queued.splice(position - 1, 0, selected);
     queued.forEach((job, index) => { job.queuePosition = index + 1; });
     commands.push(`reorder:${id}:${position}`); emit(); return selected;
@@ -108,7 +109,7 @@ function Fixture() {
     failQueue(value: boolean) { failQueue = value; },
     failExport(value: boolean) { failExport = value; },
     queueScenario() {
-      queueJobs = [1, 2, 3].map((position) => ({ ...current, id: `queue-${position}`, status: "QUEUED", queuePosition: position,
+      queueJobs = [1, 2, 3].map((position) => ({ ...current, id: `queue-${position}`, status: "QUEUED", queuePosition: position * 2,
         roots: [{ id: `root-${position}`, jobId: `queue-${position}`, rootFileId: `file-${position}`, rootName: `Queued fixture ${position}`, validationStatus: "VALID", createdAt: "2026-09-07T00:00:00Z" }] }));
       queueJobs.push({ ...current, id: "finished", status: "COMPLETED_WITH_ERRORS" });
       emit();

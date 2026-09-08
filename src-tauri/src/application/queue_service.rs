@@ -70,10 +70,24 @@ where
         }
         let latest = self.job_store.latest_job_event(job_id).await?;
         let cohort = self.job_store.list_canary_cohort(job_id).await?;
-        let restored = if latest.as_ref().is_some_and(|event| {
-            event.new_state.as_deref() == Some(JobStatus::CanaryReview.as_str())
-        }) {
+        let scan_checkpoints = self.job_store.list_scan_checkpoints(job_id).await?;
+        let queued_from = self.job_store.queued_from_status(job_id).await?;
+        let restored = if queued_from == Some(JobStatus::ReadyForReview) {
+            JobStatus::ReadyForReview
+        } else if queued_from == Some(JobStatus::Paused) {
+            JobStatus::Paused
+        } else if queued_from == Some(JobStatus::CanaryReview)
+            || latest.as_ref().is_some_and(|event| {
+                event.new_state.as_deref() == Some(JobStatus::CanaryReview.as_str())
+            })
+        {
             JobStatus::CanaryReview
+        } else if !scan_checkpoints.is_empty()
+            || latest
+                .as_ref()
+                .is_some_and(|event| event.new_state.as_deref() == Some(JobStatus::Paused.as_str()))
+        {
+            JobStatus::Paused
         } else if cohort.is_empty() && !self.looks_like_transfer_pause(&target).await? {
             JobStatus::ReadyForReview
         } else {

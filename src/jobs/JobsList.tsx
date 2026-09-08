@@ -85,6 +85,7 @@ export function JobsList({
 
   const visible = filterJobsByAccount(jobs, accountFilter);
   const grouped = groupJobs(visible);
+  const globalQueue = groupJobs(jobs).queued;
   const queuedCount = grouped.queued.length;
 
   return (
@@ -149,6 +150,7 @@ export function JobsList({
             <h3 id={headingId}>{JOB_LIST_GROUP_TITLES[group]}</h3>
             <ul className="job-list">
               {items.map((job) => {
+                const queueOrdinal = globalQueue.findIndex((queued) => queued.id === job.id) + 1;
                 const halt = isHaltStatus(job.status)
                   ? haltStatusDetail(job.status, job.lastError)
                   : null;
@@ -184,16 +186,16 @@ export function JobsList({
                       </p>
                     )}
                     {job.queuePosition !== null && job.status === "QUEUED" && (
-                      <p className="muted">{queuePositionLabel(job.queuePosition)}</p>
+                      <p className="muted">{queuePositionLabel(queueOrdinal)}</p>
                     )}
 
                     <div className="job-actions">
                       {job.status === "QUEUED" && job.queuePosition !== null && <>
                         {accountFilter === null && <>
-                          <button type="button" className="secondary-button" disabled={loading || queueBusy || job.queuePosition <= 1}
-                            onClick={() => void updateQueue(job, (job.queuePosition ?? 1) - 1)}>Move up</button>
-                          <button type="button" className="secondary-button" disabled={loading || queueBusy || job.queuePosition >= queuedCount}
-                            onClick={() => void updateQueue(job, (job.queuePosition ?? 1) + 1)}>Move down</button>
+                          <button type="button" className="secondary-button" disabled={loading || queueBusy || queueOrdinal <= 1}
+                            onClick={() => void updateQueue(job, queueOrdinal - 1)}>Move up</button>
+                          <button type="button" className="secondary-button" disabled={loading || queueBusy || queueOrdinal >= globalQueue.length}
+                            onClick={() => void updateQueue(job, queueOrdinal + 1)}>Move down</button>
                         </>}
                         <button type="button" className="secondary-button" disabled={loading || queueBusy}
                           onClick={() => void updateQueue(job, null)}>Remove from queue</button>

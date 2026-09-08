@@ -340,6 +340,28 @@ async fn automatic_transfer_continues_only_after_verified_canary() {
                 .unwrap()
                 .is_none()
         );
+        if canary_fails {
+            assert_eq!(
+                last_event.new_state.as_deref(),
+                Some(JobStatus::CanaryReview.as_str())
+            );
+            assert!(
+                env.job_store
+                    .list_canary_cohort(job.id())
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|item| item.state != ItemState::Verified)
+            );
+            let queued = env.job_service.queue_job(job.id(), None).await.unwrap();
+            assert_eq!(
+                env.job_service.job_run_phase(&queued).await.unwrap(),
+                crate::application::JobRunPhase::Bulk
+            );
+            let removed = env.job_service.remove_queued_job(job.id()).await.unwrap();
+            assert_eq!(removed.status(), JobStatus::CanaryReview);
+            assert!(!transferred.lock().unwrap().contains("file-5"));
+        }
         let events = env.events.snapshot();
         assert_eq!(
             events.iter().any(|event| matches!(event,
@@ -1199,7 +1221,11 @@ async fn queue_removal_preserves_canary_and_bulk_phase_after_restart() {
             file_id: None,
             account_id: None,
             event_type: "JOB_STATUS".into(),
-            previous_state: Some(phase.into()),
+            previous_state: Some(if phase == "CANARY_REVIEW" {
+                "RUNNING_CANARY".into()
+            } else {
+                phase.into()
+            }),
             new_state: Some(job.status().as_str().into()),
             sanitized_detail_json: None,
             created_at: iso_now(),
@@ -1213,6 +1239,13 @@ async fn queue_removal_preserves_canary_and_bulk_phase_after_restart() {
             .reorder_queued_job(job.id(), 1)
             .await
             .unwrap();
+        if phase == "CANARY_REVIEW" {
+            let queued = env.job_service.get_job(job.id()).await.unwrap();
+            assert_eq!(
+                env.job_service.job_run_phase(&queued).await.unwrap(),
+                crate::application::JobRunPhase::Bulk
+            );
+        }
         let removed = env.job_service.remove_queued_job(job.id()).await.unwrap();
         assert_eq!(
             removed.status(),
@@ -1334,4 +1367,96 @@ async fn queue_snapshot_cannot_overwrite_a_cancelled_job() {
         env.job_service.get_job(job.id()).await.unwrap().status(),
         JobStatus::Cancelled
     );
+}
+
+#[tokio::test]
+async fn paused_scan_queue_removal_resumes_saved_page_without_losing_items() {
+    let env = build_env(|request| {
+        if request_path(request).is_some_and(|path| path.contains("/about")) {
+            return (
+                "200 OK".into(),
+                r#"{"storageQuota":{"limit":"1000","usage":"0"}}"#.into(),
+            );
+        }
+        ("200 OK".into(), r#"{"files":[]}"#.into())
+    })
+    .await;
+    let mut job = env
+        .job_service
+        .create_job(AccountId::new(1), AccountId::new(2))
+        .await
+        .unwrap();
+    let root = MigrationRoot {
+        id: RootId::new(970),
+        job_id: job.id(),
+        root_file_id: "scan-root".into(),
+        root_name: "Root".into(),
+        validation_status: RootValidationStatus::Validated,
+        created_at: "t".into(),
+    };
+    job.add_root(root.clone()).unwrap();
+    env.job_store.add_root(&root).await.unwrap();
+    job.start_scanning("t".into()).unwrap();
+    env.job_store.update_job(&job).await.unwrap();
+    let checkpoint = crate::domain::item::ScanCheckpoint {
+        job_id: job.id(),
+        folder_id: "scan-root".into(),
+        page_token: Some("saved-page".into()),
+        depth: 0,
+    };
+    env.job_store
+        .commit_scan_batch(
+            job.id(),
+            &ItemBatchCommit {
+                items: vec![eligible_item(job.id(), 970, "already-scanned", 1)],
+                checkpoints_upsert: vec![checkpoint.clone()],
+                checkpoints_delete: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    env.job_service.pause_scan(job.id()).await.unwrap();
+    env.job_service.queue_job(job.id(), None).await.unwrap();
+    env.job_service
+        .reorder_queued_job(job.id(), 1)
+        .await
+        .unwrap();
+    let queued = env.job_service.get_job(job.id()).await.unwrap();
+    assert_eq!(
+        env.job_service.job_run_phase(&queued).await.unwrap(),
+        crate::application::JobRunPhase::Scan
+    );
+    assert!(matches!(
+        env.job_service.resume_migration(job.id()).await,
+        Err(crate::application::JobServiceError::IllegalTransition)
+    ));
+    let removed = env.job_service.remove_queued_job(job.id()).await.unwrap();
+    assert_eq!(removed.status(), JobStatus::Paused);
+    assert_eq!(
+        env.job_store.list_scan_checkpoints(job.id()).await.unwrap(),
+        vec![checkpoint]
+    );
+    env.job_service.reconcile_on_startup().await.unwrap();
+    let paused = env.job_service.get_job(job.id()).await.unwrap();
+    assert_eq!(
+        env.job_service.job_run_phase(&paused).await.unwrap(),
+        crate::application::JobRunPhase::Scan
+    );
+    env.job_service.start_scan(job.id()).await.unwrap();
+    env.job_service.await_idle(job.id()).await;
+    assert_eq!(
+        env.job_service.get_job(job.id()).await.unwrap().status(),
+        JobStatus::ReadyForReview
+    );
+    assert_eq!(
+        env.job_store
+            .list_committed_file_ids(job.id())
+            .await
+            .unwrap(),
+        vec!["already-scanned"]
+    );
+    assert!(env.captured.lock().unwrap().iter().any(|request| {
+        crate::test_support::query_param(request, "pageToken").as_deref() == Some("saved-page")
+    }));
+    assert!(mutation_methods(&env.captured).is_empty());
 }

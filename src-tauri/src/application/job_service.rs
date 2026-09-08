@@ -891,7 +891,11 @@ where
                 Ok(JobRunPhase::Bulk)
             }
             JobStatus::Queued => {
-                if self.should_resume_as_canary(job).await? {
+                if self.job_store.queued_from_status(job.id()).await? == Some(JobStatus::Paused)
+                    && !self.looks_like_transfer_pause(job).await?
+                {
+                    Ok(JobRunPhase::Scan)
+                } else if self.should_resume_as_canary(job).await? {
                     Ok(JobRunPhase::Canary)
                 } else {
                     Ok(JobRunPhase::Bulk)
@@ -1786,6 +1790,7 @@ where
         if let Some(event) = self.job_store.latest_job_event(job.id()).await? {
             if event.previous_state.as_deref() == Some(JobStatus::Running.as_str())
                 || event.new_state.as_deref() == Some(JobStatus::Running.as_str())
+                || event.new_state.as_deref() == Some(JobStatus::CanaryReview.as_str())
                 || event.previous_state.as_deref() == Some(JobStatus::CanaryReview.as_str())
             {
                 return Ok(false);

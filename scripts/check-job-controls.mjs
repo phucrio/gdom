@@ -24,13 +24,16 @@ try {
  const cards=page.locator('.job-group').filter({has:page.getByRole('heading',{name:'Queued',exact:true})}).locator('.job-card');
  await cards.first().getByText('Queued fixture 1',{exact:false}).waitFor();
  assert.equal(await cards.first().getByRole('button',{name:'Move up',exact:true}).isDisabled(),true);
+ assert.equal(await cards.first().getByRole('button',{name:'Move down',exact:true}).isDisabled(),false);
  assert.equal(await cards.last().getByRole('button',{name:'Move down',exact:true}).isDisabled(),true);
+ await cards.first().getByText('Queue position 1',{exact:true}).waitFor();
  await page.evaluate(()=>window.progressQa.holdQueue());
- await cards.first().getByRole('button',{name:'Move down',exact:true}).focus();await page.keyboard.press('Enter');
+ await cards.nth(1).getByRole('button',{name:'Move up',exact:true}).focus();await page.keyboard.press('Enter');
  await page.getByRole('status').filter({hasText:'Updating queue...'}).waitFor();
  for(const action of await cards.getByRole('button',{name:/Move up|Move down|Remove from queue/}).all()) assert.equal(await action.isDisabled(),true);
  await page.evaluate(()=>window.progressQa.releaseQueue());
  await cards.first().getByText('Queued fixture 2',{exact:false}).waitFor();
+ assert.equal(await page.evaluate(()=>window.progressQa.commands.includes('reorder:queue-2:1')),true);
  await page.evaluate(()=>window.progressQa.failQueue(true));
  await cards.first().getByRole('button',{name:'Remove from queue',exact:true}).click();
  await page.getByRole('alert').filter({hasText:'Queue update failed'}).waitFor();
