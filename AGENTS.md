@@ -139,3 +139,7 @@ pnpm tauri dev
    - Target the `main` branch.
    - Include a concise summary of changes, motivation, test verification evidence, and security evaluation.
    - Verify that all CI checks pass.
+
+### Dedicated live-test setup
+
+The ignored live canary harness is documented in [docs/testing.md](docs/testing.md). Set `GDOM_LIVE_DRIVE_TESTS=1` and `GDOM_LIVE_MANIFEST` only in a local operator shell. The harness refuses CI and defaults to Drive-read-only preflight. Transfer requires selecting one `GDOM_LIVE_TARGET` (`B` or `C`) and confirming its exact root through `GDOM_LIVE_CONFIRM_ROOT` after explicit operator approval. Keep the manifest, database, raw reports and all credentials outside Git; never show these setup details in release UI. Three accounts ready for SSO do not establish test fixtures or authorize live mutations.

@@ -204,3 +204,6 @@ pub fn run() {
         eprintln!("failed to run GDOM: {error}");
     }
 }
+
+#[cfg(test)]
+mod live_drive_test;
