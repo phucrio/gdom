@@ -6,25 +6,6 @@ on:
       signed:
         type: boolean
         default: false
-    secrets:
-      GDOM_DEFAULT_CLIENT_SECRET:
-        required: false
-      TAURI_SIGNING_PRIVATE_KEY:
-        required: false
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
-        required: false
-      APPLE_CERTIFICATE:
-        required: false
-      APPLE_CERTIFICATE_PASSWORD:
-        required: false
-      APPLE_SIGNING_IDENTITY:
-        required: false
-      APPLE_ID:
-        required: false
-      APPLE_PASSWORD:
-        required: false
-      APPLE_TEAM_ID:
-        required: false
 
 permissions:
   contents: read
@@ -61,6 +42,7 @@ jobs:
             runner: ubuntu-22.04-arm
             bundles: appimage
     runs-on: ${{ matrix.runner }}
+    environment: ${{ inputs.signed && 'release' || 'ci' }}
     env:
       CARGO_BUILD_JOBS: 1
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -125,8 +107,17 @@ jobs:
             done
           fi
       - name: Configure updater artifacts
+        env:
+          SIGNED_BUILD: ${{ inputs.signed }}
+          GDOM_UPDATER_PUBLIC_KEY: ${{ inputs.signed && vars.TAURI_UPDATER_PUBLIC_KEY || '' }}
         run: |
-          printf '{"bundle":{"createUpdaterArtifacts":%s}}\n' '${{ inputs.signed }}' > updater-build.json
+          node --input-type=module - <<'JAVASCRIPT'
+          import { writeFileSync } from 'node:fs';
+          writeFileSync('updater-build.json', JSON.stringify({
+            bundle: { createUpdaterArtifacts: process.env.SIGNED_BUILD === 'true' },
+            plugins: { updater: { pubkey: process.env.GDOM_UPDATER_PUBLIC_KEY } },
+          }));
+          JAVASCRIPT
       - uses: tauri-apps/tauri-action@v0
         env:
           GDOM_DEFAULT_CLIENT_SECRET: ${{ inputs.signed && secrets.GDOM_DEFAULT_CLIENT_SECRET || '' }}

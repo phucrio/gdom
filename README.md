@@ -18,7 +18,7 @@ Tracking: [issue #19](https://github.com/phucrio/gdom/issues/19).
 - A job has exactly one distinct source and target; the pair becomes immutable when scanning starts.
 - Only one job may issue ownership mutations at a time.
 - Consumer-account transfers require a source `pendingOwner` request and a target acceptance; every request must use the account-specific OAuth token.
-- Google sign-in uses a Desktop OAuth client (RFC 8252). The client ID is embedded; the client secret is never committed. Local testing sets `GDOM_GOOGLE_CLIENT_SECRET`; signed release builds inject `GDOM_DEFAULT_CLIENT_SECRET` from a repository secret.
+- Google sign-in uses a Desktop OAuth client (RFC 8252). The client ID is embedded; the client secret is never committed. Local testing sets `GDOM_GOOGLE_CLIENT_SECRET`; signed release builds inject `GDOM_DEFAULT_CLIENT_SECRET` from the protected `release` environment secret.
 - OAuth tokens remain in the Rust backend; refresh tokens live in the operating system credential store.
 - Backend logs are written to the local app-data `logs/gdom.log` file, rotated at 10 MB and kept to five files. Tokens and secrets are redacted before a line is stored.
 - OAuth requests full Drive access because GDOM must list and transfer arbitrary existing items; the consent flow must justify this immediately before opening the system browser.

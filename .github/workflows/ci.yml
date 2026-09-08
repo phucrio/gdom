@@ -43,7 +43,6 @@ jobs:
     uses: ./.github/workflows/desktop.yml
     with:
       signed: ${{ inputs.signed || false }}
-    secrets: inherit
 
   validate:
     if: always()

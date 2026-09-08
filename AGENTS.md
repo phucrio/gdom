@@ -116,7 +116,7 @@ Keep developer setup instructions in contributor documentation, never in release
 
 - Enable Google Drive API in the OAuth client's Google Cloud project and add dedicated Gmail test accounts as OAuth test users.
 - For local sign-in, set `GDOM_GOOGLE_CLIENT_SECRET` in the shell before launching the app. Never commit or log the value.
-- Release builds receive `GDOM_DEFAULT_CLIENT_SECRET` at compile time from the GitHub Actions repository secret. Verify sign-in readiness before distributing an installer.
+- Release builds receive `GDOM_DEFAULT_CLIENT_SECRET` at compile time from the GitHub Actions protected `release` environment secret. Verify sign-in readiness before distributing an installer.
 - If a stored custom OAuth client overrides the bundled client, use **Restore default sign-in settings** in the connect-account dialog to reset it explicitly. Do not silently overwrite custom settings.
 
 ```powershell

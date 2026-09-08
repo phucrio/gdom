@@ -157,7 +157,7 @@ impl fmt::Display for IdentityLookupError {
                 "Google Drive denied identity lookup. Enable the Drive API for this Cloud project, add the Drive scope on the OAuth consent screen, and add this Google account as a test user",
             ),
             Self::ApiNotEnabled => formatter.write_str(
-                "Google Drive API is not enabled for this Cloud project. Enable Drive API in Google Cloud Console (APIs & Services â†’ Library â†’ Google Drive API), wait a minute, then sign in again",
+                "Google Drive API is not enabled for this Cloud project. Enable Drive API in Google Cloud Console (APIs & Services → Library → Google Drive API), wait a minute, then sign in again",
             ),
             Self::InsufficientScope => formatter.write_str(
                 "Google did not grant full Drive access. Allow Drive access on the consent screen, and add https://www.googleapis.com/auth/drive to the OAuth consent screen",

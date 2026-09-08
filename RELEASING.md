@@ -36,7 +36,9 @@ Linux builds use Ubuntu 22.04's glibc baseline. Runtime requires a graphical des
 
 GitHub's [runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) documents native ARM64 lanes. Runner labels, availability and toolchain versions must be rechecked if hosted jobs cannot start. Never substitute cross-compilation success for native execution evidence.
 
-Configure these repository settings without putting values in issues, logs, source or agent messages:
+Create a protected GitHub Actions `release` environment before adding production secrets. Restrict its deployment policy to **tags matching `v*` only**, with no branch or pull-request rule, and require a release maintainer review. Keep the `ci` environment empty. Environment protection prevents same-repository PR workflows from accessing production credentials; an unsigned input alone is not a security boundary. See [GitHub environment protection](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
+
+Store the following secrets and public variable in that `release` environment, without putting values in issues, logs, source or agent messages. Migrate any existing repository/organization-level copies out of PR scope; do not retain duplicate production credentials accessible to ordinary CI:
 
 - Variable `TAURI_UPDATER_PUBLIC_KEY`: the Tauri updater public key. The build injects it through `GDOM_UPDATER_PUBLIC_KEY`; only this public value is embedded in the application.
 - Secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: password-protected updater key and password. Keep an encrypted offline backup with restricted custodians. Generate with `pnpm tauri signer generate --help` following the current [Tauri updater instructions](https://v2.tauri.app/plugin/updater/); never generate production keys inside ordinary PR CI.
