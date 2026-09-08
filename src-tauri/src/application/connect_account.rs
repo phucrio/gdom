@@ -76,7 +76,7 @@ impl fmt::Display for TokenExchangeError {
                 formatter.write_str("token exchange rejected client credentials")
             }
             Self::InvalidRequest => formatter.write_str(
-                "Google rejected the token request. Desktop OAuth clients require a client secret stored in Windows Credential Manager, not in application source",
+                "Google rejected the token request. Desktop OAuth clients require a client secret stored in the system credential store, not in application source",
             ),
             Self::RateLimited => formatter.write_str("token exchange rate limit reached"),
             Self::Unavailable => formatter.write_str("token service is unavailable"),
@@ -157,7 +157,7 @@ impl fmt::Display for IdentityLookupError {
                 "Google Drive denied identity lookup. Enable the Drive API for this Cloud project, add the Drive scope on the OAuth consent screen, and add this Google account as a test user",
             ),
             Self::ApiNotEnabled => formatter.write_str(
-                "Google Drive API is not enabled for this Cloud project. Enable Drive API in Google Cloud Console (APIs & Services → Library → Google Drive API), wait a minute, then sign in again",
+                "Google Drive API is not enabled for this Cloud project. Enable Drive API in Google Cloud Console (APIs & Services â†’ Library â†’ Google Drive API), wait a minute, then sign in again",
             ),
             Self::InsufficientScope => formatter.write_str(
                 "Google did not grant full Drive access. Allow Drive access on the consent screen, and add https://www.googleapis.com/auth/drive to the OAuth consent screen",

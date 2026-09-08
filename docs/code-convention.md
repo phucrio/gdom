@@ -145,7 +145,7 @@ Follow the Conventional / Lore commit message standard:
 
 ## 5. Continuous Integration (CI) Gates
 
-Every Pull Request must pass the CI workflow (`.github/workflows/ci.yml`) on Windows:
+Every Pull Request must pass the `validate` aggregate in `.github/workflows/ci.yml`: one frontend lane and the six native Windows/macOS/Linux × x64/ARM64 lanes in `.github/workflows/desktop.yml`. Each desktop lane runs Rust checks, native credential smoke tests and unsigned packaging. The commands below summarize the gates; the workflow adds the explicit Rust target and locked dependency resolution. Signed release packaging and native installer acceptance follow [RELEASING.md](../RELEASING.md).
 
 | Check | Command | Description |
 |---|---|---|

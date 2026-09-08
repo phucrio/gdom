@@ -221,7 +221,7 @@ impl fmt::Display for GoogleTokenError {
                 formatter.write_str("Google rejected the OAuth client credentials")
             }
             Self::InvalidRequest => formatter.write_str(
-                "Google rejected the token request. Desktop OAuth clients require a client secret stored in Windows Credential Manager, not in application source",
+                "Google rejected the token request. Desktop OAuth clients require a client secret stored in the system credential store, not in application source",
             ),
             Self::RateLimited => formatter.write_str("Google token endpoint rate limit reached"),
             Self::ServerUnavailable => formatter.write_str("Google token endpoint is unavailable"),

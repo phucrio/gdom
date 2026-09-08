@@ -122,24 +122,30 @@ async fn get_oauth_config_inner(state: &AppState) -> Result<OAuthConfigDto, Comm
 
 // Call while holding connect_account_lock so configure/reset cannot change the client pair.
 pub(super) async fn recover_custom_oauth_secret(state: &AppState) -> Result<(), CommandError> {
-    let mut configuration = state.oauth_config.write().await;
-    let Some(config) = configuration.as_mut() else {
-        return Ok(());
+    let client_id = {
+        let configuration = state.oauth_config.read().await;
+        let Some(config) = configuration.as_ref() else {
+            return Ok(());
+        };
+        if config.has_client_secret() {
+            return Ok(());
+        }
+        config.client_id.clone()
     };
-    if config.has_client_secret() {
-        return Ok(());
-    }
     let stored_client_id = state
         .account_store
         .get_setting("oauth.client_id")
         .await
         .map_err(|error| CommandError::Database(error.to_string()))?;
-    if stored_client_id.as_deref().map(str::trim) == Some(config.client_id.as_str()) {
-        config.client_secret = state.credential_store.load_oauth_secret().map_err(|_| {
+    if stored_client_id.as_deref().map(str::trim) == Some(client_id.as_str()) {
+        let secret = state.credential_store.load_oauth_secret().map_err(|_| {
             CommandError::Keychain(
                 "Unlock your system credential store, then retry sign-in.".into(),
             )
         })?;
+        if let Some(config) = state.oauth_config.write().await.as_mut() {
+            config.client_secret = secret;
+        }
     }
     Ok(())
 }

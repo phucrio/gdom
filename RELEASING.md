@@ -1,6 +1,6 @@
 # Releasing GDOM
 
-This is the canonical release procedure for maintainers and agents. Preparing a PR or draft does not authorize publishing a release, tagging, closing issue #1, or running live Drive transfers. Obtain the operator's explicit authorization for those actions.
+This is the canonical release procedure for maintainers and agents. Honor authorization already granted in the current session; do not ask again for covered actions. A request to release a version can authorize its merge, tag and publication, while a request limited to preparing a PR or draft does not. Ask only when a necessary action falls outside the authorized scope. Release authorization does not authorize live Drive transfers, and issue #1 remains open until its acceptance evidence is complete.
 
 The compatibility-first process follows [quiche's release guide](https://github.com/cloudflare/quiche/blob/master/RELEASING.md): assess user impact, prepare a reviewed version PR, tag the merged commit, and verify the published result. GDOM distributes desktop applications, not independently published Rust crates.
 
@@ -17,7 +17,7 @@ The compatibility-first process follows [quiche's release guide](https://github.
 1. Create a release-preparation branch from `main`. Update the application version in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json` and the `gdom` entry in `src-tauri/Cargo.lock`. Update other lockfiles if their format records the app version; pnpm currently does not. Internal crates need no synchronized bump unless changed for an independent reason.
 2. Move applicable `CHANGELOG.md` entries from `Unreleased` to `## [X.Y.Z] - YYYY-MM-DD`, leaving `Unreleased` available. Describe user-visible outcomes, not raw commits. Clearly identify breaking changes and security fixes, required upgrade actions and known limitations. Use Features/Fixes sections only when relevant.
 3. Run `node scripts/release.mjs check`, `node --test scripts/release.test.mjs` and the frontend/Rust gates documented in `AGENTS.md`. Open a PR into `main` with the compatibility decision and evidence.
-4. Require the `validate` aggregate check and all underlying jobs to succeed on the exact PR head; resolve actionable review findings. Merge only under the operator's authorization. Do not tag the pre-merge commit.
+4. Require the `validate` aggregate check and all underlying jobs to succeed on the exact PR head; resolve actionable review findings. Merge when covered by the current session's authorization. Do not tag the pre-merge commit.
 
 Implementation PRs normally keep the current version and add `Unreleased` notes. Do not choose a version merely because a feature was added.
 
@@ -49,11 +49,11 @@ PR CI packages unsigned test artifacts without production secrets. These are not
 
 ## 4. Tag, build and inspect the draft
 
-1. After authorized merge, fetch `main` and the tags. Identify the exact merged release commit. Confirm its version, changelog and CI evidence. With explicit tag authorization, create an annotated `vX.Y.Z` tag on that commit and push that tag only.
+1. After authorized merge, fetch `main` and the tags. Identify the exact merged release commit. Confirm its version, changelog and CI evidence. When the current release authorization covers tagging, create an annotated `vX.Y.Z` tag on that commit and push that tag only. Do not request a second confirmation for an already authorized release.
 2. `release.yml` rejects unstable or mismatched versions, a tag outside `main` history, an empty/missing dated changelog section and an existing release/draft. It runs frontend gates and six native build/test lanes on the tag commit.
 3. Each lane stages canonical version/OS/architecture names and a SHA-256 receipt. A single aggregation job checks matching version/SHA, all six platforms, artifact hashes and signature presence before creating a draft with one `latest.json`. Tauri signs each updater payload; staging runs the Rust verifier against the exact public key embedded in that release and refuses a signature/key mismatch. Installed clients independently verify signatures again.
 4. Inspect the draft's eight distribution/update payloads, six `.sig` files and `latest.json`. Confirm the manifest has exactly `windows-x86_64`, `windows-aarch64`, `darwin-x86_64`, `darwin-aarch64`, `linux-x86_64`, `linux-aarch64`, each targeting its own versioned asset URL. Confirm notes match the approved changelog.
-5. Record workflow URL, exact SHA, artifact hashes, macOS signing/notarization results and native acceptance evidence. A partially uploaded draft must remain unpublished; the workflow refuses reruns over an existing draft. Diagnose first and obtain authorization before deleting an unpublished draft and retrying. Never use clobber/force upload.
+5. Record workflow URL, exact SHA, artifact hashes, macOS signing/notarization results and native acceptance evidence. A partially uploaded draft must remain unpublished; the workflow refuses reruns over an existing draft. Diagnose first; deleting an unpublished draft and retrying requires authority for that cleanup, which may already have been granted in the session. Never use clobber/force upload.
 
 ## 5. Native acceptance and publish
 
@@ -65,7 +65,7 @@ For each of the six targets, retain machine/OS/architecture, starting/target ver
 - Verify keyboard/focus and minimum-window layouts on each OS. Record missing native scenarios explicitly; headless frontend QA and compilation do not establish native installer behavior.
 - Use two updater-enabled versions and an isolated test endpoint/build to validate upgrades before stable publication. Existing `0.1.0` installations have no updater and require a manual bootstrap install. A public draft is not the stable updater endpoint.
 
-Only after operator authorization and completed acceptance, publish the draft as a stable/latest GitHub Release. Then independently download the published assets, verify expected hashes/signatures, check the public `releases/latest/download/latest.json`, and perform a stable-channel update on every target. If a native target is unavailable, leave its acceptance unchecked and do not claim six-target runtime completion or close issue #1.
+Once acceptance is complete and publication is covered by the current session's authorization, publish the draft as a stable/latest GitHub Release without requesting duplicate confirmation. Then independently download the published assets, verify expected hashes/signatures, check the public `releases/latest/download/latest.json`, and perform a stable-channel update on every target. If a native target is unavailable, leave its acceptance unchecked and do not claim six-target runtime completion or close issue #1.
 
 ## 6. Recovery
 

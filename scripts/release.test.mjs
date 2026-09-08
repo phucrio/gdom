@@ -4,17 +4,25 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { aggregateArtifacts, checkVersions, platforms, releaseNotes, stageArtifacts } from "./release.mjs";
+import { aggregateArtifacts, checkVersions, releaseNotes, stageArtifacts } from "./release.mjs";
+
+const expectedPayloads = {
+  "windows-x86_64": [".exe"],
+  "windows-aarch64": [".exe"],
+  "darwin-x86_64": [".app.tar.gz", ".dmg"],
+  "darwin-aarch64": [".app.tar.gz", ".dmg"],
+  "linux-x86_64": [".AppImage"],
+  "linux-aarch64": [".AppImage"],
+};
 
 function fixtures(context) {
   const root = mkdtempSync(join(tmpdir(), "gdom-release-test-"));
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const input = join(root, "input");
   mkdirSync(input);
-  for (const [platform, definition] of Object.entries(platforms)) {
+  for (const [platform, suffixes] of Object.entries(expectedPayloads)) {
     const directory = join(input, platform);
     mkdirSync(directory);
-    const suffixes = [definition.suffix, ...(platform.startsWith("darwin-") ? [".dmg"] : [])];
     const artifacts = suffixes.map((suffix) => {
       const filename = `GDOM_0.1.1_${platform}${suffix}`;
       writeFileSync(join(directory, filename), "fixture artifact");
@@ -30,7 +38,11 @@ const aggregate = ({ input, output }) => aggregateArtifacts(input, output, "0.1.
 test("aggregates six distinct OS and architecture download routes", (context) => {
   const paths = fixtures(context);
   const manifest = aggregate(paths);
-  assert.equal(Object.keys(manifest.platforms).length, 6);
+  assert.deepEqual(Object.keys(manifest.platforms).sort(), Object.keys(expectedPayloads).sort());
+  for (const [platform, suffixes] of Object.entries(expectedPayloads)) {
+    assert.equal(manifest.platforms[platform].url,
+      `https://github.com/phucrio/gdom/releases/download/v0.1.1/GDOM_0.1.1_${platform}${suffixes[0]}`);
+  }
   assert.match(manifest.platforms["linux-aarch64"].url, /linux-aarch64.AppImage$/);
   assert.match(manifest.platforms["darwin-x86_64"].url, /darwin-x86_64.app.tar.gz$/);
 });

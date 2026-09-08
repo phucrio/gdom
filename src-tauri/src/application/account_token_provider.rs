@@ -62,7 +62,7 @@ impl fmt::Display for TokenRefreshError {
             Self::InvalidClient => write!(f, "invalid OAuth client credentials"),
             Self::InvalidRequest => write!(
                 f,
-                "Google rejected the token request. Desktop OAuth clients require a client secret stored in Windows Credential Manager, not in application source"
+                "Google rejected the token request. Desktop OAuth clients require a client secret stored in the system credential store, not in application source"
             ),
             Self::RateLimited => write!(f, "rate limit exceeded during token refresh"),
             Self::Unavailable => write!(f, "token service is unavailable"),
