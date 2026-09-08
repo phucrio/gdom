@@ -78,6 +78,19 @@ pub type JobStoreFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, JobStorePortError>> + Send + 'a>>;
 
 pub trait JobStorePort: Send + Sync {
+    fn queued_from_status<'a>(
+        &'a self,
+        job_id: JobId,
+    ) -> JobStoreFuture<'a, Option<crate::domain::job::JobStatus>>;
+    fn persist_queue_changes<'a>(
+        &'a self,
+        expected: &'a [MigrationJob],
+        changes: &'a [(MigrationJob, MigrationEvent)],
+    ) -> JobStoreFuture<'a, ()>;
+    fn final_report_snapshot<'a>(
+        &'a self,
+        job_id: JobId,
+    ) -> JobStoreFuture<'a, crate::application::final_report::FinalReportSnapshot>;
     fn create_job<'a>(&'a self, job: &'a MigrationJob) -> JobStoreFuture<'a, ()>;
     fn create_seeded_scan<'a>(
         &'a self,

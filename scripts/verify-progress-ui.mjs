@@ -20,7 +20,7 @@ const server = await createServer({ server: { host: "127.0.0.1", port: 0 }, plug
   },
 }] });
 await server.listen();
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true, ...(process.env.GDOM_QA_BROWSER ? { channel: process.env.GDOM_QA_BROWSER } : {}) });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));

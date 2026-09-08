@@ -826,6 +826,20 @@ impl MigrationJob {
         }
     }
 
+    pub fn remove_from_queue(&mut self, restored_status: JobStatus) -> Result<(), JobError> {
+        if self.status != JobStatus::Queued
+            || !matches!(
+                restored_status,
+                JobStatus::ReadyForReview | JobStatus::CanaryReview | JobStatus::Paused
+            )
+        {
+            return Err(JobError::IllegalTransition);
+        }
+        self.status = restored_status;
+        self.queue_position = None;
+        Ok(())
+    }
+
     pub fn set_queue_position(&mut self, position: Option<i64>) {
         self.queue_position = position;
     }

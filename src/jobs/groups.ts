@@ -43,6 +43,7 @@ export function groupJobs(jobs: readonly JobDto[]): Record<JobListGroup, JobDto[
   for (const job of jobs) {
     grouped[jobListGroup(job.status)].push(job);
   }
+  grouped.queued.sort((left, right) => (left.queuePosition ?? 0) - (right.queuePosition ?? 0));
   return grouped;
 }
 

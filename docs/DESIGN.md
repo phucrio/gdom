@@ -201,3 +201,9 @@ Use `ux-visual-interface` for detailed screen execution and `ux-design-systems` 
 The account menu includes a Google storage summary for the active account: percentage, used/total bytes, and a native meter with the indigo accent. Use existing surface, text, radius, and spacing tokens (12 px padding, 8 px gap). Fetch on menu open and account change; show loading, retryable error, and unavailable-limit states without substituting zero usage. Storage is the account total across Google services, not only Drive files.
 
 Use the existing semantic HTML and these reusable visual primitives across reachable product screens: primary, secondary, ghost, and danger buttons; field controls; status badges; notices; dialogs; file-type icons; account selection rows; job cards; and the reserved migration-progress region. Each primitive has default, hover, focus-visible, disabled, pending, error, and reduced-motion behavior where applicable. Do not introduce parallel one-off variants without updating this contract.
+
+## Queue controls and final reports
+
+Queued job cards use the shared wrapping action row for Move up, Move down, and Remove from queue. Reordering is available only with All accounts selected; removal retains progress. Disable queue actions during updates and refresh from persisted state. Show inline errors and announce results.
+
+Terminal job details offer Export final report using the existing labeled destination field and primary action. Support .txt and .csv, retain invalid input, show pending and persistent success/error feedback, and wrap output paths. Reuse dialog, field, notice, and spacing primitives without new visual tokens.

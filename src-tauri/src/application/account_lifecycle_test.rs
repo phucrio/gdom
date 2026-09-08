@@ -198,6 +198,25 @@ impl RefreshTokenStore for MockKeyring {
 struct EmptyJobStore;
 
 impl JobStorePort for EmptyJobStore {
+    fn queued_from_status<'a>(
+        &'a self,
+        _job_id: JobId,
+    ) -> JobStoreFuture<'a, Option<crate::domain::job::JobStatus>> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
+    fn final_report_snapshot<'a>(
+        &'a self,
+        job_id: JobId,
+    ) -> JobStoreFuture<'a, crate::application::final_report::FinalReportSnapshot> {
+        Box::pin(async move { Err(crate::application::JobStorePortError::JobNotFound(job_id)) })
+    }
+    fn persist_queue_changes<'a>(
+        &'a self,
+        _expected: &'a [MigrationJob],
+        _changes: &'a [(MigrationJob, crate::application::job_store::MigrationEvent)],
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(async { unimplemented!("job store unused in account lifecycle tests") })
+    }
     fn create_seeded_scan<'a>(
         &'a self,
         _job: &'a MigrationJob,

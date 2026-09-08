@@ -8,6 +8,7 @@ pub mod drive_folder;
 pub mod drive_transfer;
 pub mod drive_tree;
 pub mod entity_id;
+pub mod final_report;
 pub mod item_classifier;
 pub mod item_store;
 pub mod job_events;

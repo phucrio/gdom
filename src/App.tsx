@@ -176,6 +176,7 @@ export function App({ backend }: AppProps) {
 
         {view === "jobs" && (
           <JobsList
+            backend={backend}
             accounts={accounts.accounts}
             jobs={jobs.jobs}
             loading={jobs.loading}

@@ -340,6 +340,28 @@ async fn automatic_transfer_continues_only_after_verified_canary() {
                 .unwrap()
                 .is_none()
         );
+        if canary_fails {
+            assert_eq!(
+                last_event.new_state.as_deref(),
+                Some(JobStatus::CanaryReview.as_str())
+            );
+            assert!(
+                env.job_store
+                    .list_canary_cohort(job.id())
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|item| item.state != ItemState::Verified)
+            );
+            let queued = env.job_service.queue_job(job.id(), None).await.unwrap();
+            assert_eq!(
+                env.job_service.job_run_phase(&queued).await.unwrap(),
+                crate::application::JobRunPhase::Bulk
+            );
+            let removed = env.job_service.remove_queued_job(job.id()).await.unwrap();
+            assert_eq!(removed.status(), JobStatus::CanaryReview);
+            assert!(!transferred.lock().unwrap().contains("file-5"));
+        }
         let events = env.events.snapshot();
         assert_eq!(
             events.iter().any(|event| matches!(event,
@@ -822,7 +844,7 @@ async fn queue_job_reorders_without_starting_mutations() {
 
     let reordered = env
         .job_service
-        .queue_job(job_b.id(), Some(1))
+        .reorder_queued_job(job_b.id(), 1)
         .await
         .unwrap();
     assert_eq!(reordered.id(), job_b.id());
@@ -831,6 +853,93 @@ async fn queue_job_reorders_without_starting_mutations() {
     assert_eq!(job_a_after.queue_position(), Some(2));
     assert_eq!(job_a_after.status(), JobStatus::Queued);
     assert_eq!(reordered.status(), JobStatus::Queued);
+    assert!(mutation_methods(&env.captured).is_empty());
+}
+
+#[tokio::test]
+async fn queue_controls_reject_invalid_positions_and_nonqueued_jobs() {
+    let env = build_env(|_| ("404 Not Found".into(), "{}".into())).await;
+    let job = seed_ready_job(
+        &env.job_store,
+        930,
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
+    )
+    .await;
+    assert!(
+        env.job_service
+            .reorder_queued_job(job.id(), 1)
+            .await
+            .is_err()
+    );
+    assert!(env.job_service.remove_queued_job(job.id()).await.is_err());
+    env.job_service.queue_job(job.id(), None).await.unwrap();
+    for position in [-1, 0, 2, i64::MAX] {
+        assert!(
+            env.job_service
+                .reorder_queued_job(job.id(), position)
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(
+        env.job_service
+            .get_job(job.id())
+            .await
+            .unwrap()
+            .queue_position(),
+        Some(1)
+    );
+    assert!(mutation_methods(&env.captured).is_empty());
+}
+
+#[tokio::test]
+async fn removing_queued_job_preserves_ready_job_and_compacts_positions() {
+    let env = build_env(|_| ("404 Not Found".into(), "{}".into())).await;
+    let first = seed_ready_job(
+        &env.job_store,
+        931,
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
+    )
+    .await;
+    let second = seed_ready_job(
+        &env.job_store,
+        932,
+        3,
+        4,
+        "other@gmail.com",
+        "recipient@gmail.com",
+        "other-source",
+        "other-target",
+    )
+    .await;
+    env.job_service.queue_job(first.id(), None).await.unwrap();
+    env.job_service.queue_job(second.id(), None).await.unwrap();
+    let removed = env.job_service.remove_queued_job(first.id()).await.unwrap();
+    assert_eq!(removed.status(), JobStatus::ReadyForReview);
+    assert_eq!(removed.queue_position(), None);
+    assert_eq!(
+        env.job_service
+            .get_job(second.id())
+            .await
+            .unwrap()
+            .queue_position(),
+        Some(1)
+    );
+    env.job_service.reconcile_on_startup().await.unwrap();
+    assert_eq!(
+        env.job_service.get_job(first.id()).await.unwrap().status(),
+        JobStatus::ReadyForReview
+    );
     assert!(mutation_methods(&env.captured).is_empty());
 }
 
@@ -1075,5 +1184,279 @@ async fn pause_and_retry_drive_real_job_service_entry_points() {
         .expect("explicit retry resumes from the checkpoint");
     assert_ne!(retried.status(), JobStatus::Paused);
     env.job_service.await_idle(job.id()).await;
+    assert!(mutation_methods(&env.captured).is_empty());
+}
+
+#[tokio::test]
+async fn queue_removal_preserves_canary_and_bulk_phase_after_restart() {
+    for (index, phase) in ["RUNNING_CANARY", "CANARY_REVIEW", "RUNNING"]
+        .into_iter()
+        .enumerate()
+    {
+        let env = build_env(|_| ("404 Not Found".into(), "{}".into())).await;
+        let mut job = seed_ready_job(
+            &env.job_store,
+            940 + index as u128,
+            1,
+            2,
+            "source@gmail.com",
+            "target@gmail.com",
+            SOURCE_PERM,
+            TARGET_PERM,
+        )
+        .await;
+        job.start_canary().unwrap();
+        if phase != "RUNNING_CANARY" {
+            job.complete_canary().unwrap();
+        }
+        if phase == "RUNNING" {
+            job.start_bulk().unwrap();
+        }
+        if phase != "CANARY_REVIEW" {
+            job.pause_transfer().unwrap();
+        }
+        let event = crate::application::MigrationEvent {
+            id: format!("phase-{index}"),
+            job_id: job.id(),
+            file_id: None,
+            account_id: None,
+            event_type: "JOB_STATUS".into(),
+            previous_state: Some(if phase == "CANARY_REVIEW" {
+                "RUNNING_CANARY".into()
+            } else {
+                phase.into()
+            }),
+            new_state: Some(job.status().as_str().into()),
+            sanitized_detail_json: None,
+            created_at: iso_now(),
+        };
+        env.job_store
+            .persist_job_with_event(&job, &event)
+            .await
+            .unwrap();
+        env.job_service.queue_job(job.id(), None).await.unwrap();
+        env.job_service
+            .reorder_queued_job(job.id(), 1)
+            .await
+            .unwrap();
+        if phase == "CANARY_REVIEW" {
+            let queued = env.job_service.get_job(job.id()).await.unwrap();
+            assert_eq!(
+                env.job_service.job_run_phase(&queued).await.unwrap(),
+                crate::application::JobRunPhase::Bulk
+            );
+        }
+        let removed = env.job_service.remove_queued_job(job.id()).await.unwrap();
+        assert_eq!(
+            removed.status(),
+            if phase == "CANARY_REVIEW" {
+                JobStatus::CanaryReview
+            } else {
+                JobStatus::Paused
+            }
+        );
+        env.job_service.reconcile_on_startup().await.unwrap();
+        let restored = env.job_service.get_job(job.id()).await.unwrap();
+        let expected_phase = if phase == "RUNNING" {
+            crate::application::JobRunPhase::Bulk
+        } else {
+            crate::application::JobRunPhase::Canary
+        };
+        assert_eq!(
+            env.job_service.job_run_phase(&restored).await.unwrap(),
+            expected_phase
+        );
+        assert!(mutation_methods(&env.captured).is_empty());
+    }
+}
+
+#[tokio::test]
+async fn queue_transaction_rolls_back_every_position_when_event_insert_fails() {
+    let env = build_env(|_| ("404 Not Found".into(), "{}".into())).await;
+    let first = seed_ready_job(
+        &env.job_store,
+        950,
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
+    )
+    .await;
+    let second = seed_ready_job(
+        &env.job_store,
+        951,
+        3,
+        4,
+        "other@gmail.com",
+        "recipient@gmail.com",
+        "other-source",
+        "other-target",
+    )
+    .await;
+    env.job_service.queue_job(first.id(), None).await.unwrap();
+    env.job_service.queue_job(second.id(), None).await.unwrap();
+    sqlx::query("CREATE TRIGGER fail_queue_event BEFORE INSERT ON migration_events WHEN NEW.event_type = 'QUEUE_UPDATED' BEGIN SELECT RAISE(ABORT, 'injected event failure'); END")
+        .execute(env.job_store.pool()).await.unwrap();
+    assert!(
+        env.job_service
+            .reorder_queued_job(second.id(), 1)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        env.job_service
+            .get_job(first.id())
+            .await
+            .unwrap()
+            .queue_position(),
+        Some(1)
+    );
+    assert_eq!(
+        env.job_service
+            .get_job(second.id())
+            .await
+            .unwrap()
+            .queue_position(),
+        Some(2)
+    );
+}
+
+#[tokio::test]
+async fn queue_snapshot_cannot_overwrite_a_cancelled_job() {
+    let env = build_env(|_| ("404 Not Found".into(), "{}".into())).await;
+    let job = seed_ready_job(
+        &env.job_store,
+        960,
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
+    )
+    .await;
+    env.job_service.queue_job(job.id(), None).await.unwrap();
+    let expected = env.job_store.list_jobs().await.unwrap();
+    let mut stale = expected
+        .iter()
+        .find(|queued| queued.id() == job.id())
+        .unwrap()
+        .clone();
+    stale.remove_from_queue(JobStatus::ReadyForReview).unwrap();
+    let event = crate::application::MigrationEvent {
+        id: "stale-queue".into(),
+        job_id: job.id(),
+        file_id: None,
+        account_id: None,
+        event_type: "QUEUE_UPDATED".into(),
+        previous_state: Some("QUEUED".into()),
+        new_state: Some("READY_FOR_REVIEW".into()),
+        sanitized_detail_json: None,
+        created_at: iso_now(),
+    };
+    env.job_service.cancel_migration(job.id()).await.unwrap();
+    assert!(
+        env.job_store
+            .persist_queue_changes(&expected, &[(stale, event)])
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        env.job_service.get_job(job.id()).await.unwrap().status(),
+        JobStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn paused_scan_queue_removal_resumes_saved_page_without_losing_items() {
+    let env = build_env(|request| {
+        if request_path(request).is_some_and(|path| path.contains("/about")) {
+            return (
+                "200 OK".into(),
+                r#"{"storageQuota":{"limit":"1000","usage":"0"}}"#.into(),
+            );
+        }
+        ("200 OK".into(), r#"{"files":[]}"#.into())
+    })
+    .await;
+    let mut job = env
+        .job_service
+        .create_job(AccountId::new(1), AccountId::new(2))
+        .await
+        .unwrap();
+    let root = MigrationRoot {
+        id: RootId::new(970),
+        job_id: job.id(),
+        root_file_id: "scan-root".into(),
+        root_name: "Root".into(),
+        validation_status: RootValidationStatus::Validated,
+        created_at: "t".into(),
+    };
+    job.add_root(root.clone()).unwrap();
+    env.job_store.add_root(&root).await.unwrap();
+    job.start_scanning("t".into()).unwrap();
+    env.job_store.update_job(&job).await.unwrap();
+    let checkpoint = crate::domain::item::ScanCheckpoint {
+        job_id: job.id(),
+        folder_id: "scan-root".into(),
+        page_token: Some("saved-page".into()),
+        depth: 0,
+    };
+    env.job_store
+        .commit_scan_batch(
+            job.id(),
+            &ItemBatchCommit {
+                items: vec![eligible_item(job.id(), 970, "already-scanned", 1)],
+                checkpoints_upsert: vec![checkpoint.clone()],
+                checkpoints_delete: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    env.job_service.pause_scan(job.id()).await.unwrap();
+    env.job_service.queue_job(job.id(), None).await.unwrap();
+    env.job_service
+        .reorder_queued_job(job.id(), 1)
+        .await
+        .unwrap();
+    let queued = env.job_service.get_job(job.id()).await.unwrap();
+    assert_eq!(
+        env.job_service.job_run_phase(&queued).await.unwrap(),
+        crate::application::JobRunPhase::Scan
+    );
+    assert!(matches!(
+        env.job_service.resume_migration(job.id()).await,
+        Err(crate::application::JobServiceError::IllegalTransition)
+    ));
+    let removed = env.job_service.remove_queued_job(job.id()).await.unwrap();
+    assert_eq!(removed.status(), JobStatus::Paused);
+    assert_eq!(
+        env.job_store.list_scan_checkpoints(job.id()).await.unwrap(),
+        vec![checkpoint]
+    );
+    env.job_service.reconcile_on_startup().await.unwrap();
+    let paused = env.job_service.get_job(job.id()).await.unwrap();
+    assert_eq!(
+        env.job_service.job_run_phase(&paused).await.unwrap(),
+        crate::application::JobRunPhase::Scan
+    );
+    env.job_service.start_scan(job.id()).await.unwrap();
+    env.job_service.await_idle(job.id()).await;
+    assert_eq!(
+        env.job_service.get_job(job.id()).await.unwrap().status(),
+        JobStatus::ReadyForReview
+    );
+    assert_eq!(
+        env.job_store
+            .list_committed_file_ids(job.id())
+            .await
+            .unwrap(),
+        vec!["already-scanned"]
+    );
+    assert!(env.captured.lock().unwrap().iter().any(|request| {
+        crate::test_support::query_param(request, "pageToken").as_deref() == Some("saved-page")
+    }));
     assert!(mutation_methods(&env.captured).is_empty());
 }

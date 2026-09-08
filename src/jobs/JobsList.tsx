@@ -1,11 +1,13 @@
 import { progressCounts } from "../browser/progress.ts";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { accountDisplayLabel } from "../accounts/status.ts";
+import type { BackendPort } from "../ipc/port.ts";
+import { FinalReportExport } from "./FinalReportExport.tsx";
 import type { AccountDto, JobDto } from "../ipc/types.ts";
 import { formatDate } from "../browser/format.ts";
 import { Dialog } from "../ui/Dialog.tsx";
-import { haltStatusDetail, isHaltStatus, jobStatusLabel } from "./status.ts";
+import { haltStatusDetail, isHaltStatus, isTerminalJob, jobStatusLabel } from "./status.ts";
 import {
   JOB_ACCOUNT_FILTER_ALL,
   JOB_ACCOUNT_FILTER_ID,
@@ -31,6 +33,7 @@ import {
 import { jobPairLabel } from "./pairLabel.ts";
 
 type JobsListProps = {
+  backend: BackendPort;
   accounts: AccountDto[];
   jobs: JobDto[];
   loading: boolean;
@@ -43,6 +46,9 @@ type JobsListProps = {
 };
 
 export function JobsList({
+  backend,
+  onAnnounce,
+  onRefresh,
   accounts,
   jobs,
   loading,
@@ -51,10 +57,35 @@ export function JobsList({
   onAccountFilter,
   onSelectJobForProgress,
 }: JobsListProps) {
-  const [inspectJob, setInspectJob] = useState<JobDto | null>(null);
+  const [inspectJobId, setInspectJob] = useState<string | null>(null);
+  const inspectJob = jobs.find((job) => job.id === inspectJobId) ?? null;
+  const [queueBusy, setQueueBusy] = useState(false);
+  const queuePending = useRef(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  async function updateQueue(job: JobDto, position: number | null) {
+    if (queuePending.current || loading) return;
+    queuePending.current = true;
+    setQueueBusy(true);
+    setQueueError(null);
+    try {
+      if (position === null) await backend.removeQueuedJob(job.id);
+      else await backend.reorderQueuedJob(job.id, position);
+      onRefresh();
+      onAnnounce(position === null ? "Removed from queue. Job progress is retained." : "Queue order updated.");
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "Could not update the queue.";
+      onRefresh();
+      setQueueError(message);
+      onAnnounce(message);
+    } finally {
+      queuePending.current = false;
+      setQueueBusy(false);
+    }
+  }
 
   const visible = filterJobsByAccount(jobs, accountFilter);
   const grouped = groupJobs(visible);
+  const globalQueue = groupJobs(jobs).queued;
   const queuedCount = grouped.queued.length;
 
   return (
@@ -94,6 +125,9 @@ export function JobsList({
         </p>
       )}
 
+      {queuedCount > 0 && accountFilter !== null && <p className="muted">Select All accounts to change queue order.</p>}
+      {queueBusy && <p role="status">Updating queue...</p>}
+      {queueError !== null && <p className="error" role="alert">{queueError}</p>}
       {loading && <p role="status">{JOBS_LOADING}</p>}
       {loadError !== null && (
         <p className="error" role="alert">
@@ -116,6 +150,7 @@ export function JobsList({
             <h3 id={headingId}>{JOB_LIST_GROUP_TITLES[group]}</h3>
             <ul className="job-list">
               {items.map((job) => {
+                const queueOrdinal = globalQueue.findIndex((queued) => queued.id === job.id) + 1;
                 const halt = isHaltStatus(job.status)
                   ? haltStatusDetail(job.status, job.lastError)
                   : null;
@@ -151,14 +186,24 @@ export function JobsList({
                       </p>
                     )}
                     {job.queuePosition !== null && job.status === "QUEUED" && (
-                      <p className="muted">{queuePositionLabel(job.queuePosition)}</p>
+                      <p className="muted">{queuePositionLabel(queueOrdinal)}</p>
                     )}
 
                     <div className="job-actions">
+                      {job.status === "QUEUED" && job.queuePosition !== null && <>
+                        {accountFilter === null && <>
+                          <button type="button" className="secondary-button" disabled={loading || queueBusy || queueOrdinal <= 1}
+                            onClick={() => void updateQueue(job, queueOrdinal - 1)}>Move up</button>
+                          <button type="button" className="secondary-button" disabled={loading || queueBusy || queueOrdinal >= globalQueue.length}
+                            onClick={() => void updateQueue(job, queueOrdinal + 1)}>Move down</button>
+                        </>}
+                        <button type="button" className="secondary-button" disabled={loading || queueBusy}
+                          onClick={() => void updateQueue(job, null)}>Remove from queue</button>
+                      </>}
                       <button
                         type="button"
                         className="secondary-button"
-                        onClick={() => setInspectJob(job)}
+                        onClick={() => setInspectJob(job.id)}
                       >
                         View details
                       </button>
@@ -180,10 +225,10 @@ export function JobsList({
         );
       })}
 
-      {/* Read-Only Details Dialog */}
       {inspectJob !== null && (
         <Dialog title="Migration history details" onClose={() => setInspectJob(null)}>
-          <dl className="dialog-body job-details-view">
+          <div className="dialog-body">
+          <dl className="job-details-view">
             <dt>Source</dt><dd>{inspectJob.sourceSnapshot.email} ({inspectJob.sourceSnapshot.displayName})</dd>
             <dt>Target</dt><dd>{inspectJob.targetSnapshot.email} ({inspectJob.targetSnapshot.displayName})</dd>
             <dt>Status</dt><dd><span className="status-badge">{jobStatusLabel(inspectJob.status)}</span></dd>
@@ -199,6 +244,8 @@ export function JobsList({
               <><dt>Last error</dt><dd className="error">{inspectJob.lastError}</dd></>
             )}
           </dl>
+          {isTerminalJob(inspectJob.status) && <FinalReportExport key={inspectJob.id} backend={backend} job={inspectJob} onAnnounce={onAnnounce} />}
+          </div>
         </Dialog>
       )}
     </section>

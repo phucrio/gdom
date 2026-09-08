@@ -14,7 +14,7 @@
     "icons": "node scripts/generate-icons.mjs",
     "icons:check": "node scripts/generate-icons.mjs --check",
     "qa:typecheck": "tsc --project tsconfig.qa.json",
-    "ui:qa": "node scripts/verify-progress-ui.mjs"
+    "ui:qa": "node scripts/verify-progress-ui.mjs && node scripts/check-job-controls.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
