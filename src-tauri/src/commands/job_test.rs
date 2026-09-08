@@ -124,6 +124,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queue_actions_reject_invalid_job_ids_before_store_access() {
+        use crate::commands::job_actions::{
+            ReorderQueuedJobInput, remove_queued_job_inner, reorder_queued_job_inner,
+        };
+        let state = build_test_state().await;
+        let reordered = reorder_queued_job_inner(
+            &state,
+            ReorderQueuedJobInput {
+                job_id: "invalid".into(),
+                position: 1,
+            },
+        )
+        .await;
+        let removed = remove_queued_job_inner(
+            &state,
+            JobIdInput {
+                job_id: "invalid".into(),
+            },
+        )
+        .await;
+        assert!(matches!(reordered, Err(CommandError::JobNotFound(_))));
+        assert!(matches!(removed, Err(CommandError::JobNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn final_report_command_exports_cancelled_job_without_credentials() {
+        use crate::commands::job_actions::export_final_report_inner;
+        let state = build_test_state().await;
+        create_dummy_account(
+            &state.account_store,
+            1,
+            "source@gmail.com",
+            "Source",
+            "source",
+        )
+        .await;
+        create_dummy_account(
+            &state.account_store,
+            2,
+            "target@gmail.com",
+            "Target",
+            "target",
+        )
+        .await;
+        let job = create_job_inner(
+            &state,
+            CreateJobInput {
+                source_account_id: "1".into(),
+                target_account_id: "2".into(),
+            },
+        )
+        .await
+        .expect("draft");
+        let path = std::env::temp_dir().join(format!("gdom-final-command-{}.csv", job.id));
+        let destination = path.to_string_lossy().into_owned();
+        let draft_result = export_final_report_inner(
+            &state,
+            ExportDryRunInput {
+                job_id: job.id.clone(),
+                destination: destination.clone(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            draft_result,
+            Err(CommandError::IllegalJobTransition(_))
+        ));
+        cancel_migration_inner(
+            &state,
+            JobIdInput {
+                job_id: job.id.clone(),
+            },
+        )
+        .await
+        .expect("cancel draft");
+        let report = export_final_report_inner(
+            &state,
+            ExportDryRunInput {
+                job_id: job.id,
+                destination,
+            },
+        )
+        .await
+        .expect("local report");
+        let result = serde_json::to_value(report).expect("IPC response");
+        assert_eq!(result["status"], "CANCELLED");
+        assert_eq!(result["counts"]["total"], 0);
+        assert_eq!(result["counts"]["verified"], 0);
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("written CSV")
+                .contains("CANCELLED")
+        );
+        std::fs::remove_file(path).expect("remove test output");
+    }
+
+    #[tokio::test]
     async fn progress_preserves_verified_items_and_terminal_history() {
         // Given persisted outcomes, including a transferred item awaiting verification.
         let state = build_test_state().await;

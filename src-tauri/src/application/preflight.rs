@@ -134,7 +134,7 @@ pub fn csv_cell(value: &str) -> String {
     let formula = value
         .chars()
         .next()
-        .is_some_and(|first| matches!(first, '=' | '+' | '-' | '@' | '\t' | '\r'));
+        .is_some_and(|first| matches!(first, '=' | '+' | '-' | '@' | '\t' | '\r' | '\n'));
     let mut escaped = value.replace('"', "\"\"");
     if formula {
         escaped.insert(0, '\'');
@@ -244,6 +244,7 @@ mod tests {
         assert_eq!(csv_cell("+1+1"), "\"'+1+1\"");
         assert_eq!(csv_cell("-2"), "\"'-2\"");
         assert_eq!(csv_cell("@SUM(A1)"), "\"'@SUM(A1)\"");
+        assert_eq!(csv_cell("\n=SUM(A1)"), "\"'\n=SUM(A1)\"");
         assert_eq!(csv_cell("plain"), "plain");
         assert_eq!(csv_cell("quote\"name"), "\"quote\"\"name\"");
         let csv = render_items_csv([DryRunCsvRow {

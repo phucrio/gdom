@@ -156,6 +156,12 @@ export type DryRunExport = AssertNoSecrets<{
   quotaWarning: boolean;
 }>;
 
+export type FinalReportExport = AssertNoSecrets<{
+  path: string;
+  status: JobStatus;
+  counts: { total: number; verified: number; failed: number; cancelled: number; skipped: number; unfinished: number };
+}>;
+
 export type MigrationProgress = AssertNoSecrets<{
   completed: number;
   failed?: number;
@@ -324,6 +330,9 @@ export const JOB_COMMANDS = {
   cancelMigration: "cancel_migration",
   retryFailedItems: "retry_failed_items",
   queueJob: "queue_job",
+  reorderQueuedJob: "reorder_queued_job",
+  removeQueuedJob: "remove_queued_job",
+  exportFinalReport: "export_final_report",
 } as const;
 
 export const IPC_EVENTS = {

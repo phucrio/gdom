@@ -3,6 +3,7 @@ import type {
   AccountReferencesDto,
   DriveFileListDto,
   DryRunExport,
+  FinalReportExport,
   JobDto,
   JobItemsPage,
   ListDriveFilesInput,
@@ -53,6 +54,9 @@ export type BackendPort = {
   startScan(jobId: string): Promise<JobDto>;
   pauseScan(jobId: string): Promise<JobDto>;
   listJobItems(jobId: string, filter?: string | null, page?: number): Promise<JobItemsPage>;
+  reorderQueuedJob(jobId: string, position: number): Promise<JobDto>;
+  removeQueuedJob(jobId: string): Promise<JobDto>;
+  exportFinalReport(jobId: string, destination: string): Promise<FinalReportExport>;
   exportDryRun(jobId: string, destination: string): Promise<DryRunExport>;
   startCanary(jobId: string, confirmationEmail: string): Promise<JobDto>;
   continueMigration(jobId: string): Promise<JobDto>;

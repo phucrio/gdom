@@ -1,4 +1,8 @@
+#[path = "queue_service.rs"]
+mod queue_service;
 use std::collections::{HashMap, HashSet};
+#[path = "final_report_service.rs"]
+mod final_report_service;
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
@@ -1680,47 +1684,6 @@ where
         if job.status().is_transfer_resumable() {
             return self.resume_migration(job_id).await;
         }
-        self.get_job(job_id).await
-    }
-
-    pub async fn queue_job(
-        &self,
-        job_id: JobId,
-        position: Option<i64>,
-    ) -> Result<MigrationJob, JobServiceError> {
-        let jobs = self.job_store.list_jobs().await?;
-        let mut target = jobs
-            .iter()
-            .find(|job| job.id() == job_id)
-            .cloned()
-            .ok_or(JobServiceError::JobNotFound(job_id))?;
-
-        let mut queued: Vec<MigrationJob> = jobs
-            .iter()
-            .filter(|job| job.status() == JobStatus::Queued && job.id() != job_id)
-            .cloned()
-            .collect();
-        queued.sort_by_key(|job| job.queue_position().unwrap_or(i64::MAX));
-
-        let insert_at = position
-            .map(|pos| (pos.max(1) as usize).saturating_sub(1))
-            .unwrap_or(queued.len())
-            .min(queued.len());
-        let previous = target.status().as_str().to_string();
-        target.enqueue((insert_at as i64) + 1)?;
-        queued.insert(insert_at, target);
-
-        for (index, job) in queued.iter_mut().enumerate() {
-            job.set_queue_position(Some((index as i64) + 1));
-            let event_previous = if job.id() == job_id {
-                Some(previous.as_str())
-            } else {
-                Some(job.status().as_str())
-            };
-            self.persist_status(job, event_previous, "JOB_STATUS")
-                .await?;
-        }
-
         self.get_job(job_id).await
     }
 

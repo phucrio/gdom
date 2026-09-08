@@ -620,7 +620,10 @@ button:not(:disabled):active { transform: translateY(1px); }
 .file-type-icon-image { color: #c084fc; }
 .file-type-icon-shortcut { color: var(--accent); }
 
-.job-details-view { grid-template-columns: minmax(8rem, max-content) minmax(0, 1fr); margin: 0; }
+.job-status-area { display: grid; gap: 8px; justify-items: start; align-content: start; }
+.final-report-form { display: grid; gap: 8px; }
+.final-report-form .notice { overflow-wrap: anywhere; }
+.job-details-view { display: grid; gap: 14px; grid-template-columns: minmax(8rem, max-content) minmax(0, 1fr); margin: 0; }
 .job-details-view dt { color: var(--muted); font-weight: 600; }
 .job-details-view dd { margin: 0; overflow-wrap: anywhere; }
 

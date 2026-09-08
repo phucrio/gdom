@@ -12,6 +12,7 @@ import {
   type AccountReferencesDto,
   type DriveFileListDto,
   type DryRunExport,
+  type FinalReportExport,
   type JobDto,
   type JobItemsPage,
   type ListJobsFilter,
@@ -115,6 +116,12 @@ export function createTauriBackend(): BackendPort {
       invokeCommand<JobItemsPage>(JOB_COMMANDS.listJobItems, {
         input: { jobId, filter: filter ?? null, page: page ?? 1 },
       }),
+    reorderQueuedJob: (jobId, position) =>
+      invokeCommand<JobDto>(JOB_COMMANDS.reorderQueuedJob, { input: { jobId, position } }),
+    removeQueuedJob: (jobId) =>
+      invokeCommand<JobDto>(JOB_COMMANDS.removeQueuedJob, { input: { jobId } }),
+    exportFinalReport: (jobId, destination) =>
+      invokeCommand<FinalReportExport>(JOB_COMMANDS.exportFinalReport, { input: { jobId, destination } }),
     exportDryRun: (jobId, destination) =>
       invokeCommand<DryRunExport>(JOB_COMMANDS.exportDryRun, {
         input: { jobId, destination },

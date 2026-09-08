@@ -20,7 +20,7 @@ fn parse_account_id(raw: &str) -> Result<AccountId, CommandError> {
         .map_err(|_| CommandError::UnsupportedAccount("Invalid account ID format".to_owned()))
 }
 
-fn parse_job_id(raw: &str) -> Result<JobId, CommandError> {
+pub(crate) fn parse_job_id(raw: &str) -> Result<JobId, CommandError> {
     raw.trim()
         .parse::<u128>()
         .map(JobId::new)

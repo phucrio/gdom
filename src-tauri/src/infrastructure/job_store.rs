@@ -71,6 +71,24 @@ async fn insert_job(
 }
 
 impl JobStorePort for SqliteJobStore {
+    fn persist_queue_changes<'a>(
+        &'a self,
+        expected: &'a [MigrationJob],
+        changes: &'a [(MigrationJob, MigrationEvent)],
+    ) -> JobStoreFuture<'a, ()> {
+        Box::pin(super::job_queue::persist_queue_changes(
+            &self.pool, expected, changes,
+        ))
+    }
+    fn final_report_snapshot<'a>(
+        &'a self,
+        job_id: JobId,
+    ) -> JobStoreFuture<'a, crate::application::final_report::FinalReportSnapshot> {
+        Box::pin(crate::infrastructure::final_report::read_snapshot(
+            self.pool(),
+            job_id,
+        ))
+    }
     fn create_seeded_scan<'a>(
         &'a self,
         job: &'a MigrationJob,
@@ -831,7 +849,7 @@ impl JobStorePort for SqliteJobStore {
     }
 }
 
-async fn insert_migration_event(
+pub(super) async fn insert_migration_event(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     event: &MigrationEvent,
 ) -> Result<(), sqlx::Error> {
