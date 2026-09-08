@@ -27,6 +27,7 @@ where
         position: Option<i64>,
         require_queued: bool,
     ) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let expected = self.job_store.list_jobs().await?;
         let mut target = expected
             .iter()
@@ -59,6 +60,7 @@ where
     }
 
     pub async fn remove_queued_job(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let expected = self.job_store.list_jobs().await?;
         let mut target = expected
             .iter()

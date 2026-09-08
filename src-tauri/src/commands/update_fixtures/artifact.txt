@@ -1,0 +1,1 @@
+GDOM updater verification fixture; never an installer.

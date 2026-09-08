@@ -1,5 +1,7 @@
 import type {
   AccountDto,
+  UpdateStatusDto,
+  ConfirmUpdateInput,
   AccountReferencesDto,
   DriveFileListDto,
   DryRunExport,
@@ -19,6 +21,10 @@ import type {
 
 /** UI-owned backend contract. Transport and secrets stay behind the adapter. */
 export type BackendPort = {
+  getUpdateStatus(): Promise<UpdateStatusDto>;
+  checkForUpdates(): Promise<UpdateStatusDto>;
+  downloadUpdate(input: ConfirmUpdateInput): Promise<UpdateStatusDto>;
+  installUpdate(input: ConfirmUpdateInput): Promise<UpdateStatusDto>;
   listAccounts(): Promise<AccountDto[]>;
   getAccountStorage(accountId: string): Promise<StorageQuotaDto>;
   getOAuthConfig(): Promise<OAuthConfigDto>;

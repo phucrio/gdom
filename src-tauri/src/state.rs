@@ -4,11 +4,7 @@ use tokio::sync::RwLock;
 
 use crate::infrastructure::account_store::SqliteAccountStore;
 
-#[cfg(target_os = "windows")]
-use crate::infrastructure::secrets::WindowsCredentialStore;
-
-#[cfg(not(target_os = "windows"))]
-use crate::application::RefreshTokenStore;
+use crate::infrastructure::secrets::NativeCredentialStore;
 
 // ---------------------------------------------------------------------------
 // OAuthConfig
@@ -140,11 +136,7 @@ pub struct AppState {
     pub drive_browser: crate::application::drive_browser::DriveBrowserService<SqliteAccountStore>,
     pub account_store: Arc<SqliteAccountStore>,
 
-    #[cfg(target_os = "windows")]
-    pub credential_store: Arc<WindowsCredentialStore>,
-
-    #[cfg(not(target_os = "windows"))]
-    pub credential_store: Arc<dyn RefreshTokenStore + Send + Sync>,
+    pub credential_store: Arc<NativeCredentialStore>,
 
     pub oauth_config: Arc<RwLock<Option<OAuthConfig>>>,
 
@@ -166,47 +158,9 @@ pub struct AppState {
 
 impl AppState {
     #[allow(clippy::too_many_arguments)]
-    #[cfg(target_os = "windows")]
     pub fn new(
         account_store: Arc<SqliteAccountStore>,
-        credential_store: Arc<WindowsCredentialStore>,
-        oauth_config: Arc<RwLock<Option<OAuthConfig>>>,
-        connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
-        account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
-        token_provider: Arc<crate::application::AccountTokenProvider<SqliteAccountStore>>,
-        job_store: Arc<crate::infrastructure::SqliteJobStore>,
-        drive_client: Arc<crate::infrastructure::google_drive::GoogleDriveClient>,
-        job_service: Arc<
-            crate::application::JobService<
-                SqliteAccountStore,
-                crate::infrastructure::SqliteJobStore,
-            >,
-        >,
-    ) -> Self {
-        Self {
-            drive_browser: crate::application::drive_browser::DriveBrowserService::new(
-                account_store.clone(),
-                token_provider.clone(),
-                drive_client.clone(),
-            ),
-            account_store,
-            credential_store,
-            oauth_config,
-            connect_account_lock: Arc::new(tokio::sync::Mutex::new(())),
-            account_connections: Default::default(),
-            connect_account_use_case,
-            account_lifecycle_use_case,
-            token_provider,
-            job_store,
-            job_service,
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[cfg(not(target_os = "windows"))]
-    pub fn new(
-        account_store: Arc<SqliteAccountStore>,
-        credential_store: Arc<dyn RefreshTokenStore + Send + Sync>,
+        credential_store: Arc<NativeCredentialStore>,
         oauth_config: Arc<RwLock<Option<OAuthConfig>>>,
         connect_account_use_case: Arc<dyn crate::application::ConnectAccountUseCase + 'static>,
         account_lifecycle_use_case: Arc<dyn crate::application::AccountLifecycleUseCase + 'static>,
@@ -475,7 +429,7 @@ mod tests {
             .expect("in-memory store");
         let account_store = Arc::new(store);
         let cred_store =
-            Arc::new(crate::infrastructure::secrets::WindowsCredentialStore::new_mock());
+            Arc::new(crate::infrastructure::secrets::NativeCredentialStore::new_mock());
         let oauth = OAuthConfig::new("test-id", None);
         let oauth_lock = Arc::new(RwLock::new(Some(oauth)));
         let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
@@ -535,7 +489,7 @@ mod tests {
             .expect("in-memory store");
         let account_store = Arc::new(store);
         let cred_store =
-            Arc::new(crate::infrastructure::secrets::WindowsCredentialStore::new_mock());
+            Arc::new(crate::infrastructure::secrets::NativeCredentialStore::new_mock());
         let oauth_lock = Arc::new(RwLock::new(None));
         let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
             Arc::new(DummyConnectAccountUseCase);

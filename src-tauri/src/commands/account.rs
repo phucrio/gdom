@@ -95,6 +95,10 @@ async fn get_oauth_config_inner(state: &AppState) -> Result<OAuthConfigDto, Comm
         .map(str::trim)
         .is_some_and(|value| !value.is_empty());
 
+    let authentication_lock = state.connect_account_lock.try_lock().ok();
+    if authentication_lock.is_some() {
+        recover_custom_oauth_secret(state).await?;
+    }
     let guard = state.oauth_config.read().await;
     let client_id = match guard.as_ref() {
         Some(config) => Some(config.client_id.clone()),
@@ -114,6 +118,30 @@ async fn get_oauth_config_inner(state: &AppState) -> Result<OAuthConfigDto, Comm
         using_custom_override,
         can_sign_in,
     })
+}
+
+// Call while holding connect_account_lock so configure/reset cannot change the client pair.
+pub(super) async fn recover_custom_oauth_secret(state: &AppState) -> Result<(), CommandError> {
+    let mut configuration = state.oauth_config.write().await;
+    let Some(config) = configuration.as_mut() else {
+        return Ok(());
+    };
+    if config.has_client_secret() {
+        return Ok(());
+    }
+    let stored_client_id = state
+        .account_store
+        .get_setting("oauth.client_id")
+        .await
+        .map_err(|error| CommandError::Database(error.to_string()))?;
+    if stored_client_id.as_deref().map(str::trim) == Some(config.client_id.as_str()) {
+        config.client_secret = state.credential_store.load_oauth_secret().map_err(|_| {
+            CommandError::Keychain(
+                "Unlock your system credential store, then retry sign-in.".into(),
+            )
+        })?;
+    }
+    Ok(())
 }
 
 pub(super) fn require_desktop_client_secret(config: &OAuthConfig) -> Result<(), CommandError> {
@@ -303,6 +331,7 @@ pub async fn reauthenticate_account(
         .try_lock()
         .map_err(|_| CommandError::OAuth("Another account authentication is in progress".into()))?;
 
+    recover_custom_oauth_secret(&state).await?;
     let config = {
         let guard = state.oauth_config.read().await;
         guard.clone().unwrap_or_else(OAuthConfig::default_config)
@@ -370,7 +399,7 @@ mod tests {
         commands::dto::ConfigureOAuthInput,
         commands::error::CommandError,
         domain::{AccountId, AccountProfile, ConnectedAccount, GooglePermissionId},
-        infrastructure::{account_store::SqliteAccountStore, secrets::WindowsCredentialStore},
+        infrastructure::{account_store::SqliteAccountStore, secrets::NativeCredentialStore},
         state::{AppState, OAuthConfig},
     };
 
@@ -406,7 +435,7 @@ mod tests {
             .await
             .expect("in-memory account store");
         let account_store = Arc::new(store);
-        let cred_store = Arc::new(WindowsCredentialStore::new_mock());
+        let cred_store = Arc::new(NativeCredentialStore::new_mock());
         let use_case: Arc<dyn crate::application::ConnectAccountUseCase> =
             Arc::new(DummyConnectAccountUseCase);
         let oauth_lock = Arc::new(tokio::sync::RwLock::new(oauth));
@@ -648,6 +677,74 @@ mod tests {
         assert_eq!(result.client_id.as_deref(), Some("my-client-id"));
         assert!(!result.using_custom_override);
         assert!(!result.can_sign_in);
+    }
+
+    #[tokio::test]
+    async fn get_oauth_config_recovers_custom_secret_after_keychain_becomes_available() {
+        let state = test_state(Some(OAuthConfig::new("custom-client", None))).await;
+        state
+            .account_store
+            .save_oauth_client_id("custom-client")
+            .await
+            .expect("stored override");
+        assert!(
+            !get_oauth_config_inner(&state)
+                .await
+                .expect("missing secret")
+                .can_sign_in
+        );
+        state
+            .credential_store
+            .save_oauth_secret("recovered-secret")
+            .expect("keychain unlocked");
+
+        let configuration = get_oauth_config_inner(&state).await.expect("retry");
+
+        assert!(configuration.can_sign_in);
+        assert!(configuration.using_custom_override);
+        let cached = state.oauth_config.read().await;
+        let cached = cached.as_ref().expect("shared configuration");
+        assert_eq!(cached.client_id, "custom-client");
+        assert_eq!(cached.client_secret.as_deref(), Some("recovered-secret"));
+    }
+
+    #[tokio::test]
+    async fn get_oauth_config_does_not_replace_configured_or_other_client_secrets() {
+        for (client_id, existing_secret, stored_client) in [
+            (
+                "custom-client",
+                Some("active-secret"),
+                Some("custom-client"),
+            ),
+            ("environment-client", None, None),
+            ("environment-client", None, Some("other-client")),
+        ] {
+            let state = test_state(Some(OAuthConfig::new(
+                client_id,
+                existing_secret.map(str::to_owned),
+            )))
+            .await;
+            if let Some(stored_client) = stored_client {
+                state
+                    .account_store
+                    .save_oauth_client_id(stored_client)
+                    .await
+                    .expect("stored override");
+            }
+            state
+                .credential_store
+                .save_oauth_secret("unrelated-keychain-secret")
+                .expect("stored secret");
+
+            get_oauth_config_inner(&state)
+                .await
+                .expect("get configuration");
+
+            let cached = state.oauth_config.read().await;
+            let cached = cached.as_ref().expect("shared configuration");
+            assert_eq!(cached.client_id, client_id);
+            assert_eq!(cached.client_secret.as_deref(), existing_secret);
+        }
     }
 
     #[tokio::test]

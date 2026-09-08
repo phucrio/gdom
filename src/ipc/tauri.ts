@@ -6,6 +6,8 @@ import type { BackendPort } from "./port.ts";
 import { assertNoSecretFields } from "./secrets.ts";
 import {
   ACCOUNT_COMMANDS,
+  UPDATE_COMMANDS,
+  type UpdateStatusDto,
   DRIVE_COMMANDS,
   JOB_COMMANDS,
   type AccountDto,
@@ -45,6 +47,10 @@ async function invokeCommand<T>(command: string, args?: InvokeArgs): Promise<T> 
 
 export function createTauriBackend(): BackendPort {
   return {
+    getUpdateStatus: () => invokeCommand<UpdateStatusDto>(UPDATE_COMMANDS.getUpdateStatus),
+    checkForUpdates: () => invokeCommand<UpdateStatusDto>(UPDATE_COMMANDS.checkForUpdates),
+    downloadUpdate: (input) => invokeCommand<UpdateStatusDto>(UPDATE_COMMANDS.downloadUpdate, { input }),
+    installUpdate: (input) => invokeCommand<UpdateStatusDto>(UPDATE_COMMANDS.installUpdate, { input }),
     listAccounts: () => invokeCommand<AccountDto[]>(ACCOUNT_COMMANDS.listAccounts),
     getAccountStorage: (accountId) => invokeCommand<StorageQuotaDto>(DRIVE_COMMANDS.getAccountStorage, { input: { accountId } }),
     getOAuthConfig: () => invokeCommand<OAuthConfigDto>(ACCOUNT_COMMANDS.getOAuthConfig),

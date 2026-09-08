@@ -26,7 +26,7 @@ mod tests {
     use crate::infrastructure::account_store::SqliteAccountStore;
     use crate::infrastructure::google_drive::GoogleDriveClient;
     use crate::infrastructure::google_token::DynamicGoogleTokenClient;
-    use crate::infrastructure::secrets::WindowsCredentialStore;
+    use crate::infrastructure::secrets::NativeCredentialStore;
     use crate::state::{AppState, OAuthConfig};
     use crate::test_support::{
         SOURCE_PERM, SOURCE_TOKEN, TARGET_PERM, TARGET_TOKEN, folder_id_from_list_request,
@@ -55,7 +55,7 @@ mod tests {
     async fn build_test_state() -> AppState {
         let account_store = Arc::new(SqliteAccountStore::open_in_memory().await.unwrap());
         let job_store = Arc::new(SqliteJobStore::new(account_store.pool().clone()));
-        let cred_store = Arc::new(WindowsCredentialStore::new_mock());
+        let cred_store = Arc::new(NativeCredentialStore::new_mock());
         let oauth_config = Arc::new(RwLock::new(Some(OAuthConfig::new("test-client", None))));
 
         let token_service = Arc::new(DynamicGoogleTokenClient::new(oauth_config.clone()));
@@ -540,7 +540,7 @@ mod tests {
     async fn build_state_with_drive(drive: GoogleDriveClient) -> AppState {
         let account_store = Arc::new(SqliteAccountStore::open_in_memory().await.unwrap());
         let job_store = Arc::new(SqliteJobStore::new(account_store.pool().clone()));
-        let cred_store = Arc::new(WindowsCredentialStore::new_mock());
+        let cred_store = Arc::new(NativeCredentialStore::new_mock());
         let oauth_config = Arc::new(RwLock::new(Some(OAuthConfig::new("test-client", None))));
         let token_service = Arc::new(DynamicGoogleTokenClient::new(oauth_config.clone()));
         let token_provider = Arc::new(AccountTokenProvider::new(

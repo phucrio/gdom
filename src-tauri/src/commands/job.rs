@@ -99,6 +99,11 @@ pub(crate) fn map_job_service_error(err: JobServiceError) -> CommandError {
         JobServiceError::ConfirmationMismatch => CommandError::ConfirmationRequired(
             "Target email confirmation does not match the job target account".to_owned(),
         ),
+        JobServiceError::UpdateInstallationBusy | JobServiceError::UpdateInstallationInProgress => {
+            CommandError::TransferInProgress(
+                "An update is being installed. Try again after restarting.".into(),
+            )
+        }
         JobServiceError::TransferInProgress => CommandError::TransferInProgress(
             "A transfer is already running for this job".to_owned(),
         ),

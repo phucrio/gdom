@@ -6,7 +6,7 @@ use crate::infrastructure::SqliteJobStore;
 use crate::infrastructure::account_store::SqliteAccountStore;
 use crate::infrastructure::google_drive::GoogleDriveClient;
 use crate::infrastructure::google_token::DynamicGoogleTokenClient;
-use crate::infrastructure::secrets::WindowsCredentialStore;
+use crate::infrastructure::secrets::NativeCredentialStore;
 
 async fn report_service() -> (
     JobService<SqliteAccountStore, SqliteJobStore>,
@@ -24,7 +24,7 @@ async fn report_service() -> (
         Arc::new(DynamicGoogleTokenClient::new(Arc::new(
             tokio::sync::RwLock::new(None),
         ))),
-        Arc::new(WindowsCredentialStore::new_mock()),
+        Arc::new(NativeCredentialStore::new_mock()),
         accounts.clone(),
     ));
     let service = JobService::new(

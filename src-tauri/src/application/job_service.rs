@@ -1,6 +1,10 @@
 #[path = "queue_service.rs"]
 mod queue_service;
+#[path = "update_gate.rs"]
+mod update_gate;
 use std::collections::{HashMap, HashSet};
+use update_gate::UpdateGate;
+pub use update_gate::UpdateInstallationGuard;
 #[path = "final_report_service.rs"]
 mod final_report_service;
 use std::error::Error;
@@ -61,6 +65,8 @@ pub enum JobServiceError {
     ScanInProgress,
     ConfirmationMismatch,
     TransferInProgress,
+    UpdateInstallationBusy,
+    UpdateInstallationInProgress,
     SharingRateLimited,
     WaitingForQuota,
     AuthRequired,
@@ -111,6 +117,13 @@ impl fmt::Display for JobServiceError {
             }
             Self::TransferInProgress => {
                 write!(f, "another migration job is already mutating ownership")
+            }
+            Self::UpdateInstallationBusy => write!(
+                f,
+                "wait for active jobs to finish before installing the update"
+            ),
+            Self::UpdateInstallationInProgress => {
+                write!(f, "an application update is being installed")
             }
             Self::SharingRateLimited => {
                 write!(f, "Google Drive sharing rate limit reached")
@@ -221,6 +234,7 @@ pub struct ItemFailure {
 }
 
 struct ScanInFlightGuard {
+    _update_work: tokio::sync::OwnedRwLockReadGuard<()>,
     slots: Arc<std::sync::Mutex<HashSet<JobId>>>,
     job_id: JobId,
 }
@@ -236,6 +250,7 @@ impl Drop for ScanInFlightGuard {
 }
 
 struct TransferLeaseGuard {
+    update_work: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
     slot: Arc<std::sync::Mutex<Option<JobId>>>,
     job_id: JobId,
 }
@@ -251,6 +266,7 @@ fn try_acquire_transfer_slot(
     *lease = Some(job_id);
     drop(lease);
     Ok(TransferLeaseGuard {
+        update_work: None,
         slot: Arc::clone(slot),
         job_id,
     })
@@ -358,6 +374,7 @@ where
     jitter: Arc<dyn JitterSource>,
     instance_id: String,
     events: Arc<dyn JobEventSink>,
+    update_gate: UpdateGate,
 }
 
 impl<A, J> Clone for JobService<A, J>
@@ -380,6 +397,7 @@ where
             jitter: Arc::clone(&self.jitter),
             instance_id: self.instance_id.clone(),
             events: Arc::clone(&self.events),
+            update_gate: self.update_gate.clone(),
         }
     }
 }
@@ -409,6 +427,7 @@ where
             jitter: Arc::new(SystemJitter),
             instance_id: format!("gdom-{}", next_entity_id()),
             events: Arc::new(NoopJobEventSink),
+            update_gate: UpdateGate::default(),
         }
     }
 
@@ -425,6 +444,29 @@ where
     pub fn with_event_sink(mut self, events: Arc<dyn JobEventSink>) -> Self {
         self.events = events;
         self
+    }
+
+    /// Holds off new workers until installation succeeds or this guard is dropped.
+    pub async fn try_begin_update_installation(
+        &self,
+    ) -> Result<UpdateInstallationGuard, JobServiceError> {
+        let installation = self.update_gate.begin_installation()?;
+        if self.job_store.current_mutation_lease().await?.is_some() {
+            return Err(JobServiceError::UpdateInstallationBusy);
+        }
+        if self.job_store.list_jobs().await?.iter().any(|job| {
+            matches!(
+                job.status(),
+                JobStatus::Scanning
+                    | JobStatus::RunningCanary
+                    | JobStatus::Running
+                    | JobStatus::Pausing
+                    | JobStatus::Cancelling
+            )
+        }) {
+            return Err(JobServiceError::UpdateInstallationBusy);
+        }
+        Ok(installation)
     }
 
     pub async fn await_idle(&self, job_id: JobId) {
@@ -473,6 +515,7 @@ where
     }
 
     fn try_acquire_scan(&self, job_id: JobId) -> Result<ScanInFlightGuard, JobServiceError> {
+        let update_work = self.update_gate.begin_work()?;
         let mut slots = self
             .scan_in_flight
             .lock()
@@ -482,6 +525,7 @@ where
         }
         drop(slots);
         Ok(ScanInFlightGuard {
+            _update_work: update_work,
             slots: Arc::clone(&self.scan_in_flight),
             job_id,
         })
@@ -498,7 +542,9 @@ where
         &self,
         job_id: JobId,
     ) -> Result<TransferLeaseGuard, JobServiceError> {
-        let guard = try_acquire_transfer_slot(&self.transfer_lease, job_id)?;
+        let update_work = self.update_gate.begin_work()?;
+        let mut guard = try_acquire_transfer_slot(&self.transfer_lease, job_id)?;
+        guard.update_work = Some(update_work);
         let now = iso_now();
         match self
             .job_store
@@ -691,7 +737,7 @@ where
         }
     }
 
-    pub async fn run_transfer_auto(
+    async fn run_transfer_auto(
         &self,
         job: &mut crate::domain::job::MigrationJob,
     ) -> Result<crate::application::transfer::TransferHalt, JobServiceError> {
@@ -791,6 +837,7 @@ where
         source_id: AccountId,
         target_id: AccountId,
     ) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let job = self.prepare_job(source_id, target_id).await?;
         self.job_store.create_job(&job).await?;
         self.emit(JobRuntimeEvent::JobListChanged { job_id: job.id() });
@@ -829,6 +876,7 @@ where
         source_id: AccountId,
         target_id: AccountId,
     ) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         if source_id.value() == target_id.value() {
             return Err(JobServiceError::SameSourceAndTarget);
         }
@@ -931,6 +979,7 @@ where
     }
 
     pub async fn delete_draft_job(&self, job_id: JobId) -> Result<(), JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let job = self.get_job(job_id).await?;
         if job.status() != JobStatus::Draft {
             return Err(JobServiceError::IllegalTransition);
@@ -962,6 +1011,7 @@ where
         job_id: JobId,
         input: &str,
     ) -> Result<DriveFolderMetadata, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let job = self.get_job(job_id).await?;
         if job.status() != crate::domain::job::JobStatus::Draft {
             return Err(JobServiceError::RootsLocked);
@@ -1017,6 +1067,7 @@ where
         job_id: JobId,
         input: &str,
     ) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let metadata = self.validate_root(job_id, input).await?;
         let mut job = self.get_job(job_id).await?;
 
@@ -1039,6 +1090,7 @@ where
         job_id: JobId,
         root_id: RootId,
     ) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let mut job = self.get_job(job_id).await?;
         job.remove_root(root_id)?;
         self.job_store.remove_root(job_id, root_id).await?;
@@ -1052,6 +1104,7 @@ where
         root_file_ids: Vec<String>,
         recursive: bool,
     ) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         if source_id.value() == target_id.value() {
             return Err(JobServiceError::SameSourceAndTarget);
         }
@@ -1137,6 +1190,7 @@ where
         job_id: JobId,
         auto_continue: bool,
     ) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let mut job = self.get_job(job_id).await?;
         if job.status() == JobStatus::Paused && self.looks_like_transfer_pause(&job).await? {
             return Err(JobServiceError::IllegalTransition);
@@ -1257,19 +1311,20 @@ where
             }
         }
 
-        let _ = self.job_store.update_job(&job).await;
-        self.emit_status(&job);
+        let persisted = self.job_store.update_job(&job).await;
         self.scan_pause_flags.lock().await.remove(&job_id);
+        if persisted.is_err() {
+            return;
+        }
+        self.emit_status(&job);
 
         if scan_succeeded && auto_continue {
-            let auto_runner = self.clone();
-            tokio::spawn(async move {
-                let _ = auto_runner.run_auto_mutation_if_ready(job_id).await;
-            });
+            let _ = self.run_auto_mutation_if_ready(job_id).await;
         }
     }
 
     pub async fn run_auto_mutation_if_ready(&self, job_id: JobId) -> Result<(), JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let mut job = self.get_job(job_id).await?;
         if job.status() != JobStatus::ReadyForReview {
             return Ok(());
@@ -1285,16 +1340,16 @@ where
 
         let previous = job.status().as_str().to_string();
         if let Err(err) = job.start_canary() {
-            drop(lease);
             self.release_durable_lease(job_id).await;
+            drop(lease);
             return Err(err.into());
         }
         if let Err(err) = self
             .persist_status(&job, Some(&previous), "JOB_STATUS")
             .await
         {
-            drop(lease);
             self.release_durable_lease(job_id).await;
+            drop(lease);
             return Err(err);
         }
 
@@ -1315,17 +1370,18 @@ where
             let _ = worker
                 .persist_status(&running, Some(&previous), "JOB_STATUS")
                 .await;
-            drop(lease);
             worker.release_durable_lease(job_id).await;
             worker.transfer_pause_flags.lock().await.remove(&job_id);
             worker.transfer_cancel_flags.lock().await.remove(&job_id);
             let _ = result;
+            drop(lease);
         });
 
         Ok(())
     }
 
     pub async fn pause_scan(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let job = self.get_job(job_id).await?;
         if job.status() != JobStatus::Scanning && job.status() != JobStatus::Paused {
             return Err(JobServiceError::IllegalTransition);
@@ -1476,6 +1532,7 @@ where
         job_id: JobId,
         confirmation_email: &str,
     ) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let mut job = self.get_job(job_id).await?;
         if !Self::emails_match(confirmation_email, &job.snapshots().target.email) {
             return Err(JobServiceError::ConfirmationMismatch);
@@ -1498,6 +1555,7 @@ where
     }
 
     pub async fn continue_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let mut job = self.get_job(job_id).await?;
         let as_canary = self.should_resume_as_canary(&job).await?;
         match job.status() {
@@ -1532,16 +1590,16 @@ where
     ) -> Result<MigrationJob, JobServiceError> {
         let previous = job.status().as_str().to_string();
         if let Err(err) = prepare(job) {
-            drop(lease);
             self.release_durable_lease(job_id).await;
+            drop(lease);
             return Err(err);
         }
         if let Err(err) = self
             .persist_status(job, Some(&previous), "JOB_STATUS")
             .await
         {
-            drop(lease);
             self.release_durable_lease(job_id).await;
+            drop(lease);
             return Err(err);
         }
         let started = job.clone();
@@ -1572,11 +1630,10 @@ where
         let persist = self
             .persist_status(job, Some(&previous), "JOB_STATUS")
             .await;
-        drop(lease);
         self.release_durable_lease(job_id).await;
         self.transfer_pause_flags.lock().await.remove(&job_id);
         self.transfer_cancel_flags.lock().await.remove(&job_id);
-        match result {
+        let finished = match result {
             Ok(_) => {
                 persist?;
                 self.get_job(job_id).await
@@ -1585,7 +1642,9 @@ where
                 let _ = persist;
                 Err(err)
             }
-        }
+        };
+        drop(lease);
+        finished
     }
 
     async fn queue_or_busy(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
@@ -1605,6 +1664,7 @@ where
     }
 
     pub async fn pause_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let job = self.get_job(job_id).await?;
         match job.status() {
             JobStatus::RunningCanary
@@ -1631,6 +1691,7 @@ where
     }
 
     pub async fn resume_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let mut job = self.get_job(job_id).await?;
         if !job.status().is_transfer_resumable()
             || self.job_run_phase(&job).await? == JobRunPhase::Scan
@@ -1647,13 +1708,13 @@ where
         };
 
         if let Err(err) = self.revalidate_tokens(&job).await {
-            drop(lease);
             self.release_durable_lease(job_id).await;
+            drop(lease);
             return Err(err);
         }
         if let Err(err) = self.reconcile_job_items(&job).await {
-            drop(lease);
             self.release_durable_lease(job_id).await;
+            drop(lease);
             return Err(err);
         }
 
@@ -1664,6 +1725,7 @@ where
     }
 
     pub async fn cancel_migration(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let mut job = self.get_job(job_id).await?;
         Self::set_control_flag(&self.transfer_pause_flags, job_id, true).await;
         Self::set_control_flag(&self.transfer_cancel_flags, job_id, true).await;
@@ -1683,6 +1745,7 @@ where
     }
 
     pub async fn retry_failed_items(&self, job_id: JobId) -> Result<MigrationJob, JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         let job = self.get_job(job_id).await?;
         let _reset = self.job_store.retry_failed_items(job_id).await?;
         if job.status().is_transfer_resumable() {
@@ -1692,6 +1755,7 @@ where
     }
 
     pub async fn reconcile_on_startup(&self) -> Result<(), JobServiceError> {
+        let _update_work = self.update_gate.begin_work()?;
         self.job_store.clear_mutation_leases().await?;
         {
             let mut slot = self
