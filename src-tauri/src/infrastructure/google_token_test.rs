@@ -25,7 +25,7 @@ fn grant() -> OAuthGrant {
     )
 }
 
-fn serve_once(status: &str, body: &str) -> (String, Receiver<Result<String, String>>) {
+pub(super) fn serve_once(status: &str, body: &str) -> (String, Receiver<Result<String, String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test server binds an ephemeral port");
     let address = listener.local_addr().expect("test server has an address");
     let response = format!(

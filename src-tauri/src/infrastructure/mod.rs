@@ -1,4 +1,5 @@
 pub mod account_store;
+mod dynamic_google_token;
 mod final_report;
 pub mod google_drive;
 pub mod google_oauth;
@@ -9,6 +10,7 @@ pub mod job_store;
 mod oauth_callback;
 mod oauth_connection;
 mod oauth_listener;
+pub(crate) mod oauth_secret_recovery;
 pub mod secrets;
 
 pub use job_store::SqliteJobStore;

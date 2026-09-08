@@ -122,32 +122,21 @@ async fn get_oauth_config_inner(state: &AppState) -> Result<OAuthConfigDto, Comm
 
 // Call while holding connect_account_lock so configure/reset cannot change the client pair.
 pub(super) async fn recover_custom_oauth_secret(state: &AppState) -> Result<(), CommandError> {
-    let client_id = {
-        let configuration = state.oauth_config.read().await;
-        let Some(config) = configuration.as_ref() else {
-            return Ok(());
-        };
-        if config.has_client_secret() {
-            return Ok(());
-        }
-        config.client_id.clone()
+    use crate::infrastructure::oauth_secret_recovery::{
+        OAuthSecretRecoveryError, recover_custom_oauth_secret,
     };
-    let stored_client_id = state
-        .account_store
-        .get_setting("oauth.client_id")
-        .await
-        .map_err(|error| CommandError::Database(error.to_string()))?;
-    if stored_client_id.as_deref().map(str::trim) == Some(client_id.as_str()) {
-        let secret = state.credential_store.load_oauth_secret().map_err(|_| {
-            CommandError::Keychain(
-                "Unlock your system credential store, then retry sign-in.".into(),
-            )
-        })?;
-        if let Some(config) = state.oauth_config.write().await.as_mut() {
-            config.client_secret = secret;
-        }
-    }
-    Ok(())
+    recover_custom_oauth_secret(
+        &state.oauth_config,
+        &state.account_store,
+        state.credential_store.as_ref(),
+    )
+    .await
+    .map_err(|error| match error {
+        OAuthSecretRecoveryError::Database(error) => CommandError::Database(error.to_string()),
+        OAuthSecretRecoveryError::Keychain => CommandError::Keychain(
+            "Unlock your system credential store, then retry sign-in.".into(),
+        ),
+    })
 }
 
 pub(super) fn require_desktop_client_secret(config: &OAuthConfig) -> Result<(), CommandError> {

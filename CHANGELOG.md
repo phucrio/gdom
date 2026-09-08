@@ -10,6 +10,10 @@ User-visible changes are recorded here. Version selection and release operations
 - Defer installation while migration work is active so persisted checkpoints and account data are preserved.
 - Build Windows, macOS and Linux desktop packages for x64 and ARM64. Store refresh tokens in each operating system's secure credential store.
 
+### Fixes
+
+- Retry loading the custom OAuth client secret after unlocking the credential store, so existing accounts can refresh tokens without reopening sign-in or restarting the app.
+
 ### Upgrade actions and known limitations
 
 - Existing `0.1.0` installations need a manual bootstrap install to gain the updater.

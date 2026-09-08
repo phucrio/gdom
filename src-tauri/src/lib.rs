@@ -120,9 +120,15 @@ pub fn run() {
             let account_store = Arc::new(account_store);
             let shared_oauth_config = Arc::new(tokio::sync::RwLock::new(oauth_config));
 
-            let token_service = Arc::new(DynamicGoogleTokenClient::new(Arc::clone(
-                &shared_oauth_config,
-            )));
+            let authentication_lock = Arc::new(tokio::sync::Mutex::new(()));
+            let token_service = Arc::new(
+                DynamicGoogleTokenClient::new(Arc::clone(&shared_oauth_config))
+                    .with_secret_recovery(
+                        Arc::clone(&account_store),
+                        credential_store.clone(),
+                        Arc::clone(&authentication_lock),
+                    ),
+            );
 
             let drive_client = GoogleDriveClient::new()
                 .map_err(|e| format!("failed to initialize Google Drive client: {e}"))?;
@@ -178,7 +184,7 @@ pub fn run() {
                 format!("failed to reconcile unfinished migration jobs on startup: {e}")
             })?;
 
-            let state = AppState::new(
+            let mut state = AppState::new(
                 account_store,
                 credential_store,
                 shared_oauth_config,
@@ -189,6 +195,8 @@ pub fn run() {
                 drive_arc,
                 job_service,
             );
+
+            state.connect_account_lock = authentication_lock;
 
             app.manage(log_guard);
             app.manage(commands::updates::UpdateState::new(
