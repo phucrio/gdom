@@ -118,20 +118,23 @@ jobs:
             plugins: { updater: { pubkey: process.env.GDOM_UPDATER_PUBLIC_KEY } },
           }));
           JAVASCRIPT
-      - uses: tauri-apps/tauri-action@v0
+      - name: Build unsigned desktop package
+        if: ${{ !inputs.signed }}
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config updater-build.json
+      - name: Build signed desktop package
+        if: inputs.signed
         env:
-          GDOM_DEFAULT_CLIENT_SECRET: ${{ inputs.signed && secrets.GDOM_DEFAULT_CLIENT_SECRET || '' }}
-          GDOM_UPDATER_PUBLIC_KEY: ${{ inputs.signed && vars.TAURI_UPDATER_PUBLIC_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.signed && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.signed && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-          APPLE_CERTIFICATE: ${{ inputs.signed && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.signed && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ inputs.signed && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ inputs.signed && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ inputs.signed && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ inputs.signed && secrets.APPLE_TEAM_ID || '' }}
-        with:
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config updater-build.json
+          GDOM_DEFAULT_CLIENT_SECRET: ${{ secrets.GDOM_DEFAULT_CLIENT_SECRET }}
+          GDOM_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config updater-build.json
       - name: Stage artifacts with version and architecture
         env:
           GDOM_UPDATER_PUBLIC_KEY: ${{ inputs.signed && vars.TAURI_UPDATER_PUBLIC_KEY || '' }}
