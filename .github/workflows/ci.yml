@@ -5,9 +5,17 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      signed:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
-  validate:
+  frontend:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,10 +26,9 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
       - run: pnpm install --frozen-lockfile
+      - run: node scripts/release.mjs check
+      - run: node --test scripts/release.test.mjs
       - run: pnpm icons:check
       - run: pnpm lint
       - run: pnpm test
@@ -29,41 +36,22 @@ jobs:
       - run: pnpm qa:typecheck
       - run: pnpm exec playwright install chromium
       - run: pnpm ui:qa
-      - run: cargo fmt --check
-        working-directory: src-tauri
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-        working-directory: src-tauri
-      - run: cargo test --workspace --all-features
-        working-directory: src-tauri
-
-  package:
-    needs: validate
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    runs-on: windows-latest
-    env:
-      GDOM_DEFAULT_CLIENT_SECRET: ${{ secrets.GDOM_DEFAULT_CLIENT_SECRET }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.18.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Require compile-time Desktop client secret
-        shell: pwsh
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:GDOM_DEFAULT_CLIENT_SECRET)) {
-            throw "Add repository secret GDOM_DEFAULT_CLIENT_SECRET (Google Desktop client secret). It is injected at compile time via option_env and never committed."
-          }
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm tauri build
         env:
-          GDOM_DEFAULT_CLIENT_SECRET: ${{ secrets.GDOM_DEFAULT_CLIENT_SECRET }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: gdom-windows
-          path: src-tauri/target/release/bundle/**
-          if-no-files-found: error
+          GDOM_QA_BROWSER: chromium
+
+  desktop:
+    uses: ./.github/workflows/desktop.yml
+    with:
+      signed: ${{ inputs.signed || false }}
+    secrets: inherit
+
+  validate:
+    if: always()
+    needs: [frontend, desktop]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Require every frontend and desktop lane
+        env:
+          FRONTEND: ${{ needs.frontend.result }}
+          DESKTOP: ${{ needs.desktop.result }}
+        run: test "$FRONTEND" = success && test "$DESKTOP" = success
