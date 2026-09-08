@@ -86,15 +86,8 @@ pub fn external_existing_path(path: &Path) -> LiveResult<PathBuf> {
     } else {
         resolved.parent().ok_or("path has no parent directory")?
     };
-    let result = std::process::Command::new("git")
-        .arg("-C")
-        .arg(directory)
+    let result = create_repository_git_command(directory)
         .args(["rev-parse", "--is-inside-work-tree"])
-        .env("LC_ALL", "C")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_CEILING_DIRECTORIES")
         .output()?;
     if result.status.success() {
         return Err(
@@ -129,16 +122,14 @@ pub fn source_revision() -> LiveResult<String> {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or("repository missing")?;
-    let status = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repository)
+    let status = create_repository_git_command(repository)
         .args(["status", "--porcelain", "--untracked-files=all"])
         .output()?;
     if !status.status.success() || !status.stdout.is_empty() {
         return Err("live evidence requires a clean checkout including untracked files".into());
     }
-    let output = std::process::Command::new("git")
-        .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
+    let output = create_repository_git_command(repository)
+        .args(["rev-parse", "HEAD"])
         .output()?;
     let revision = String::from_utf8(output.stdout)?.trim().to_owned();
     if !output.status.success()
@@ -148,4 +139,20 @@ pub fn source_revision() -> LiveResult<String> {
         return Err("source commit could not be resolved".into());
     }
     Ok(revision)
+}
+
+pub fn create_repository_git_command(directory: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(directory).env("LC_ALL", "C");
+    // Caller Git routing/configuration must not redirect fixture checks or source evidence.
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("GIT_")
+        {
+            command.env_remove(name);
+        }
+    }
+    command
 }

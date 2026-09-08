@@ -103,3 +103,40 @@ fn local_paths_reject_other_git_checkouts() -> live_support::gate::LiveResult<()
     std::fs::remove_dir_all(directory)?;
     Ok(())
 }
+
+#[test]
+fn repository_probe_ignores_inherited_git_routing() -> live_support::gate::LiveResult<()> {
+    if std::env::var_os("GDOM_GIT_PROBE_CHILD").is_some() {
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .ok_or("repository missing")?;
+        let output = live_support::gate::create_repository_git_command(repository)
+            .args(["rev-parse", "--show-toplevel"])
+            .output()?;
+        assert!(
+            output.status.success(),
+            "Git must inspect the requested repository"
+        );
+        let actual = String::from_utf8(output.stdout)?;
+        assert_eq!(
+            std::path::Path::new(actual.trim()).canonicalize()?,
+            repository.canonicalize()?
+        );
+        return Ok(());
+    }
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "live_drive_test::repository_probe_ignores_inherited_git_routing",
+        ])
+        .env("GDOM_GIT_PROBE_CHILD", "1")
+        .env("GIT_DIR", "nonexistent-gdom-git-directory")
+        .env("GIT_WORK_TREE", std::env::temp_dir())
+        .env("GIT_INDEX_FILE", "nonexistent-gdom-git-index")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "Git routing regression child failed"
+    );
+    Ok(())
+}
