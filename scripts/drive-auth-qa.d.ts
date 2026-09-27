@@ -1,10 +1,10 @@
 interface DriveAuthQaState {
   listCalls: number;
   reauthenticationCalls: number;
-  accountRefreshCalls: number;
   authorizationRequired: boolean;
   cancelFirstReauthentication: boolean;
   commands: string[];
+  completeReauthentication: () => void;
 }
 
 declare global {

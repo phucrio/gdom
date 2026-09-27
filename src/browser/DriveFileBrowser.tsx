@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { BackendPort } from "../ipc/port.ts";
 import type { AccountDto, DriveFileItemDto, JobDto } from "../ipc/types.ts";
 import { ContextMenu, type ContextMenuItemAction } from "./ContextMenu.tsx";
@@ -118,6 +118,11 @@ export function DriveFileBrowser({
     },
     [account.id, backend, onRefreshAccountStatus, sortField, sortOrder],
   );
+  const latestBrowserViewRef = useRef({ folder: currentFolder, loadFolder });
+
+  useLayoutEffect(() => {
+    latestBrowserViewRef.current = { folder: currentFolder, loadFolder };
+  }, [currentFolder, loadFolder]);
 
   useEffect(() => {
     setSelectedIds(new Set());
@@ -147,7 +152,8 @@ export function DriveFileBrowser({
       await backend.reauthenticateAccount(account.id);
       setReauthenticationRequired(false);
       onAnnounce(`Account ${account.email} reconnected. Reloading Drive files.`);
-      await loadFolder(currentFolder);
+      const latestBrowserView = latestBrowserViewRef.current;
+      await latestBrowserView.loadFolder(latestBrowserView.folder);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to reauthenticate account.";
       setError(msg);

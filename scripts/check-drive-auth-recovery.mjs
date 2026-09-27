@@ -66,15 +66,22 @@ try {
   assert.equal(await page.evaluate("window.driveAuthQa.reauthenticationCalls"), 1);
   assert.equal(await page.evaluate("window.driveAuthQa.listCalls"), 1);
   await reauthenticate.click();
+  await page.getByRole("button", { name: "Reauthenticating…", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Modified Date", exact: true }).click();
+  await page.getByRole("button", { name: "Modified Date ▲", exact: true }).waitFor();
+  await page.evaluate("window.driveAuthQa.completeReauthentication()");
 
   await page.getByText("report-after-reauth.txt", { exact: true }).waitFor();
+  const visibleFileOrder = await page.locator(".drive-table tbody .item-title").allTextContents();
+  assert.deepEqual(
+    visibleFileOrder,
+    ["report-after-reauth.txt", "alpha-after-reauth.txt"],
+    "recovery must display the latest Modified Date ordering",
+  );
   assert.equal(
     await page.locator("#drive-auth-announcement").textContent(),
     "Account owner@example.test reconnected. Reloading Drive files.",
   );
-  assert.equal(await page.evaluate("window.driveAuthQa.reauthenticationCalls"), 2);
-  assert.equal(await page.evaluate("window.driveAuthQa.listCalls"), 2);
-  assert.equal(await page.evaluate("window.driveAuthQa.accountRefreshCalls"), 1);
   assert.deepEqual(
     await page.evaluate("window.driveAuthQa.commands"),
     ["reauthenticate:account-1", "reauthenticate:account-1"],

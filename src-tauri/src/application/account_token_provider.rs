@@ -255,6 +255,11 @@ where
         &self,
         account_id: AccountId,
     ) -> Result<(), TokenProviderError> {
+        // Drop the rejected token immediately, then serialize with refresh publication.
+        self.invalidate_cache(account_id).await;
+        let account_lock = self.get_account_lock(account_id).await;
+        let _guard = account_lock.lock().await;
+        // A refresh already holding the lock may have repopulated the cache.
         self.invalidate_cache(account_id).await;
         self.account_store
             .update_auth_status(account_id, AuthStatus::ReauthRequired)
@@ -328,6 +333,24 @@ mod tests {
                 if self.should_fail_transport {
                     return Err(TokenRefreshError::Transport);
                 }
+                Ok((
+                    AccessToken::new("refreshed-token".to_string()),
+                    Duration::from_secs(3600),
+                ))
+            })
+        }
+    }
+
+    struct GatedRefreshPort {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    impl TokenRefreshPort for GatedRefreshPort {
+        fn refresh_token(&self, _refresh_token: &RefreshToken) -> RefreshFuture<'_> {
+            Box::pin(async move {
+                self.started.notify_one();
+                self.release.notified().await;
                 Ok((
                     AccessToken::new("refreshed-token".to_string()),
                     Duration::from_secs(3600),
@@ -411,6 +434,76 @@ mod tests {
         }
 
         assert_eq!(refresh_port.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn reauthentication_mark_waits_for_in_flight_refresh_and_clears_its_token() {
+        let store = Arc::new(SqliteAccountStore::open_in_memory().await.unwrap());
+        let account = ConnectedAccount::new(
+            AccountId::new(1),
+            GooglePermissionId::new("perm-1"),
+            AccountProfile::new("a@gmail.com", "A", None),
+        );
+        store.connect(&account).await.unwrap();
+
+        let cred_store = Arc::new(MockCredStore::new());
+        cred_store
+            .save(
+                AccountId::new(1),
+                RefreshToken::new("valid-refresh".to_string()),
+            )
+            .unwrap();
+
+        let refresh_port = Arc::new(GatedRefreshPort {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let provider = Arc::new(AccountTokenProvider::new(
+            Arc::clone(&refresh_port) as Arc<dyn TokenRefreshPort>,
+            Arc::clone(&cred_store) as Arc<dyn RefreshTokenStore + Send + Sync>,
+            store,
+        ));
+
+        let refresh_provider = Arc::clone(&provider);
+        let refresh_task =
+            tokio::spawn(async move { refresh_provider.get_access_token(AccountId::new(1)).await });
+        tokio::time::timeout(Duration::from_secs(2), refresh_port.started.notified())
+            .await
+            .expect("refresh should reach the controlled pause");
+
+        let mark_provider = Arc::clone(&provider);
+        let mut mark_task =
+            tokio::spawn(
+                async move { mark_provider.mark_reauth_required(AccountId::new(1)).await },
+            );
+        let marker_finished_while_refresh_paused =
+            tokio::time::timeout(Duration::from_millis(250), &mut mark_task).await;
+
+        refresh_port.release.notify_one();
+        let refreshed = tokio::time::timeout(Duration::from_secs(2), refresh_task)
+            .await
+            .expect("refresh should finish after release")
+            .expect("refresh task should not panic");
+        assert_eq!(refreshed.unwrap().expose_secret(), "refreshed-token");
+
+        let marker_was_blocked = marker_finished_while_refresh_paused.is_err();
+
+        let marker_result = match marker_finished_while_refresh_paused {
+            Ok(result) => result.expect("reauthentication marker task should not panic"),
+            Err(_) => tokio::time::timeout(Duration::from_secs(2), mark_task)
+                .await
+                .expect("reauthentication marker should finish after refresh release")
+                .expect("reauthentication marker task should not panic"),
+        };
+        assert!(
+            marker_was_blocked,
+            "reauthentication marking must wait for an in-flight refresh"
+        );
+        assert!(marker_result.is_ok());
+        assert!(matches!(
+            provider.get_access_token(AccountId::new(1)).await,
+            Err(TokenProviderError::ReauthRequired)
+        ));
     }
 
     #[tokio::test]

@@ -6,7 +6,10 @@ use crate::{
     domain::{AccountProfile, GooglePermissionId},
     infrastructure::account_store::SqliteAccountStore,
 };
-use std::{sync::Mutex, time::Duration};
+use std::{
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    time::Duration,
+};
 
 struct TestCredentials;
 impl RefreshTokenStore for TestCredentials {
@@ -31,15 +34,28 @@ impl TokenRefreshPort for TestRefresh {
     }
 }
 #[derive(Default)]
-struct RecordingBrowser(Mutex<Vec<String>>);
+struct RecordingBrowser {
+    total_calls: AtomicUsize,
+    account_one_calls: AtomicUsize,
+    account_two_calls: AtomicUsize,
+    other_token_calls: AtomicUsize,
+    unauthorized_next_list: AtomicBool,
+}
 impl RecordingBrowser {
     fn record(&self, token: &AccessToken) {
-        self.0
-            .lock()
-            .unwrap()
-            .push(token.expose_secret().to_owned());
+        self.total_calls.fetch_add(1, Ordering::SeqCst);
+        let calls = match token.expose_secret() {
+            "account-1" => &self.account_one_calls,
+            "account-2" => &self.account_two_calls,
+            _ => &self.other_token_calls,
+        };
+        calls.fetch_add(1, Ordering::SeqCst);
+    }
+    fn reject_next_list_as_unauthorized(&self) {
+        self.unauthorized_next_list.store(true, Ordering::SeqCst);
     }
 }
+
 impl DriveBrowserPort for RecordingBrowser {
     fn storage_quota<'a>(
         &'a self,
@@ -59,7 +75,11 @@ impl DriveBrowserPort for RecordingBrowser {
         _: &'a BrowseFolderRequest,
     ) -> BrowserFuture<'a, DriveChildPage> {
         self.record(token);
-        Box::pin(async {
+        let unauthorized = self.unauthorized_next_list.swap(false, Ordering::SeqCst);
+        Box::pin(async move {
+            if unauthorized {
+                return Err(DriveFolderLookupError::Unauthorized);
+            }
             Ok(DriveChildPage {
                 files: vec![DriveChild {
                     id: "file".into(),
@@ -102,6 +122,7 @@ async fn setup() -> (
     DriveBrowserService<SqliteAccountStore>,
     Arc<SqliteAccountStore>,
     Arc<RecordingBrowser>,
+    Arc<AccountTokenProvider<SqliteAccountStore>>,
 ) {
     let store = Arc::new(SqliteAccountStore::open_in_memory().await.unwrap());
     for number in [1, 2] {
@@ -121,14 +142,15 @@ async fn setup() -> (
     ));
     let drive = Arc::new(RecordingBrowser::default());
     (
-        DriveBrowserService::new(store.clone(), tokens, drive.clone()),
+        DriveBrowserService::new(store.clone(), tokens.clone(), drive.clone()),
         store,
         drive,
+        tokens,
     )
 }
 #[tokio::test]
 async fn browser_routes_every_operation_to_selected_account() {
-    let (service, _, drive) = setup().await;
+    let (service, _, drive, _) = setup().await;
     for number in [1, 2] {
         let account_id = AccountId::new(number);
         let page = service
@@ -152,23 +174,40 @@ async fn browser_routes_every_operation_to_selected_account() {
             120
         );
     }
-    assert_eq!(
-        *drive.0.lock().unwrap(),
-        [
-            "account-1",
-            "account-1",
-            "account-1",
-            "account-1",
-            "account-2",
-            "account-2",
-            "account-2",
-            "account-2"
-        ]
-    );
+    assert_eq!(drive.account_one_calls.load(Ordering::SeqCst), 4);
+    assert_eq!(drive.account_two_calls.load(Ordering::SeqCst), 4);
+    assert_eq!(drive.other_token_calls.load(Ordering::SeqCst), 0);
 }
 #[tokio::test]
+async fn unauthorized_listing_marks_account_for_reauthentication_and_invalidates_cached_token() {
+    let (service, store, drive, tokens) = setup().await;
+    let account_id = AccountId::new(1);
+    let cached_token = tokens.get_access_token(account_id).await.unwrap();
+    assert_eq!(cached_token.expose_secret(), "account-1");
+    drive.reject_next_list_as_unauthorized();
+
+    let error = service
+        .list_files(account_id, BrowseFolderRequest::default())
+        .await
+        .err()
+        .expect("an unauthorized Drive response must fail listing");
+    assert!(matches!(
+        error,
+        DriveBrowserError::Drive(DriveFolderLookupError::Unauthorized)
+    ));
+
+    let account = store.find_by_id(account_id).await.unwrap().unwrap();
+    assert_eq!(account.auth_status(), AuthStatus::ReauthRequired);
+    assert!(matches!(
+        tokens.get_access_token(account_id).await,
+        Err(TokenProviderError::ReauthRequired)
+    ));
+    assert_eq!(drive.account_one_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn browser_rejects_missing_and_disconnected_accounts_even_with_cached_token() {
-    let (service, store, drive) = setup().await;
+    let (service, store, drive, _) = setup().await;
     service
         .list_files(AccountId::new(1), BrowseFolderRequest::default())
         .await
@@ -199,5 +238,5 @@ async fn browser_rejects_missing_and_disconnected_accounts_even_with_cached_toke
         assert!(service.trash_file(account_id, "file").await.is_err());
         assert!(service.storage_quota(account_id).await.is_err());
     }
-    assert_eq!(drive.0.lock().unwrap().len(), 1);
+    assert_eq!(drive.total_calls.load(Ordering::SeqCst), 1);
 }

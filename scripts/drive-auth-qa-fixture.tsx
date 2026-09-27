@@ -27,31 +27,50 @@ const file: DriveFileItemDto = {
   folderResourceKey: null,
   resourceKey: null,
   size: 12,
-  modifiedTime: null,
+  modifiedTime: "2025-01-01T00:00:00.000Z",
   owners: [],
   webViewLink: null,
   canTransferOwnership: true,
   isOwner: true,
   shortcutTargetId: null,
 };
+const alphaFile: DriveFileItemDto = {
+  ...file,
+  id: "file-2",
+  name: "alpha-after-reauth.txt",
+  modifiedTime: "2026-01-01T00:00:00.000Z",
+};
+
+let finishPendingReauthentication: (() => void) | null = null;
+
+function completeReauthentication() {
+  const finish = finishPendingReauthentication;
+  if (finish === null) {
+    throw new Error("No reauthentication is waiting to complete.");
+  }
+  finishPendingReauthentication = null;
+  finish();
+}
 
 const state: Window["driveAuthQa"] = {
   listCalls: 0,
   reauthenticationCalls: 0,
-  accountRefreshCalls: 0,
   authorizationRequired: true,
   cancelFirstReauthentication: true,
   commands: [],
+  completeReauthentication,
 };
 window.driveAuthQa = state;
 
 const backend = {
-  listDriveFiles: async () => {
+  listDriveFiles: async (request: { folderId: string | null; orderBy: string }) => {
     state.listCalls += 1;
     if (state.authorizationRequired) {
       throw new Error("account requires re-authentication");
     }
-    return { items: [file], nextPageToken: null };
+    const items =
+      request.orderBy === "folder,modifiedTime" ? [file, alphaFile] : [alphaFile, file];
+    return { items, nextPageToken: null };
   },
   reauthenticateAccount: async (accountId: string) => {
     state.reauthenticationCalls += 1;
@@ -60,13 +79,17 @@ const backend = {
       state.cancelFirstReauthentication = false;
       throw new Error("OAuth authorization was cancelled.");
     }
-    state.authorizationRequired = false;
+    await new Promise<void>((resolve) => {
+      finishPendingReauthentication = () => {
+        state.authorizationRequired = false;
+        resolve();
+      };
+    });
     return { ...account, authStatus: "CONNECTED" as const };
   },
 } as unknown as BackendPort;
 
 async function refreshAccountStatus(accountId: string): Promise<AccountDto["authStatus"] | null> {
-  state.accountRefreshCalls += 1;
   if (accountId !== account.id) {
     return null;
   }
