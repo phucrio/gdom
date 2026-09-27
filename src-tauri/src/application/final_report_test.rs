@@ -81,6 +81,15 @@ async fn report_counts_transferred_as_unfinished_and_keeps_all_inventory() {
 async fn csv_escapes_metadata_roots_items_and_redacts_errors() {
     let (_, store) = report_service().await;
     insert_item(&store, 1, ItemState::PermanentFailed).await;
+    sqlx::query(
+        "UPDATE migration_items
+         SET last_error_code = '403',
+             last_error_message = 'Google Drive denied access; access_token=hidden-token'
+         WHERE job_id = '10' AND file_id = 'file-1'",
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
     let report = store
         .final_report_snapshot(JobId::new(10))
         .await
@@ -89,6 +98,8 @@ async fn csv_escapes_metadata_roots_items_and_redacts_errors() {
     assert!(report.contains("source_email,\"'=source@gmail.com\""));
     assert!(report.contains("root-id,\"'+Root\""));
     assert!(report.contains("\"'=Item\""));
+    assert!(report.contains("403"));
+    assert!(report.contains("Google Drive denied access"));
     assert!(report.contains("\"'@reason\""));
     assert!(!report.contains("hidden-secret"));
     assert!(!report.contains("hidden-token"));

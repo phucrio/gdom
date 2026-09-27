@@ -141,6 +141,9 @@ export type JobItemDto = AssertNoSecrets<{
   originalParentIds: string[];
   state: string;
   quotaBytesUsed: number | null;
+  errorCode: string | null;
+  errorReason: string | null;
+  errorMessage: string | null;
 }>;
 
 export type JobItemsPage = AssertNoSecrets<{

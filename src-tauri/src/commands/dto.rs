@@ -273,6 +273,9 @@ pub struct JobItemDto {
     pub original_parent_ids: Vec<String>,
     pub state: String,
     pub quota_bytes_used: Option<i64>,
+    pub error_code: Option<String>,
+    pub error_reason: Option<String>,
+    pub error_message: Option<String>,
 }
 
 impl From<&crate::domain::MigrationItem> for JobItemDto {
@@ -287,6 +290,18 @@ impl From<&crate::domain::MigrationItem> for JobItemDto {
             original_parent_ids: item.original_parent_ids.clone(),
             state: item.state.as_str().to_string(),
             quota_bytes_used: item.quota_bytes_used,
+            error_code: item
+                .last_error
+                .as_ref()
+                .and_then(|details| details.code.clone()),
+            error_reason: item
+                .last_error
+                .as_ref()
+                .and_then(|details| details.reason.clone()),
+            error_message: item
+                .last_error
+                .as_ref()
+                .and_then(|details| details.message.clone()),
         }
     }
 }

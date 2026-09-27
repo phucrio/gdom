@@ -3,12 +3,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::application::AccessToken;
 use crate::application::backoff::{JitterSource, MAX_RETRY_ATTEMPTS, Sleeper, backoff_delay};
 use crate::application::drive_folder::DriveFolderOwner;
-use crate::application::drive_transfer::{DrivePermission, DriveTransferError, DriveTransferPort};
+use crate::application::drive_transfer::{
+    DrivePermission, DriveTransferError, DriveTransferFailure, DriveTransferPort,
+};
 use crate::application::item_store::{ItemStoreError, ItemStorePort};
 use crate::application::job_events::{JobEventSink, JobRuntimeEvent};
 use crate::application::time::iso_now;
 use crate::domain::GooglePermissionId;
-use crate::domain::item::{ItemError, ItemState, MigrationItem};
+use crate::domain::item::{ItemError, ItemErrorDetails, ItemState, MigrationItem};
 use crate::domain::job::{JobError, JobId, MigrationJob};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,10 +20,24 @@ enum TransferPhase {
     Accept,
     Verify,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransferAccountRole {
+    Source,
+    Target,
+}
+
+impl TransferPhase {
+    const fn account_role(self) -> TransferAccountRole {
+        match self {
+            Self::Reconcile | Self::PendingOwner => TransferAccountRole::Source,
+            Self::Accept | Self::Verify => TransferAccountRole::Target,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum TransferError {
-    Drive(DriveTransferError),
+    Drive(DriveTransferFailure),
     Store(ItemStoreError),
     Job(JobError),
     InvalidItemState,
@@ -40,8 +56,8 @@ impl std::fmt::Display for TransferError {
 
 impl std::error::Error for TransferError {}
 
-impl From<DriveTransferError> for TransferError {
-    fn from(err: DriveTransferError) -> Self {
+impl From<DriveTransferFailure> for TransferError {
+    fn from(err: DriveTransferFailure) -> Self {
         Self::Drive(err)
     }
 }
@@ -60,10 +76,20 @@ impl From<JobError> for TransferError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TransferHalt {
-    Exhausted { verified: usize, failed: usize },
-    SharingRateLimited { message: String },
-    WaitingForQuota { message: String },
-    AuthRequired { message: String },
+    Exhausted {
+        verified: usize,
+        failed: usize,
+    },
+    SharingRateLimited {
+        message: String,
+    },
+    WaitingForQuota {
+        message: String,
+    },
+    AuthRequired {
+        message: String,
+        account_role: TransferAccountRole,
+    },
     Paused,
     Cancelled,
 }
@@ -186,7 +212,7 @@ fn apply_halt(job: &mut MigrationJob, halt: &TransferHalt) -> Result<(), JobErro
             job.pause_sharing_rate_limit(message.clone())
         }
         TransferHalt::WaitingForQuota { message } => job.wait_for_quota(message.clone()),
-        TransferHalt::AuthRequired { message } => job.require_auth(message.clone()),
+        TransferHalt::AuthRequired { message, .. } => job.require_auth(message.clone()),
         TransferHalt::Paused => job.pause_transfer(),
         TransferHalt::Cancelled => job.cancel_job(iso_now()),
     }
@@ -240,9 +266,9 @@ impl StepError {
 }
 
 enum StepOutcome {
-    Retryable,
-    Permanent,
-    Halt(TransferHalt),
+    Retryable(ItemErrorDetails),
+    Permanent(ItemErrorDetails),
+    Halt(TransferHalt, ItemErrorDetails),
     Store(ItemStoreError),
     InvalidState,
 }
@@ -277,6 +303,7 @@ async fn transfer_one(
             if item.state.is_terminal() {
                 return Ok(item.state);
             }
+            item.last_error = None;
             apply_state(&mut item, ItemState::Verified)?;
             persist(run, &item).await?;
             Ok(ItemState::Verified)
@@ -299,7 +326,12 @@ async fn reconcile_and_prepare(
             .target_permission_id
             .as_ref()
             .map(|id| id.as_str().to_string())
-            .ok_or(StepOutcome::Permanent)?;
+            .ok_or_else(|| {
+                StepOutcome::Permanent(item_error_details(
+                    "missing_target_permission",
+                    "The target permission needed to accept ownership was not recorded.",
+                ))
+            })?;
         return Ok(PrepareAction::Accept { permission_id });
     }
 
@@ -327,9 +359,10 @@ async fn reconcile_and_prepare(
         return Ok(PrepareAction::VerifyOnly);
     }
     if !source_owns {
-        apply_state_outcome(item, ItemState::PermanentFailed)?;
-        persist_outcome(run, item).await?;
-        return Err(StepOutcome::Permanent);
+        return Err(StepOutcome::Permanent(item_error_details(
+            "source_not_owner",
+            "The source account no longer owns this item.",
+        )));
     }
 
     if let Some(existing) = find_target_permission(
@@ -438,13 +471,17 @@ async fn verify_ownership(
         }
 
         if !target_owns && !source_owns {
-            apply_state_outcome(item, ItemState::PermanentFailed)?;
-            persist_outcome(run, item).await?;
-            return Err(StepOutcome::Permanent);
+            return Err(StepOutcome::Permanent(item_error_details(
+                "ownership_not_transferred",
+                "Neither account is recorded as owner after the ownership transfer.",
+            )));
         }
 
         if attempt >= MAX_RETRY_ATTEMPTS {
-            return Err(StepOutcome::Retryable);
+            return Err(StepOutcome::Retryable(item_error_details(
+                "ownership_not_verified",
+                "Google Drive did not confirm target ownership before the verification limit.",
+            )));
         }
         run.sleeper
             .sleep(backoff_delay(attempt, run.jitter.jitter_secs()))
@@ -460,14 +497,14 @@ async fn retry<T, F, Fut>(
 ) -> Result<T, StepOutcome>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, DriveTransferError>>,
+    Fut: Future<Output = Result<T, DriveTransferFailure>>,
 {
     let mut attempt = 0;
     loop {
         match op().await {
             Ok(value) => return Ok(value),
             Err(err) => match classify(err, phase) {
-                StepOutcome::Retryable if attempt < MAX_RETRY_ATTEMPTS => {
+                StepOutcome::Retryable(_) if attempt < MAX_RETRY_ATTEMPTS => {
                     run.sleeper
                         .sleep(backoff_delay(attempt, run.jitter.jitter_secs()))
                         .await;
@@ -479,31 +516,49 @@ where
     }
 }
 
-fn classify(err: DriveTransferError, phase: TransferPhase) -> StepOutcome {
-    match err {
-        DriveTransferError::SharingRateLimitExceeded => {
-            StepOutcome::Halt(TransferHalt::SharingRateLimited {
+fn classify(err: DriveTransferFailure, phase: TransferPhase) -> StepOutcome {
+    let kind = err.kind();
+    let details = err.item_error_details();
+    match kind {
+        DriveTransferError::SharingRateLimitExceeded => StepOutcome::Halt(
+            TransferHalt::SharingRateLimited {
                 message: err.to_string(),
-            })
-        }
-        DriveTransferError::StorageQuotaExceeded => {
-            StepOutcome::Halt(TransferHalt::WaitingForQuota {
+            },
+            details,
+        ),
+        DriveTransferError::StorageQuotaExceeded => StepOutcome::Halt(
+            TransferHalt::WaitingForQuota {
                 message: err.to_string(),
-            })
-        }
-        DriveTransferError::Unauthorized => StepOutcome::Halt(TransferHalt::AuthRequired {
-            message: err.to_string(),
-        }),
+            },
+            details,
+        ),
+        DriveTransferError::Unauthorized => StepOutcome::Halt(
+            TransferHalt::AuthRequired {
+                message: err.to_string(),
+                account_role: phase.account_role(),
+            },
+            details,
+        ),
         DriveTransferError::NotFound => match phase {
-            TransferPhase::Verify | TransferPhase::Accept => StepOutcome::Retryable,
-            TransferPhase::Reconcile | TransferPhase::PendingOwner => StepOutcome::Permanent,
+            TransferPhase::Verify | TransferPhase::Accept => StepOutcome::Retryable(details),
+            TransferPhase::Reconcile | TransferPhase::PendingOwner => {
+                StepOutcome::Permanent(details)
+            }
         },
         DriveTransferError::RateLimited
         | DriveTransferError::ServerUnavailable
-        | DriveTransferError::Transport => StepOutcome::Retryable,
+        | DriveTransferError::Transport => StepOutcome::Retryable(details),
         DriveTransferError::Forbidden
         | DriveTransferError::InvalidResponse
-        | DriveTransferError::UnexpectedStatus(_) => StepOutcome::Permanent,
+        | DriveTransferError::UnexpectedStatus(_) => StepOutcome::Permanent(details),
+    }
+}
+
+fn item_error_details(reason: &str, message: &str) -> ItemErrorDetails {
+    ItemErrorDetails {
+        code: None,
+        reason: Some(reason.to_owned()),
+        message: Some(message.to_owned()),
     }
 }
 
@@ -512,6 +567,9 @@ fn apply_state(item: &mut MigrationItem, next: ItemState) -> Result<(), StepErro
         .state
         .transition_to(next)
         .map_err(|_| StepError::Fatal(TransferError::InvalidItemState))?;
+    if next.is_skipped() {
+        item.last_error = None;
+    }
     item.updated_at = iso_now();
     Ok(())
 }
@@ -521,6 +579,9 @@ fn apply_state_outcome(item: &mut MigrationItem, next: ItemState) -> Result<(), 
         .state
         .transition_to(next)
         .map_err(|_err: ItemError| StepOutcome::InvalidState)?;
+    if next.is_skipped() {
+        item.last_error = None;
+    }
     item.updated_at = iso_now();
     Ok(())
 }
@@ -577,21 +638,28 @@ async fn finalize_step(
     err: StepOutcome,
 ) -> Result<ItemState, StepError> {
     match err {
-        StepOutcome::Halt(halt) => Err(StepError::Halt(halt)),
+        StepOutcome::Halt(halt, details) => {
+            item.last_error = Some(details);
+            item.updated_at = iso_now();
+            persist(run, item).await?;
+            Err(StepError::Halt(halt))
+        }
         StepOutcome::Store(err) => Err(StepError::Fatal(TransferError::Store(err))),
         StepOutcome::InvalidState => Err(StepError::Fatal(TransferError::InvalidItemState)),
-        StepOutcome::Permanent => {
+        StepOutcome::Permanent(details) => {
+            item.last_error = Some(details);
             if !item.state.is_terminal() {
                 apply_state(item, ItemState::PermanentFailed)?;
-                persist(run, item).await?;
             }
+            persist(run, item).await?;
             Err(StepError::Failed)
         }
-        StepOutcome::Retryable => {
+        StepOutcome::Retryable(details) => {
+            item.last_error = Some(details);
             if !item.state.is_terminal() {
                 apply_state(item, ItemState::RetryableFailed)?;
-                persist(run, item).await?;
             }
+            persist(run, item).await?;
             Err(StepError::Failed)
         }
     }
@@ -628,39 +696,57 @@ fn same_parents(original: &[String], remote: &[String]) -> bool {
 pub async fn reconcile_checkpoint(
     run: &TransferRun<'_>,
     items: &[MigrationItem],
-) -> Result<(), TransferError> {
+) -> Result<Option<TransferHalt>, TransferError> {
     for item in items {
         if !item.state.is_intermediate_checkpoint() {
             continue;
         }
         let mut item = item.clone();
-        reconcile_intermediate_readonly(run, &mut item).await?;
+        if let Some(halt) = reconcile_intermediate_readonly(run, &mut item).await? {
+            return Ok(Some(halt));
+        }
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn reconcile_intermediate_readonly(
     run: &TransferRun<'_>,
     item: &mut MigrationItem,
-) -> Result<(), TransferError> {
-    let token = match item.state {
-        ItemState::Transferred | ItemState::Verifying => run.target_token,
-        _ => run.source_token,
+) -> Result<Option<TransferHalt>, TransferError> {
+    let account_role = match item.state {
+        ItemState::Accepting | ItemState::Transferred | ItemState::Verifying => {
+            TransferAccountRole::Target
+        }
+        _ => TransferAccountRole::Source,
+    };
+    let token = match account_role {
+        TransferAccountRole::Source => run.source_token,
+        TransferAccountRole::Target => run.target_token,
     };
     let snapshot = match run.drive.get_file(token, &item.file_id).await {
         Ok(snapshot) => snapshot,
-        Err(DriveTransferError::NotFound) => {
+        Err(error) if error.kind() == DriveTransferError::NotFound => {
+            item.last_error = Some(error.item_error_details());
             apply_state(item, ItemState::PermanentFailed).map_err(StepError::into_transfer)?;
             persist(run, item).await.map_err(StepError::into_transfer)?;
-            return Ok(());
+            return Ok(None);
         }
-        Err(err) => return Err(TransferError::Drive(err)),
+        Err(error) if error.kind() == DriveTransferError::Unauthorized => {
+            item.last_error = Some(error.item_error_details());
+            item.updated_at = iso_now();
+            persist(run, item).await.map_err(StepError::into_transfer)?;
+            return Ok(Some(TransferHalt::AuthRequired {
+                message: error.to_string(),
+                account_role,
+            }));
+        }
+        Err(error) => return Err(TransferError::Drive(error)),
     };
 
     if snapshot.trashed {
         apply_state(item, ItemState::SkippedTrashed).map_err(StepError::into_transfer)?;
         persist(run, item).await.map_err(StepError::into_transfer)?;
-        return Ok(());
+        return Ok(None);
     }
 
     let target_owns = is_owner(&snapshot.owners, run.target_permission_id);
@@ -675,7 +761,7 @@ async fn reconcile_intermediate_readonly(
             apply_state(item, next).map_err(StepError::into_transfer)?;
         }
         persist(run, item).await.map_err(StepError::into_transfer)?;
-        return Ok(());
+        return Ok(None);
     }
 
     if let Some(existing) = find_target_permission(
@@ -688,9 +774,9 @@ async fn reconcile_intermediate_readonly(
             apply_state(item, ItemState::AcceptRequired).map_err(StepError::into_transfer)?;
         }
         persist(run, item).await.map_err(StepError::into_transfer)?;
-        return Ok(());
+        return Ok(None);
     }
 
     persist(run, item).await.map_err(StepError::into_transfer)?;
-    Ok(())
+    Ok(None)
 }

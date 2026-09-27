@@ -81,7 +81,7 @@ impl DriveTransferPort for GuardedDrive {
     fn get_file<'a>(&'a self, token: &'a AccessToken, file_id: &'a str) -> DriveFileFuture<'a> {
         Box::pin(async move {
             if !self.allowed_ids.contains(file_id) || !(self.source(token) || self.target(token)) {
-                return Err(DriveTransferError::Forbidden);
+                return Err(DriveTransferError::Forbidden.into());
             }
             if self.target(token) {
                 self.target_read_seen.store(true, Ordering::SeqCst);
@@ -98,7 +98,7 @@ impl DriveTransferPort for GuardedDrive {
         Box::pin(async move {
             if !self.mutation_allowed(file_id) || !self.source(token) || email != self.target_email
             {
-                return Err(DriveTransferError::Forbidden);
+                return Err(DriveTransferError::Forbidden.into());
             }
             self.pending_seen.store(true, Ordering::SeqCst);
             DriveTransferPort::create_pending_owner(&self.client, token, file_id, email).await
@@ -112,7 +112,7 @@ impl DriveTransferPort for GuardedDrive {
     ) -> DrivePermissionFuture<'a> {
         Box::pin(async move {
             if !self.mutation_allowed(file_id) || !self.source(token) {
-                return Err(DriveTransferError::Forbidden);
+                return Err(DriveTransferError::Forbidden.into());
             }
             self.pending_seen.store(true, Ordering::SeqCst);
             DriveTransferPort::update_pending_owner(&self.client, token, file_id, permission_id)
@@ -127,7 +127,7 @@ impl DriveTransferPort for GuardedDrive {
     ) -> DrivePermissionFuture<'a> {
         Box::pin(async move {
             if !self.mutation_allowed(file_id) || !self.target(token) {
-                return Err(DriveTransferError::Forbidden);
+                return Err(DriveTransferError::Forbidden.into());
             }
             self.accept_seen.store(true, Ordering::SeqCst);
             DriveTransferPort::accept_ownership(&self.client, token, file_id, permission_id).await
@@ -152,26 +152,26 @@ async fn wrong_token_or_unapproved_item_never_reaches_network() {
         guard
             .create_pending_owner(&guard.source_token, "fixture", "b@gmail.com")
             .await,
-        Err(DriveTransferError::Forbidden)
+        Err(DriveTransferError::Forbidden.into())
     );
     guard.mutations_enabled.store(true, Ordering::SeqCst);
     assert_eq!(
         guard
             .create_pending_owner(&guard.target_token, "fixture", "b@gmail.com")
             .await,
-        Err(DriveTransferError::Forbidden)
+        Err(DriveTransferError::Forbidden.into())
     );
     assert_eq!(
         guard
             .accept_ownership(&guard.source_token, "fixture", "permission")
             .await,
-        Err(DriveTransferError::Forbidden)
+        Err(DriveTransferError::Forbidden.into())
     );
     assert_eq!(
         guard
             .accept_ownership(&guard.target_token, "outside", "permission")
             .await,
-        Err(DriveTransferError::Forbidden)
+        Err(DriveTransferError::Forbidden.into())
     );
     assert!(!guard.pending_seen.load(Ordering::SeqCst));
     assert!(!guard.accept_seen.load(Ordering::SeqCst));

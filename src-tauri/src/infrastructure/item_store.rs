@@ -8,9 +8,18 @@ use crate::application::item_store::{
     ItemAggregates, ItemBatchCommit, ItemPage, ItemStoreError, ItemStoreFuture, ItemStorePort,
 };
 use crate::domain::GooglePermissionId;
-use crate::domain::item::{ItemId, ItemState, MigrationItem, ScanCheckpoint};
+use crate::domain::item::{ItemErrorDetails, ItemId, ItemState, MigrationItem, ScanCheckpoint};
 use crate::domain::job::JobId;
 use crate::infrastructure::job_store::SqliteJobStore;
+
+const MAX_ITEM_ERROR_CHARS: usize = 2_048;
+
+fn sanitize_item_error(value: &str) -> String {
+    gdom_logs::redact_secrets(value)
+        .chars()
+        .take(MAX_ITEM_ERROR_CHARS)
+        .collect()
+}
 
 pub(super) async fn insert_scan_batch(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -179,7 +188,8 @@ impl ItemStorePort for SqliteJobStore {
                     let rows = sqlx::query(
                         "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                                 original_owner_permission_id, quota_bytes_used, target_permission_id,
-                                state, created_at, updated_at, canary_selected
+                                state, created_at, updated_at, canary_selected,
+                                last_error_code, last_error_reason, last_error_message
                          FROM migration_items
                          WHERE job_id = ?1
                          ORDER BY depth DESC, name COLLATE NOCASE ASC
@@ -204,7 +214,8 @@ impl ItemStorePort for SqliteJobStore {
                     let rows = sqlx::query(
                         "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                                 original_owner_permission_id, quota_bytes_used, target_permission_id,
-                                state, created_at, updated_at, canary_selected
+                                state, created_at, updated_at, canary_selected,
+                                last_error_code, last_error_reason, last_error_message
                          FROM migration_items
                          WHERE job_id = ?1 AND state = 'ELIGIBLE'
                          ORDER BY depth DESC, name COLLATE NOCASE ASC
@@ -230,7 +241,8 @@ impl ItemStorePort for SqliteJobStore {
                     let rows = sqlx::query(
                         "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                                 original_owner_permission_id, quota_bytes_used, target_permission_id,
-                                state, created_at, updated_at, canary_selected
+                                state, created_at, updated_at, canary_selected,
+                                last_error_code, last_error_reason, last_error_message
                          FROM migration_items
                          WHERE job_id = ?1 AND state LIKE 'SKIPPED_%'
                          ORDER BY depth DESC, name COLLATE NOCASE ASC
@@ -261,7 +273,8 @@ impl ItemStorePort for SqliteJobStore {
                     let rows = sqlx::query(
                         "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                                 original_owner_permission_id, quota_bytes_used, target_permission_id,
-                                state, created_at, updated_at, canary_selected
+                                state, created_at, updated_at, canary_selected,
+                                last_error_code, last_error_reason, last_error_message
                          FROM migration_items
                          WHERE job_id = ?1 AND state IN (
                              'SKIPPED_NOT_OWNED_BY_SOURCE',
@@ -292,7 +305,8 @@ impl ItemStorePort for SqliteJobStore {
                     let rows = sqlx::query(
                         "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                                 original_owner_permission_id, quota_bytes_used, target_permission_id,
-                                state, created_at, updated_at, canary_selected
+                                state, created_at, updated_at, canary_selected,
+                                last_error_code, last_error_reason, last_error_message
                          FROM migration_items
                          WHERE job_id = ?1 AND mime_type = ?2
                          ORDER BY depth DESC, name COLLATE NOCASE ASC
@@ -319,7 +333,8 @@ impl ItemStorePort for SqliteJobStore {
                     let rows = sqlx::query(
                         "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                                 original_owner_permission_id, quota_bytes_used, target_permission_id,
-                                state, created_at, updated_at, canary_selected
+                                state, created_at, updated_at, canary_selected,
+                                last_error_code, last_error_reason, last_error_message
                          FROM migration_items
                          WHERE job_id = ?1 AND state = ?2
                          ORDER BY depth DESC, name COLLATE NOCASE ASC
@@ -439,7 +454,8 @@ impl ItemStorePort for SqliteJobStore {
             let rows = sqlx::query(
                 "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                         original_owner_permission_id, quota_bytes_used, target_permission_id,
-                        state, created_at, updated_at, canary_selected
+                        state, created_at, updated_at, canary_selected,
+                        last_error_code, last_error_reason, last_error_message
                  FROM migration_items
                  WHERE job_id = ?1 AND state IN (
                     'ELIGIBLE',
@@ -471,7 +487,8 @@ impl ItemStorePort for SqliteJobStore {
             let rows = sqlx::query(
                 "SELECT id, job_id, file_id, name, mime_type, depth, original_parent_ids_json,
                         original_owner_permission_id, quota_bytes_used, target_permission_id,
-                        state, created_at, updated_at, canary_selected
+                        state, created_at, updated_at, canary_selected,
+                        last_error_code, last_error_reason, last_error_message
                  FROM migration_items
                  WHERE job_id = ?1 AND canary_selected = 1
                  ORDER BY depth DESC, name COLLATE NOCASE ASC",
@@ -496,8 +513,9 @@ impl ItemStorePort for SqliteJobStore {
                 .begin()
                 .await
                 .map_err(|e| ItemStoreError::Database(e.to_string()))?;
-            let previous: Option<String> = sqlx::query_scalar(
-                "SELECT state FROM migration_items WHERE id = ?1 AND job_id = ?2",
+            let previous = sqlx::query(
+                "SELECT state, last_error_code, last_error_reason, last_error_message
+                 FROM migration_items WHERE id = ?1 AND job_id = ?2",
             )
             .bind(item.id.value().to_string())
             .bind(item.job_id.value().to_string())
@@ -510,11 +528,36 @@ impl ItemStorePort for SqliteJobStore {
                     item.id
                 )));
             };
+            let previous_state: String = previous.get("state");
+            let previous_error_code: Option<String> = previous.get("last_error_code");
+            let previous_error_reason: Option<String> = previous.get("last_error_reason");
+            let previous_error_message: Option<String> = previous.get("last_error_message");
+
+            let error_code = item
+                .last_error
+                .as_ref()
+                .and_then(|details| details.code.as_deref())
+                .map(sanitize_item_error);
+            let error_reason = item
+                .last_error
+                .as_ref()
+                .and_then(|details| details.reason.as_deref())
+                .map(sanitize_item_error);
+            let error_message = item
+                .last_error
+                .as_ref()
+                .and_then(|details| details.message.as_deref())
+                .map(sanitize_item_error);
+            let error_changed = previous_error_code != error_code
+                || previous_error_reason != error_reason
+                || previous_error_message != error_message;
+            let state_changed = previous_state != item.state.as_str();
 
             sqlx::query(
                 "UPDATE migration_items
-                 SET state = ?1, target_permission_id = ?2, updated_at = ?3, canary_selected = ?4
-                 WHERE id = ?5 AND job_id = ?6",
+                 SET state = ?1, target_permission_id = ?2, updated_at = ?3, canary_selected = ?4,
+                     last_error_code = ?5, last_error_reason = ?6, last_error_message = ?7
+                 WHERE id = ?8 AND job_id = ?9",
             )
             .bind(item.state.as_str())
             .bind(
@@ -524,24 +567,50 @@ impl ItemStorePort for SqliteJobStore {
             )
             .bind(&item.updated_at)
             .bind(i64::from(item.canary_selected))
+            .bind(error_code.as_deref())
+            .bind(error_reason.as_deref())
+            .bind(error_message.as_deref())
             .bind(item.id.value().to_string())
             .bind(item.job_id.value().to_string())
             .execute(&mut *tx)
             .await
             .map_err(|e| ItemStoreError::Database(e.to_string()))?;
 
-            if previous != item.state.as_str() {
+            if state_changed || error_changed {
+                let detail_json = if error_changed {
+                    let error_detail = if error_code.is_none()
+                        && error_reason.is_none()
+                        && error_message.is_none()
+                    {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::json!({
+                            "code": error_code.as_deref(),
+                            "reason": error_reason.as_deref(),
+                            "message": error_message.as_deref(),
+                        })
+                    };
+                    Some(serde_json::json!({ "error": error_detail }).to_string())
+                } else {
+                    None
+                };
                 sqlx::query(
                     "INSERT INTO migration_events (
                         id, job_id, file_id, account_id, event_type, previous_state, new_state,
                         sanitized_detail_json, created_at
-                     ) VALUES (?1, ?2, ?3, NULL, 'ITEM_STATE', ?4, ?5, NULL, ?6)",
+                     ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8)",
                 )
                 .bind(crate::application::entity_id::next_entity_id().to_string())
                 .bind(item.job_id.value().to_string())
                 .bind(&item.file_id)
-                .bind(&previous)
+                .bind(if state_changed {
+                    "ITEM_STATE"
+                } else {
+                    "ITEM_ERROR"
+                })
+                .bind(&previous_state)
                 .bind(item.state.as_str())
+                .bind(detail_json)
                 .bind(&item.updated_at)
                 .execute(&mut *tx)
                 .await
@@ -632,7 +701,10 @@ impl ItemStorePort for SqliteJobStore {
                 let item_id: String = row.get(0);
                 let file_id: String = row.get(1);
                 sqlx::query(
-                    "UPDATE migration_items SET state = 'PENDING_OWNER_REQUIRED', updated_at = ?1 WHERE id = ?2",
+                    "UPDATE migration_items
+                     SET state = 'PENDING_OWNER_REQUIRED', updated_at = ?1,
+                         last_error_code = NULL, last_error_reason = NULL, last_error_message = NULL
+                     WHERE id = ?2",
                 )
                 .bind(crate::application::time::iso_now())
                 .bind(&item_id)
@@ -643,7 +715,7 @@ impl ItemStorePort for SqliteJobStore {
                     "INSERT INTO migration_events (
                         id, job_id, file_id, account_id, event_type, previous_state, new_state,
                         sanitized_detail_json, created_at
-                     ) VALUES (?1, ?2, ?3, NULL, 'ITEM_STATE', 'RETRYABLE_FAILED', 'PENDING_OWNER_REQUIRED', NULL, ?4)",
+                     ) VALUES (?1, ?2, ?3, NULL, 'ITEM_STATE', 'RETRYABLE_FAILED', 'PENDING_OWNER_REQUIRED', '{\"error\":null}', ?4)",
                 )
                 .bind(crate::application::entity_id::next_entity_id().to_string())
                 .bind(&job_id_str)
@@ -690,6 +762,15 @@ fn item_from_row(row: sqlx::sqlite::SqliteRow) -> Result<MigrationItem, ItemStor
     let created_at: String = row.get(11);
     let updated_at: String = row.get(12);
     let canary_selected: i64 = row.get(13);
+    let error_code: Option<String> = row
+        .get::<Option<String>, _>(14)
+        .map(|value| sanitize_item_error(&value));
+    let error_reason: Option<String> = row
+        .get::<Option<String>, _>(15)
+        .map(|value| sanitize_item_error(&value));
+    let error_message: Option<String> = row
+        .get::<Option<String>, _>(16)
+        .map(|value| sanitize_item_error(&value));
 
     let original_parent_ids: Vec<String> = serde_json::from_str(&parents_json).unwrap_or_default();
     let state = ItemState::from_str(&state_str).map_err(|_| ItemStoreError::InvalidState)?;
@@ -708,6 +789,15 @@ fn item_from_row(row: sqlx::sqlite::SqliteRow) -> Result<MigrationItem, ItemStor
         target_permission_id: target.map(GooglePermissionId::new),
         state,
         canary_selected: canary_selected != 0,
+        last_error: if error_code.is_some() || error_reason.is_some() || error_message.is_some() {
+            Some(ItemErrorDetails {
+                code: error_code,
+                reason: error_reason,
+                message: error_message,
+            })
+        } else {
+            None
+        },
         created_at,
         updated_at,
     })
@@ -782,6 +872,7 @@ mod tests {
             target_permission_id: None,
             state: ItemState::Eligible,
             canary_selected: false,
+            last_error: None,
             created_at: "t".into(),
             updated_at: "t".into(),
         }
@@ -875,5 +966,77 @@ mod tests {
         .fetch_optional(accounts.pool())
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn saving_item_error_persists_sanitized_detail_and_audit_event() {
+        let (store, job_id) = setup().await;
+        let mut failed = item(job_id, "failed-file");
+        store
+            .commit_scan_batch(
+                job_id,
+                &ItemBatchCommit {
+                    items: vec![failed.clone()],
+                    checkpoints_upsert: Vec::new(),
+                    checkpoints_delete: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        failed.state = failed
+            .state
+            .transition_to(ItemState::RetryableFailed)
+            .expect("eligible item can be marked retryable");
+        failed.last_error = Some(ItemErrorDetails {
+            code: Some("403".into()),
+            reason: Some("PERMISSION_DENIED: insufficientFilePermissions".into()),
+            message: Some("Drive rejected access_token=hidden-token".into()),
+        });
+        failed.updated_at = "failed".into();
+        store.save_item(&failed).await.unwrap();
+
+        let page = store.list_items_page(job_id, None, 1, 10).await.unwrap();
+        let details = page.items[0].last_error.as_ref().unwrap();
+        assert_eq!(details.code.as_deref(), Some("403"));
+        assert_eq!(
+            details.reason.as_deref(),
+            Some("PERMISSION_DENIED: insufficientFilePermissions")
+        );
+        assert!(!details.message.as_deref().unwrap().contains("hidden-token"));
+
+        let event = sqlx::query(
+            "SELECT event_type, sanitized_detail_json FROM migration_events
+             WHERE job_id = ?1 AND file_id = ?2 AND new_state = 'RETRYABLE_FAILED'",
+        )
+        .bind(job_id.value().to_string())
+        .bind("failed-file")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(event.get::<String, _>("event_type"), "ITEM_STATE");
+        let detail: String = event.get("sanitized_detail_json");
+        assert!(detail.contains("insufficientFilePermissions"));
+        assert!(!detail.contains("hidden-token"));
+
+        failed.state = failed
+            .state
+            .transition_to(ItemState::PendingOwnerRequired)
+            .expect("retry can resume ownership transfer");
+        failed.last_error = None;
+        failed.updated_at = "retried".into();
+        store.save_item(&failed).await.unwrap();
+        let page = store.list_items_page(job_id, None, 1, 10).await.unwrap();
+        assert!(page.items[0].last_error.is_none());
+        let clear_event: String = sqlx::query_scalar(
+            "SELECT sanitized_detail_json FROM migration_events
+             WHERE job_id = ?1 AND file_id = ?2 AND new_state = 'PENDING_OWNER_REQUIRED'",
+        )
+        .bind(job_id.value().to_string())
+        .bind("failed-file")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        assert_eq!(clear_event, r#"{"error":null}"#);
     }
 }

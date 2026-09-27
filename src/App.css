@@ -1607,6 +1607,25 @@ button:not(:disabled):active { transform: translateY(1px); }
   text-transform: capitalize;
 }
 
+.item-error-details {
+  margin-top: 2px;
+  color: var(--danger);
+  font-size: 10px;
+}
+
+.item-error-details summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.item-error-details p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .status-indicator.success { color: var(--connected); font-weight: bold; }
 .status-indicator.error { color: var(--danger); font-weight: bold; }
 .status-indicator.skipped { color: var(--muted); }

@@ -30,7 +30,7 @@ use crate::application::root_parser::{RootParseError, parse_root_input};
 use crate::application::scanner::{ScanError, ScanOutcome, ScanRun, run_scan};
 use crate::application::time::iso_now;
 use crate::application::transfer::{
-    TransferError, TransferHalt, TransferRun, execute_bulk, execute_canary,
+    TransferAccountRole, TransferError, TransferHalt, TransferRun, execute_bulk, execute_canary,
 };
 use crate::domain::job::{
     AccountSnapshot, JobError, JobId, JobStatus, MigrationJob, MigrationRoot, RootId,
@@ -173,7 +173,7 @@ impl From<ScanError> for JobServiceError {
 impl From<TransferError> for JobServiceError {
     fn from(err: TransferError) -> Self {
         match err {
-            TransferError::Drive(drive_err) => match drive_err {
+            TransferError::Drive(drive_failure) => match drive_failure.kind() {
                 crate::application::drive_transfer::DriveTransferError::SharingRateLimitExceeded => {
                     Self::SharingRateLimited
                 }
@@ -186,7 +186,7 @@ impl From<TransferError> for JobServiceError {
                 crate::application::drive_transfer::DriveTransferError::RateLimited => {
                     Self::RateLimited
                 }
-                other => Self::DriveError(other.to_string()),
+                _ => Self::DriveError(drive_failure.to_string()),
             },
             TransferError::Store(err) => Self::StoreError(err.to_string()),
             TransferError::Job(err) => err.into(),
@@ -689,6 +689,43 @@ where
         left.trim().eq_ignore_ascii_case(right.trim()) && !left.trim().is_empty()
     }
 
+    async fn mark_transfer_auth_required(
+        &self,
+        job: &MigrationJob,
+        halt: &TransferHalt,
+    ) -> Result<(), JobServiceError> {
+        let account_id = match halt {
+            TransferHalt::AuthRequired { account_role, .. } => match account_role {
+                TransferAccountRole::Source => job.source_account_id(),
+                TransferAccountRole::Target => job.target_account_id(),
+            },
+            _ => return Ok(()),
+        };
+        self.token_provider
+            .mark_reauth_required(account_id)
+            .await
+            .map_err(|error| JobServiceError::TokenError(error.to_string()))
+    }
+
+    async fn apply_checkpoint_auth_halt(
+        &self,
+        job: &mut MigrationJob,
+        halt: &TransferHalt,
+        previous: &str,
+        event_type: &str,
+    ) -> Result<(), JobServiceError> {
+        let TransferHalt::AuthRequired { message, .. } = halt else {
+            return Err(JobServiceError::StoreError(
+                "checkpoint reconciliation returned a non-auth halt".into(),
+            ));
+        };
+        job.require_auth(message.clone())?;
+        let mark_result = self.mark_transfer_auth_required(job, halt).await;
+        let persist_result = self.persist_status(job, Some(previous), event_type).await;
+        mark_result?;
+        persist_result
+    }
+
     async fn run_transfer(
         &self,
         job: &mut crate::domain::job::MigrationJob,
@@ -730,11 +767,13 @@ where
             events: Some(self.events.as_ref()),
             progress_total,
         };
-        if canary {
-            Ok(execute_canary(&run, job).await?)
+        let halt = if canary {
+            execute_canary(&run, job).await?
         } else {
-            Ok(execute_bulk(&run, job).await?)
-        }
+            execute_bulk(&run, job).await?
+        };
+        self.mark_transfer_auth_required(job, &halt).await?;
+        Ok(halt)
     }
 
     async fn run_transfer_auto(
@@ -779,6 +818,7 @@ where
             progress_total,
         };
         let halt = crate::application::transfer::execute_auto_transfer(&run, job).await?;
+        self.mark_transfer_auth_required(job, &halt).await?;
         if job.status() == JobStatus::CanaryReview {
             let cohort = self.job_store.list_canary_cohort(job.id()).await?;
             if !cohort.is_empty()
@@ -789,7 +829,9 @@ where
                 job.start_bulk()?;
                 self.persist_status(job, Some(JobStatus::CanaryReview.as_str()), "JOB_STATUS")
                     .await?;
-                return Ok(execute_bulk(&run, job).await?);
+                let bulk_halt = execute_bulk(&run, job).await?;
+                self.mark_transfer_auth_required(job, &bulk_halt).await?;
+                return Ok(bulk_halt);
             }
         }
         Ok(halt)
@@ -1712,10 +1754,23 @@ where
             drop(lease);
             return Err(err);
         }
-        if let Err(err) = self.reconcile_job_items(&job).await {
-            self.release_durable_lease(job_id).await;
-            drop(lease);
-            return Err(err);
+        match self.reconcile_job_items(&job).await {
+            Ok(Some(halt)) => {
+                let previous = job.status().as_str().to_string();
+                let result = self
+                    .apply_checkpoint_auth_halt(&mut job, &halt, &previous, "JOB_STATUS")
+                    .await;
+                self.release_durable_lease(job_id).await;
+                drop(lease);
+                result?;
+                return Ok(job);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                self.release_durable_lease(job_id).await;
+                drop(lease);
+                return Err(err);
+            }
         }
 
         self.prepare_and_run_mutation(job_id, &mut job, lease, as_canary, |job| {
@@ -1784,8 +1839,19 @@ where
                     .await?;
                 continue;
             }
-            if let Err(err) = self.reconcile_job_items(&job).await {
-                job.set_last_error(err.to_string());
+            match self.reconcile_job_items(&job).await {
+                Ok(Some(halt)) => {
+                    self.apply_checkpoint_auth_halt(
+                        &mut job,
+                        &halt,
+                        &previous,
+                        "STARTUP_RECONCILE",
+                    )
+                    .await?;
+                    continue;
+                }
+                Ok(None) => {}
+                Err(err) => job.set_last_error(err.to_string()),
             }
             job.pause_transfer()?;
             self.persist_status(&job, Some(&previous), "STARTUP_RECONCILE")
@@ -1812,7 +1878,7 @@ where
     async fn reconcile_job_items(
         &self,
         job: &crate::domain::job::MigrationJob,
-    ) -> Result<(), JobServiceError> {
+    ) -> Result<Option<TransferHalt>, JobServiceError> {
         let source_token = self
             .token_provider
             .get_access_token(job.source_account_id())
@@ -1843,8 +1909,7 @@ where
             events: None,
             progress_total: items.len() as u64,
         };
-        crate::application::transfer::reconcile_checkpoint(&run, &items).await?;
-        Ok(())
+        Ok(crate::application::transfer::reconcile_checkpoint(&run, &items).await?)
     }
 
     async fn should_resume_as_canary(

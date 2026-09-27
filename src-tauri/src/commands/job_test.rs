@@ -275,6 +275,7 @@ mod tests {
             target_permission_id: None,
             state: item_state,
             canary_selected: false,
+            last_error: None,
             created_at: "t".into(),
             updated_at: "t".into(),
         })
@@ -312,6 +313,98 @@ mod tests {
         let history_progress = history.progress.unwrap();
         assert_eq!((history_progress.completed, history_progress.total), (3, 7));
         assert_eq!((history_progress.failed, history_progress.skipped), (2, 2));
+    }
+
+    #[tokio::test]
+    async fn list_items_exposes_bounded_redacted_error_fields() {
+        use crate::domain::item::{ItemErrorDetails, ItemId, ItemState, MigrationItem};
+
+        let state = build_test_state().await;
+        create_dummy_account(
+            &state.account_store,
+            1,
+            "source@gmail.com",
+            "Source",
+            "source",
+        )
+        .await;
+        create_dummy_account(
+            &state.account_store,
+            2,
+            "target@gmail.com",
+            "Target",
+            "target",
+        )
+        .await;
+        let job = create_job_inner(
+            &state,
+            CreateJobInput {
+                source_account_id: "1".into(),
+                target_account_id: "2".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let job_id = job.id.parse().expect("job id");
+        let mut item = MigrationItem {
+            id: ItemId::new(1),
+            job_id,
+            file_id: "failed-file".into(),
+            name: "Failed file".into(),
+            mime_type: "text/plain".into(),
+            depth: 0,
+            original_parent_ids: Vec::new(),
+            original_owner_permission_id: None,
+            quota_bytes_used: None,
+            target_permission_id: None,
+            state: ItemState::PermanentFailed,
+            canary_selected: false,
+            last_error: None,
+            created_at: "created".into(),
+            updated_at: "updated".into(),
+        };
+        state
+            .job_store
+            .commit_scan_batch(
+                job_id,
+                &ItemBatchCommit {
+                    items: vec![item.clone()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        item.last_error = Some(ItemErrorDetails {
+            code: Some("403".into()),
+            reason: Some(format!("insufficientFilePermissions {}", "r".repeat(4_096))),
+            message: Some(format!(
+                "Google Drive denied access; access_token=hidden-token {}",
+                "m".repeat(4_096)
+            )),
+        });
+        state.job_store.save_item(&item).await.unwrap();
+
+        let page = list_job_items_inner(
+            &state,
+            ListJobItemsInput {
+                job_id: job.id,
+                filter: None,
+                page: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        let details = &page.items[0];
+        assert_eq!(details.error_code.as_deref(), Some("403"));
+        let reason = details.error_reason.as_deref().unwrap();
+        let message = details.error_message.as_deref().unwrap();
+        assert!(reason.starts_with("insufficientFilePermissions"));
+        assert!(message.starts_with("Google Drive denied access"));
+        assert!(!message.contains("hidden-token"));
+        assert!(reason.chars().count() <= 2_048);
+        assert!(message.chars().count() <= 2_048);
     }
 
     #[tokio::test]
@@ -1456,6 +1549,7 @@ mod tests {
                             target_permission_id: None,
                             state: crate::domain::item::ItemState::Eligible,
                             canary_selected: true,
+                            last_error: None,
                             created_at: "t".into(),
                             updated_at: "t".into(),
                         },
@@ -1474,6 +1568,7 @@ mod tests {
                             target_permission_id: None,
                             state: crate::domain::item::ItemState::Eligible,
                             canary_selected: false,
+                            last_error: None,
                             created_at: "t".into(),
                             updated_at: "t".into(),
                         },
@@ -1580,6 +1675,7 @@ mod tests {
                         target_permission_id: None,
                         state: crate::domain::item::ItemState::Eligible,
                         canary_selected: false,
+                        last_error: None,
                         created_at: "t".into(),
                         updated_at: "t".into(),
                     }],
