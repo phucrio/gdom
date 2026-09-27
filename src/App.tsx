@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { AvatarMenu } from "./accounts/AvatarMenu.tsx";
 import { ConnectDialog } from "./accounts/ConnectDialog.tsx";
@@ -77,6 +77,15 @@ export function App({ backend }: AppProps) {
   function announce(message: string) {
     setAnnouncement(message);
   }
+  const refreshAccountStatus = useCallback(
+    async (accountId: string) => {
+      const refreshedAccounts = await accounts.refresh();
+      return (
+        refreshedAccounts?.find((candidate) => candidate.id === accountId)?.authStatus ?? null
+      );
+    },
+    [accounts.refresh],
+  );
 
   // Determine active account DTO
   const activeAccount =
@@ -177,6 +186,7 @@ export function App({ backend }: AppProps) {
               jobs.refresh();
             }}
             onAddAccount={() => setConnectDialogOpen(true)}
+            onRefreshAccountStatus={refreshAccountStatus}
           />
         )}
 

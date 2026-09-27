@@ -13,6 +13,7 @@ User-visible changes are recorded here. Version selection and release operations
 ### Fixes
 
 - Retry loading the custom OAuth client secret after unlocking the credential store, so existing accounts can refresh tokens without reopening sign-in or restarting the app.
+- Offer system-browser reauthentication from My Drive load errors and reload files after successful recovery.
 
 ### Upgrade actions and known limitations
 

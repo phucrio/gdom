@@ -11,38 +11,40 @@ export function useAccountRegistry(backend: BackendPort) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const latest = useRef(createLatestLoad());
 
-  const refresh = useCallback(() => {
+  const refresh = useCallback(async (): Promise<AccountDto[] | null> => {
     const token = latest.current.begin();
     setLoading(true);
-    backend
-      .listAccounts()
-      .then((next) => {
-        if (!latest.current.isCurrent(token)) {
-          return;
-        }
-        setAccounts(next);
-        setLoadError(null);
-        setLoading(false);
-      })
-      .catch((caught: unknown) => {
-        if (!latest.current.isCurrent(token)) {
-          return;
-        }
-        setLoadError(
-          caught instanceof Error
-            ? caught.message
-            : ACCOUNTS_LOAD_FAILED,
-        );
-        setLoading(false);
-      });
+    try {
+      const next = await backend.listAccounts();
+      if (!latest.current.isCurrent(token)) {
+        return null;
+      }
+      setAccounts(next);
+      setLoadError(null);
+      setLoading(false);
+      return next;
+    } catch (caught: unknown) {
+      if (!latest.current.isCurrent(token)) {
+        return null;
+      }
+      setLoadError(
+        caught instanceof Error
+          ? caught.message
+          : ACCOUNTS_LOAD_FAILED,
+      );
+      setLoading(false);
+      return null;
+    }
   }, [backend]);
 
   useEffect(() => {
-    refresh();
+    void refresh();
   }, [refresh]);
 
   useEffect(() => {
-    const subscription = backend.subscribe(IPC_EVENTS.accountRegistryChanged, refresh);
+    const subscription = backend.subscribe(IPC_EVENTS.accountRegistryChanged, () => {
+      void refresh();
+    });
     return () => {
       void subscription.then((unlisten) => {
         unlisten();
