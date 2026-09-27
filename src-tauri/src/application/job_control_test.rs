@@ -1188,6 +1188,11 @@ async fn manual_source_401_requires_reauth_and_prevents_cached_token_resume() {
             .await
             .unwrap();
     assert_eq!(target_auth_status, "CONNECTED");
+    assert!(
+        env.events
+            .snapshot()
+            .contains(&crate::application::JobRuntimeEvent::AccountRegistryChanged)
+    );
     let requests_before_resume = env
         .captured
         .lock()
@@ -1271,6 +1276,11 @@ async fn auto_transfer_target_accept_401_requires_only_target_reauth() {
             .unwrap();
     assert_eq!(source_auth_status, "CONNECTED");
     assert_eq!(target_auth_status, "REAUTH_REQUIRED");
+    assert!(
+        env.events
+            .snapshot()
+            .contains(&crate::application::JobRuntimeEvent::AccountRegistryChanged)
+    );
     let requests_before_resume = env
         .captured
         .lock()
@@ -1823,6 +1833,11 @@ async fn startup_checkpoint_401_marks_only_the_token_role_and_evicts_its_cache()
             Some("401")
         );
         assert_ne!(item.updated_at, "stale-attempt");
+        assert!(
+            env.events
+                .snapshot()
+                .contains(&crate::application::JobRuntimeEvent::AccountRegistryChanged)
+        );
         let requests = env
             .captured
             .lock()

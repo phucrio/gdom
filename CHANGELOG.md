@@ -14,7 +14,7 @@ User-visible changes are recorded here. Version selection and release operations
 ### Fixes
 
 - Retry loading the custom OAuth client secret after unlocking the credential store, so existing accounts can refresh tokens without reopening sign-in or restarting the app.
-- Mark rejected Drive access tokens as requiring reauthentication; after system-browser recovery from My Drive load errors, reload the current folder with its latest sort order.
+- Mark rejected Drive access tokens as requiring reauthentication and immediately refresh the account registry; after system-browser recovery from My Drive load errors, reload the current folder with its latest sort order.
 - Clear stale job-level authentication warnings when a migration resumes successfully, while retaining per-item failure details.
 
 ### Upgrade actions and known limitations

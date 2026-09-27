@@ -3,6 +3,7 @@ import { useState } from "react";
 import { App } from "../src/App.tsx";
 import type { BackendPort } from "../src/ipc/port.ts";
 import type { AccountDto, DriveFileItemDto, JobDto, JobItemDto, UpdateStatusDto } from "../src/ipc/types.ts";
+import { IPC_EVENTS } from "../src/ipc/types.ts";
 
 const account = (id: string): AccountDto => ({ id, email: `${id}@gmail.com`, displayName: id,
   googlePermissionId: id, label: null, authStatus: "CONNECTED", connectedAt: "2026-09-07",
@@ -39,6 +40,9 @@ let jobRequests = 0;
 let releaseJob: (() => void) | null = null;
 const commands: string[] = [];
 function emit() { for (const callbacks of listeners.values()) for (const callback of callbacks) callback(); }
+function emitAccountRegistryChanged() {
+  for (const callback of listeners.get(IPC_EVENTS.accountRegistryChanged) ?? []) callback();
+}
 function unsupported(): never { throw new Error("Unsupported synthetic fixture command"); }
 const transition = async (command: string, status: JobDto["status"]) => {
   commands.push(command); current = { ...current, status }; emit(); return current;
@@ -175,7 +179,7 @@ function Fixture() {
       emit();
     },
     registryFailure(failure: boolean) { failAccounts = failure; setGeneration((value) => value + 1); },
-    disconnect() { source.authStatus = "DISCONNECTED"; emit(); },
+    markReauthRequired() { source.authStatus = "REAUTH_REQUIRED"; emitAccountRegistryChanged(); },
     holdJob() { delayJob = true; },
     releaseJob() { releaseJob?.(); releaseJob = null; },
   } });

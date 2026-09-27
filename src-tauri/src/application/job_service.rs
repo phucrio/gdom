@@ -704,7 +704,9 @@ where
         self.token_provider
             .mark_reauth_required(account_id)
             .await
-            .map_err(|error| JobServiceError::TokenError(error.to_string()))
+            .map_err(|error| JobServiceError::TokenError(error.to_string()))?;
+        self.emit(JobRuntimeEvent::AccountRegistryChanged);
+        Ok(())
     }
 
     async fn apply_checkpoint_auth_halt(
