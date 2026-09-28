@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { BackendPort } from "../ipc/port.ts";
 import type { AccountDto, DriveFileItemDto, JobDto } from "../ipc/types.ts";
 import { ContextMenu, type ContextMenuItemAction } from "./ContextMenu.tsx";
@@ -22,6 +22,7 @@ type DriveFileBrowserProps = {
   onAnnounce: (message: string) => void;
   onMigrationStarted: (job: JobDto) => void;
   onAddAccount: () => void;
+  onRefreshAccountStatus: (accountId: string) => Promise<AccountDto["authStatus"] | null>;
 };
 
 export function DriveFileBrowser({
@@ -31,6 +32,7 @@ export function DriveFileBrowser({
   onAnnounce,
   onMigrationStarted,
   onAddAccount,
+  onRefreshAccountStatus,
 }: DriveFileBrowserProps) {
   const [breadcrumbs, setBreadcrumbs] = useState<BreadcrumbItem[]>([
     { id: "root", name: "My Drive", resourceKey: null },
@@ -40,6 +42,8 @@ export function DriveFileBrowser({
   const [items, setItems] = useState<DriveFileItemDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reauthenticationRequired, setReauthenticationRequired] = useState(false);
+  const [reauthenticating, setReauthenticating] = useState(false);
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
 
@@ -94,10 +98,16 @@ export function DriveFileBrowser({
         if (activeReqIdRef.current !== reqId) return;
 
         setItems((prev) => (append ? [...prev, ...res.items] : res.items));
+        setReauthenticationRequired(false);
         setNextPageToken(res.nextPageToken);
       } catch (err: unknown) {
         if (activeReqIdRef.current !== reqId) return;
         const msg = err instanceof Error ? err.message : "Failed to load files.";
+        const authStatus = await onRefreshAccountStatus(account.id);
+        if (activeReqIdRef.current !== reqId) return;
+        const needsReauthentication =
+          authStatus === "REAUTH_REQUIRED" || authStatus === "DISCONNECTED";
+        setReauthenticationRequired(needsReauthentication);
         setError(msg);
       } finally {
         if (activeReqIdRef.current === reqId) {
@@ -106,8 +116,13 @@ export function DriveFileBrowser({
         }
       }
     },
-    [account.id, backend, sortField, sortOrder],
+    [account.id, backend, onRefreshAccountStatus, sortField, sortOrder],
   );
+  const latestBrowserViewRef = useRef({ folder: currentFolder, loadFolder });
+
+  useLayoutEffect(() => {
+    latestBrowserViewRef.current = { folder: currentFolder, loadFolder };
+  }, [currentFolder, loadFolder]);
 
   useEffect(() => {
     setSelectedIds(new Set());
@@ -120,6 +135,34 @@ export function DriveFileBrowser({
     setOwnerPickerOpen(false);
     void loadFolder(currentFolder);
   }, [currentFolder, loadFolder]);
+  const needsReauthentication =
+    reauthenticationRequired ||
+    account.authStatus === "REAUTH_REQUIRED" ||
+    account.authStatus === "DISCONNECTED";
+
+  async function retryFolderLoad() {
+    if (!needsReauthentication) {
+      await loadFolder(currentFolder);
+      return;
+    }
+
+    setReauthenticating(true);
+    onAnnounce(`Reauthenticating ${account.email} in the system browser…`);
+    try {
+      await backend.reauthenticateAccount(account.id);
+      setReauthenticationRequired(false);
+      onAnnounce(`Account ${account.email} reconnected. Reloading Drive files.`);
+      const latestBrowserView = latestBrowserViewRef.current;
+      await latestBrowserView.loadFolder(latestBrowserView.folder);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to reauthenticate account.";
+      setError(msg);
+      setReauthenticationRequired(true);
+      onAnnounce(msg);
+    } finally {
+      setReauthenticating(false);
+    }
+  }
 
   function handleSort(field: "name" | "modifiedTime") {
     if (sortField === field) {
@@ -379,9 +422,14 @@ export function DriveFileBrowser({
                   <button
                     type="button"
                     className="secondary-button"
-                    onClick={() => void loadFolder(currentFolder)}
+                    onClick={retryFolderLoad}
+                    disabled={reauthenticating}
                   >
-                    Retry
+                    {reauthenticating
+                      ? "Reauthenticating…"
+                      : needsReauthentication
+                        ? "Reauthenticate and retry"
+                        : "Retry"}
                   </button>
                 </td>
               </tr>

@@ -125,11 +125,20 @@ impl<AccountPersistence: AccountStorePort + Send + Sync + 'static>
         request: BrowseFolderRequest,
     ) -> Result<BrowserPage, DriveBrowserError> {
         let (account, token) = self.authorize_account(account_id).await?;
-        let page = self
-            .drive
-            .list_files(&token, &request)
-            .await
-            .map_err(DriveBrowserError::Drive)?;
+
+        let page = match self.drive.list_files(&token, &request).await {
+            Ok(page) => page,
+            Err(DriveFolderLookupError::Unauthorized) => {
+                self.token_provider
+                    .mark_reauth_required(account_id)
+                    .await
+                    .map_err(DriveBrowserError::Authorization)?;
+                return Err(DriveBrowserError::Drive(
+                    DriveFolderLookupError::Unauthorized,
+                ));
+            }
+            Err(error) => return Err(DriveBrowserError::Drive(error)),
+        };
         Ok(BrowserPage {
             items: page
                 .files

@@ -4,7 +4,9 @@ This file records release-refinement checks using synthetic account and file dat
 
 ## Automated browser scenarios
 
-`pnpm ui:qa` uses the local Vite fixture and bundled Playwright Chromium. It checks recipient selection before mutation, progress updates, pagination, recoverable errors, canary confirmation, pause/resume, account filtering, reconnect, and viewport containment at 375, 640, 768, 900, and 1280 px. It also asserts that the progress panel is not fixed, so it cannot cover workspace content.
+`pnpm ui:qa` uses local Vite fixtures and bundled Playwright Chromium. Its My Drive scenario verifies that a reauthentication-required listing opens the browser flow; cancellation stays retryable, and successful authorization reloads the folder.
+
+Existing fixtures check recipient selection before mutation, progress updates, pagination, recoverable errors, canary confirmation, pause/resume, account filtering, reconnect, and viewport containment at 375, 640, 768, 900, and 1280 px. They also assert that the progress panel is not fixed, so it cannot cover workspace content.
 
 The command writes screenshots to `GDOM_QA_OUTPUT` or the local temporary `gdom-progress-qa` directory. They are evidence artifacts and are intentionally not committed.
 

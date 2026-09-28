@@ -1,4 +1,9 @@
 {
   "extends": "./tsconfig.json",
-  "include": ["src", "scripts/progress-ui-fixture.tsx"]
+  "include": [
+    "src",
+    "scripts/progress-ui-fixture.tsx",
+    "scripts/drive-auth-qa-fixture.tsx",
+    "scripts/drive-auth-qa.d.ts"
+  ]
 }
