@@ -3,6 +3,7 @@ import { useState } from "react";
 import { App } from "../src/App.tsx";
 import type { BackendPort } from "../src/ipc/port.ts";
 import type { AccountDto, DriveFileItemDto, JobDto, JobItemDto, UpdateStatusDto } from "../src/ipc/types.ts";
+import { IPC_EVENTS } from "../src/ipc/types.ts";
 
 const account = (id: string): AccountDto => ({ id, email: `${id}@gmail.com`, displayName: id,
   googlePermissionId: id, label: null, authStatus: "CONNECTED", connectedAt: "2026-09-07",
@@ -23,7 +24,8 @@ let queueGate: Promise<void> | null = null;
 let releaseQueue: (() => void) | null = null;
 let items: JobItemDto[] = [0, 1].map((index) => ({ id: `item-${index}`, jobId: current.id,
   fileId: `file-${index}`, name: index === 0 ? "Report.pdf" : "Folder", mimeType: index === 0 ? "application/pdf" : "application/vnd.google-apps.folder",
-  depth: 0, originalParentIds: [], state: "ELIGIBLE", quotaBytesUsed: null }));
+  depth: 0, originalParentIds: [], state: "ELIGIBLE", quotaBytesUsed: null,
+  errorCode: null, errorReason: null, errorMessage: null }));
 const driveItem: DriveFileItemDto = {
   id: "drive-item-1", name: "release-notes.md", mimeType: "text/markdown", isFolder: false,
   folderId: null, size: 128, modifiedTime: "2026-09-07T00:00:00Z", owners: [], webViewLink: null,
@@ -38,6 +40,9 @@ let jobRequests = 0;
 let releaseJob: (() => void) | null = null;
 const commands: string[] = [];
 function emit() { for (const callbacks of listeners.values()) for (const callback of callbacks) callback(); }
+function emitAccountRegistryChanged() {
+  for (const callback of listeners.get(IPC_EVENTS.accountRegistryChanged) ?? []) callback();
+}
 function unsupported(): never { throw new Error("Unsupported synthetic fixture command"); }
 const transition = async (command: string, status: JobDto["status"]) => {
   commands.push(command); current = { ...current, status }; emit(); return current;
@@ -154,12 +159,27 @@ function Fixture() {
     setStatus(status: JobDto["status"], phase: JobDto["phase"] = "bulk") { current = { ...current, status, phase };
       if (status === "CANARY_REVIEW") {
         current.progress = { completed: 1, failed: 1, skipped: 0, total: 3, currentPath: null };
-        items.push({ id: "remaining", jobId: current.id, fileId: "remaining", name: "Remaining.pdf", mimeType: "application/pdf", depth: 0, originalParentIds: [], state: "ELIGIBLE", quotaBytesUsed: null });
+        items.push({ id: "remaining", jobId: current.id, fileId: "remaining", name: "Remaining.pdf", mimeType: "application/pdf", depth: 0, originalParentIds: [], state: "ELIGIBLE", quotaBytesUsed: null, errorCode: null, errorReason: null, errorMessage: null });
       }
       emit(); },
-    complete() { items = items.map((item, index) => ({ ...item, state: index === 0 ? "VERIFIED" : "PERMANENT_FAILED" })); current = { ...current, status: "COMPLETED_WITH_ERRORS", progress: { completed: 1, failed: 1, skipped: 0, total: 2, currentPath: null } }; emit(); },
+    complete() {
+      items = [
+        ...items.map((item, index) => ({
+          ...item,
+          state: index === 0 ? "VERIFIED" as const : "PERMANENT_FAILED" as const,
+          errorCode: null,
+          errorReason: null,
+          errorMessage: index === 1 ? "Google Drive denied access to the item." : null,
+        })),
+        { id: "item-2", jobId: current.id, fileId: "file-2", name: "NoDetails.txt", mimeType: "text/plain",
+          depth: 0, originalParentIds: [], state: "PERMANENT_FAILED", quotaBytesUsed: null,
+          errorCode: null, errorReason: null, errorMessage: null },
+      ];
+      current = { ...current, status: "COMPLETED_WITH_ERRORS", progress: { completed: 1, failed: 2, skipped: 0, total: 3, currentPath: null } };
+      emit();
+    },
     registryFailure(failure: boolean) { failAccounts = failure; setGeneration((value) => value + 1); },
-    disconnect() { source.authStatus = "DISCONNECTED"; emit(); },
+    markReauthRequired() { source.authStatus = "REAUTH_REQUIRED"; emitAccountRegistryChanged(); },
     holdJob() { delayJob = true; },
     releaseJob() { releaseJob?.(); releaseJob = null; },
   } });

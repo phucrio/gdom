@@ -103,6 +103,9 @@ const jobItem: JobItemDto = {
   originalParentIds: ["root-1"],
   state: "ELIGIBLE",
   quotaBytesUsed: 12,
+  errorCode: null,
+  errorReason: null,
+  errorMessage: null,
 };
 
 const itemsPage: JobItemsPage = {

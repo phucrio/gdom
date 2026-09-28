@@ -7,6 +7,7 @@ pub const EVENT_MIGRATION_PROGRESS: &str = "migration-progress";
 pub const EVENT_ITEM_STATE_CHANGED: &str = "item-state-changed";
 pub const EVENT_CANARY_COMPLETED: &str = "canary-completed";
 pub const EVENT_MIGRATION_COMPLETED: &str = "migration-completed";
+pub const EVENT_ACCOUNT_REGISTRY_CHANGED: &str = "account-registry-changed";
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,6 +80,7 @@ pub enum JobRuntimeEvent {
     MigrationCompleted {
         job_id: JobId,
     },
+    AccountRegistryChanged,
 }
 
 pub trait JobEventSink: Send + Sync {

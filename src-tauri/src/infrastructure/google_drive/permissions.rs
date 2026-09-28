@@ -4,12 +4,13 @@ use crate::application::AccessToken;
 use crate::application::drive_folder::DriveFolderOwner;
 use crate::application::drive_transfer::{
     DriveFileFuture, DriveFileSnapshot, DrivePermission, DrivePermissionFuture, DriveTransferError,
-    DriveTransferPort,
+    DriveTransferFailure, DriveTransferPort,
 };
 use crate::domain::GooglePermissionId;
 
 use super::{
-    GoogleDriveClient, GoogleDriveError, RawFileResponse, RawPermission, encode_path_segment,
+    GoogleDriveClient, GoogleDriveError, GoogleDriveResponseError, RawFileResponse, RawPermission,
+    encode_path_segment,
 };
 
 const FILE_FIELDS: &str = "id,name,mimeType,parents,owners(permissionId,emailAddress),trashed,driveId,quotaBytesUsed,size,permissions(id,type,role,emailAddress,pendingOwner)";
@@ -20,6 +21,26 @@ impl GoogleDriveClient {
         token: &AccessToken,
         file_id: &str,
     ) -> Result<DriveFileSnapshot, GoogleDriveError> {
+        self.get_file_response(token, file_id)
+            .await
+            .map_err(|failure| failure.error)
+    }
+
+    async fn get_file_for_transfer(
+        &self,
+        token: &AccessToken,
+        file_id: &str,
+    ) -> Result<DriveFileSnapshot, DriveTransferFailure> {
+        self.get_file_response(token, file_id)
+            .await
+            .map_err(DriveTransferFailure::from)
+    }
+
+    async fn get_file_response(
+        &self,
+        token: &AccessToken,
+        file_id: &str,
+    ) -> Result<DriveFileSnapshot, GoogleDriveResponseError> {
         let query = {
             let mut encoded = url::form_urlencoded::Serializer::new(String::new());
             encoded.append_pair("supportsAllDrives", "true");
@@ -37,14 +58,14 @@ impl GoogleDriveClient {
             .bearer_auth(token.expose_secret())
             .send()
             .await
-            .map_err(|_| GoogleDriveError::Transport)?;
+            .map_err(|_| GoogleDriveResponseError::from_error(GoogleDriveError::Transport))?;
         if !response.status().is_success() {
-            return Err(Self::error_from_response(response).await);
+            return Err(Self::response_error(response).await);
         }
         let raw = response
             .json::<RawFileResponse>()
             .await
-            .map_err(|_| GoogleDriveError::InvalidResponse)?;
+            .map_err(|_| GoogleDriveResponseError::from_error(GoogleDriveError::InvalidResponse))?;
         Ok(drive_file_snapshot_from_raw(raw))
     }
 
@@ -54,6 +75,28 @@ impl GoogleDriveClient {
         file_id: &str,
         email: &str,
     ) -> Result<DrivePermission, GoogleDriveError> {
+        self.create_pending_owner_response(token, file_id, email)
+            .await
+            .map_err(|failure| failure.error)
+    }
+
+    async fn create_pending_owner_for_transfer(
+        &self,
+        token: &AccessToken,
+        file_id: &str,
+        email: &str,
+    ) -> Result<DrivePermission, DriveTransferFailure> {
+        self.create_pending_owner_response(token, file_id, email)
+            .await
+            .map_err(DriveTransferFailure::from)
+    }
+
+    async fn create_pending_owner_response(
+        &self,
+        token: &AccessToken,
+        file_id: &str,
+        email: &str,
+    ) -> Result<DrivePermission, GoogleDriveResponseError> {
         let url = format!(
             "{}/drive/v3/files/{}/permissions?sendNotificationEmail=true&supportsAllDrives=true",
             self.base_url,
@@ -75,6 +118,28 @@ impl GoogleDriveClient {
         file_id: &str,
         permission_id: &str,
     ) -> Result<DrivePermission, GoogleDriveError> {
+        self.update_pending_owner_response(token, file_id, permission_id)
+            .await
+            .map_err(|failure| failure.error)
+    }
+
+    async fn update_pending_owner_for_transfer(
+        &self,
+        token: &AccessToken,
+        file_id: &str,
+        permission_id: &str,
+    ) -> Result<DrivePermission, DriveTransferFailure> {
+        self.update_pending_owner_response(token, file_id, permission_id)
+            .await
+            .map_err(DriveTransferFailure::from)
+    }
+
+    async fn update_pending_owner_response(
+        &self,
+        token: &AccessToken,
+        file_id: &str,
+        permission_id: &str,
+    ) -> Result<DrivePermission, GoogleDriveResponseError> {
         let url = format!(
             "{}/drive/v3/files/{}/permissions/{}?sendNotificationEmail=true&supportsAllDrives=true",
             self.base_url,
@@ -95,6 +160,28 @@ impl GoogleDriveClient {
         file_id: &str,
         permission_id: &str,
     ) -> Result<DrivePermission, GoogleDriveError> {
+        self.accept_ownership_response(token, file_id, permission_id)
+            .await
+            .map_err(|failure| failure.error)
+    }
+
+    async fn accept_ownership_for_transfer(
+        &self,
+        token: &AccessToken,
+        file_id: &str,
+        permission_id: &str,
+    ) -> Result<DrivePermission, DriveTransferFailure> {
+        self.accept_ownership_response(token, file_id, permission_id)
+            .await
+            .map_err(DriveTransferFailure::from)
+    }
+
+    async fn accept_ownership_response(
+        &self,
+        token: &AccessToken,
+        file_id: &str,
+        permission_id: &str,
+    ) -> Result<DrivePermission, GoogleDriveResponseError> {
         let url = format!(
             "{}/drive/v3/files/{}/permissions/{}?transferOwnership=true&supportsAllDrives=true",
             self.base_url,
@@ -111,27 +198,27 @@ impl GoogleDriveClient {
         token: &AccessToken,
         builder: reqwest::RequestBuilder,
         body: &B,
-    ) -> Result<DrivePermission, GoogleDriveError> {
+    ) -> Result<DrivePermission, GoogleDriveResponseError> {
         let response = builder
             .bearer_auth(token.expose_secret())
             .json(body)
             .send()
             .await
-            .map_err(|_| GoogleDriveError::Transport)?;
+            .map_err(|_| GoogleDriveResponseError::from_error(GoogleDriveError::Transport))?;
         if !response.status().is_success() {
-            return Err(Self::error_from_response(response).await);
+            return Err(Self::response_error(response).await);
         }
         let raw = response
             .json::<RawPermission>()
             .await
-            .map_err(|_| GoogleDriveError::InvalidResponse)?;
+            .map_err(|_| GoogleDriveResponseError::from_error(GoogleDriveError::InvalidResponse))?;
         Ok(drive_permission_from_raw(raw))
     }
 }
 
 impl DriveTransferPort for GoogleDriveClient {
     fn get_file<'a>(&'a self, token: &'a AccessToken, file_id: &'a str) -> DriveFileFuture<'a> {
-        Box::pin(async move { Ok(self.get_file(token, file_id).await?) })
+        Box::pin(async move { self.get_file_for_transfer(token, file_id).await })
     }
 
     fn create_pending_owner<'a>(
@@ -140,7 +227,10 @@ impl DriveTransferPort for GoogleDriveClient {
         file_id: &'a str,
         email: &'a str,
     ) -> DrivePermissionFuture<'a> {
-        Box::pin(async move { Ok(self.create_pending_owner(token, file_id, email).await?) })
+        Box::pin(async move {
+            self.create_pending_owner_for_transfer(token, file_id, email)
+                .await
+        })
     }
 
     fn update_pending_owner<'a>(
@@ -150,9 +240,8 @@ impl DriveTransferPort for GoogleDriveClient {
         permission_id: &'a str,
     ) -> DrivePermissionFuture<'a> {
         Box::pin(async move {
-            Ok(self
-                .update_pending_owner(token, file_id, permission_id)
-                .await?)
+            self.update_pending_owner_for_transfer(token, file_id, permission_id)
+                .await
         })
     }
 
@@ -162,7 +251,26 @@ impl DriveTransferPort for GoogleDriveClient {
         file_id: &'a str,
         permission_id: &'a str,
     ) -> DrivePermissionFuture<'a> {
-        Box::pin(async move { Ok(self.accept_ownership(token, file_id, permission_id).await?) })
+        Box::pin(async move {
+            self.accept_ownership_for_transfer(token, file_id, permission_id)
+                .await
+        })
+    }
+}
+
+impl From<GoogleDriveResponseError> for DriveTransferFailure {
+    fn from(failure: GoogleDriveResponseError) -> Self {
+        let kind = DriveTransferError::from(failure.error);
+        match failure.http_status {
+            Some(http_status) => Self::from_api_response(
+                kind,
+                http_status,
+                failure.google_status,
+                failure.reasons,
+                failure.message,
+            ),
+            None => Self::from(kind),
+        }
     }
 }
 

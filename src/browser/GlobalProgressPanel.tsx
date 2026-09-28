@@ -149,7 +149,10 @@ function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
                 const iconKind = getFileIconKind(item.name, item.mimeType, item.mimeType.includes("folder"));
                 const isVerified = item.state === "VERIFIED";
                 const isFailed = item.state.includes("FAILED");
+                const hasError = Boolean(item.errorCode || item.errorReason || item.errorMessage);
                 const isSkipped = item.state.includes("SKIPPED");
+                const errorSummary = [item.errorCode, item.errorReason].filter(Boolean).join(" · ")
+                  || (item.errorMessage ? "Error message" : "Failure details unavailable for this attempt");
                 return (
                   <div key={item.id} className="transfer-item-row" role="article">
                     <span className="item-icon"><FileTypeIcon kind={iconKind} /></span>
@@ -158,6 +161,10 @@ function ProgressPanel({ jobId, backend, onAnnounce, onRefreshJobs, onDismiss }:
                       <span className="item-state-label">
                         {item.state.toLowerCase().replace(/_/g, " ")}
                       </span>
+                      {(isFailed || hasError) && <details className="item-error-details">
+                        <summary>{errorSummary}</summary>
+                        {item.errorMessage && <p>{item.errorMessage}</p>}
+                      </details>}
                     </div>
                     <span className={`status-indicator ${isVerified ? "success" : isFailed ? "error" : isSkipped ? "skipped" : "pending"}`}>
                       {isVerified ? "✓" : isFailed ? "✕" : isSkipped ? "—" : "•"}

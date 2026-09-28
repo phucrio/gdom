@@ -465,6 +465,25 @@ async fn about_get_maps_insufficient_scope() {
 }
 
 #[tokio::test]
+async fn unauthorized_http_status_overrides_insufficient_permissions_reason() {
+    let body = r#"{
+        "error": {
+            "code": 401,
+            "message": "The access token is invalid.",
+            "status": "UNAUTHENTICATED",
+            "errors": [{"reason": "insufficientPermissions"}]
+        }
+    }"#;
+    let (base_url, _) = serve_once("401 Unauthorized", body);
+    let client = GoogleDriveClient::for_test(base_url).expect("test client");
+    let token = AccessToken::new(SECRET.to_owned());
+    let error = identify(&client, &token)
+        .await
+        .expect_err("401 requires authentication even with a contradictory reason");
+    assert_eq!(error, GoogleDriveError::Unauthorized);
+}
+
+#[tokio::test]
 async fn identity_lookup_port_surfaces_drive_api_not_enabled() {
     use crate::application::IdentityLookupError;
     use crate::application::IdentityLookupPort;

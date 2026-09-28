@@ -59,10 +59,20 @@ await page.getByRole("button", { name: "Expand migration details" }).click();
   // When completion arrives before that refresh rejects, drain its queued refresh.
   await page.evaluate(() => { window.progressQa.complete(); window.progressQa.failJob(false); window.progressQa.releaseJob(); });
   // Then the completed snapshot appears without another event or a manual retry.
-  await page.getByText("2 / 2 processed · 1 succeeded · 1 failed · 0 skipped", { exact: true }).waitFor({ timeout: 3000 });
-  await assertText("2 / 2 processed · 1 succeeded · 1 failed · 0 skipped");
+  await page.getByText("3 / 3 processed · 1 succeeded · 2 failed · 0 skipped", { exact: true }).waitFor({ timeout: 3000 });
+  await assertText("3 / 3 processed · 1 succeeded · 2 failed · 0 skipped");
   await assertText("verified");
   await assertText("permanent failed");
+  const failureSummary = page.getByText("Error message", { exact: true });
+  await failureSummary.waitFor();
+  await failureSummary.click();
+  await assertText("Google Drive denied access to the item.");
+  await page.getByRole("feed").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  const noDetailsRow = page.getByRole("article").filter({ hasText: "NoDetails.txt" });
+  await noDetailsRow.getByText("Failure details unavailable for this attempt", { exact: true }).waitFor();
   await page.waitForFunction(() => {
     const fill = document.querySelector(".progress-bar-fill");
     const track = document.querySelector(".progress-bar-bg");
@@ -143,8 +153,14 @@ await page.getByRole("button", { name: "Expand migration details" }).click();
   for (let frame = 0; frame < 3; frame += 1) await page.evaluate(() => new Promise(requestAnimationFrame));
   assert.equal(await page.evaluate(() => window.progressQa.jobRequests), requestsBeforeDisposalRelease, "Disposed snapshot must not drain queued requests");
   await page.locator(".global-transfer-panel").getByText("another@gmail.com", { exact: true }).waitFor();
-  await page.evaluate(() => window.progressQa.disconnect());
-  await page.getByRole("button", { name: "Account menu for source", exact: false }).click();
+  const accountMenu = page.getByRole("button", { name: "Account menu for source", exact: false });
+  await accountMenu.click();
+  assert.equal(await page.getByRole("menuitem", { name: "Reconnect account", exact: true }).count(), 0);
+  await accountMenu.click();
+  await page.evaluate(() => window.progressQa.markReauthRequired());
+  await accountMenu.click();
+  await page.getByRole("menuitem", { name: "Reconnect account", exact: true }).waitFor();
+  await page.screenshot({ path: join(output, "account-reauth-required.png"), fullPage: true });
   await page.getByRole("menuitem", { name: "Reconnect account", exact: true }).click();
   await page.waitForFunction(() => window.progressQa.commands.includes("reauthenticateAccount"));
   await page.evaluate(() => window.progressQa.registryFailure(true));
@@ -153,7 +169,7 @@ await page.getByRole("button", { name: "Expand migration details" }).click();
   assert.equal(await page.getByText("Sign in with Google", { exact: true }).count(), 0);
   await page.screenshot({ path: join(output, "registry-error.png"), fullPage: true });
   assert.deepEqual(errors, []);
-  console.log(`PASS: recipient confirmation, short-window progress, queued completion after rejection, loaded-error manual Retry, no failure retry loop, disposal, progress event refresh, pagination, counters, cancel confirmation, scan pause/resume, halted resume, canary approval, account filter, reconnect and registry errors. Screenshots: ${output}`);
+  console.log(`PASS: recipient confirmation, short-window progress, queued completion after rejection, loaded-error manual Retry, no failure retry loop, disposal, progress event refresh, pagination, counters, cancel confirmation, scan pause/resume, halted resume, canary approval, account filter, reauth notification, reconnect and registry errors. Screenshots: ${output}`);
 } finally {
   await browser.close();
   await server.close();

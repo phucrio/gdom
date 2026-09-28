@@ -236,7 +236,7 @@ pub(crate) async fn collect_roots(
             .get_file(run.source_token, &root.root_file_id)
             .await
             .map_err(|error| {
-                ScanError::Drive(match error {
+                ScanError::Drive(match error.kind() {
                     crate::application::drive_transfer::DriveTransferError::Unauthorized => {
                         DriveTreeError::Unauthorized
                     }
@@ -293,6 +293,7 @@ pub(crate) async fn collect_roots(
             target_permission_id: None,
             state: disposition.item_state(),
             canary_selected: false,
+            last_error: None,
             created_at: now.clone(),
             updated_at: now.clone(),
         });
@@ -347,6 +348,7 @@ async fn apply_page(
             target_permission_id: None,
             state: disposition.item_state(),
             canary_selected: false,
+            last_error: None,
             created_at: now.clone(),
             updated_at: now.clone(),
         });

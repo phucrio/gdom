@@ -155,7 +155,7 @@ impl DriveTransferPort for MockDrive {
         _file_id: &'a str,
         _email: &'a str,
     ) -> DrivePermissionFuture<'a> {
-        Box::pin(async { Err(DriveTransferError::UnexpectedStatus(501)) })
+        Box::pin(async { Err(DriveTransferError::UnexpectedStatus(501).into()) })
     }
 
     fn update_pending_owner<'a>(
@@ -164,7 +164,7 @@ impl DriveTransferPort for MockDrive {
         _file_id: &'a str,
         _permission_id: &'a str,
     ) -> DrivePermissionFuture<'a> {
-        Box::pin(async { Err(DriveTransferError::UnexpectedStatus(501)) })
+        Box::pin(async { Err(DriveTransferError::UnexpectedStatus(501).into()) })
     }
 
     fn accept_ownership<'a>(
@@ -173,7 +173,7 @@ impl DriveTransferPort for MockDrive {
         _file_id: &'a str,
         _permission_id: &'a str,
     ) -> DrivePermissionFuture<'a> {
-        Box::pin(async { Err(DriveTransferError::UnexpectedStatus(501)) })
+        Box::pin(async { Err(DriveTransferError::UnexpectedStatus(501).into()) })
     }
 }
 

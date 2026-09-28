@@ -721,8 +721,13 @@ impl MigrationJob {
             JobStatus::RunningCanary
             | JobStatus::Running
             | JobStatus::Pausing
-            | JobStatus::Cancelling => {
+            | JobStatus::Cancelling
+            | JobStatus::Paused
+            | JobStatus::Queued
+            | JobStatus::SourceRateLimited
+            | JobStatus::WaitingForQuota => {
                 self.status = JobStatus::AuthRequired;
+                self.queue_position = None;
                 self.last_error = Some(error);
                 Ok(())
             }
@@ -731,14 +736,10 @@ impl MigrationJob {
             | JobStatus::Scanning
             | JobStatus::ReadyForReview
             | JobStatus::CanaryReview
-            | JobStatus::Queued
-            | JobStatus::Paused
             | JobStatus::Cancelled
             | JobStatus::Completed
             | JobStatus::CompletedWithErrors
-            | JobStatus::Failed
-            | JobStatus::SourceRateLimited
-            | JobStatus::WaitingForQuota => Err(JobError::IllegalTransition),
+            | JobStatus::Failed => Err(JobError::IllegalTransition),
         }
     }
 
@@ -781,6 +782,7 @@ impl MigrationJob {
                     JobStatus::Running
                 };
                 self.queue_position = None;
+                self.last_error = None;
                 Ok(())
             }
             JobStatus::RunningCanary if as_canary => Ok(()),
@@ -1216,6 +1218,58 @@ mod tests {
         assert_eq!(job.status(), JobStatus::Cancelled);
         assert_eq!(job.cancel_job("2026-09-05T03:01:00Z".to_string()), Ok(()));
     }
+
+    #[test]
+    fn resuming_after_auth_required_clears_stale_job_error() {
+        let mut job = job_ready_for_review();
+        job.start_canary().expect("canary starts");
+        job.require_auth("invalid authentication credentials".into())
+            .expect("auth failure pauses canary");
+
+        job.resume_transfer(true).expect("canary resumes");
+
+        assert_eq!(job.status(), JobStatus::RunningCanary);
+        assert_eq!(job.last_error(), None);
+    }
+
+    #[test]
+    fn auth_halt_accepts_every_resumable_state_and_clears_queue_position() {
+        for initial_status in [
+            JobStatus::Paused,
+            JobStatus::Queued,
+            JobStatus::SourceRateLimited,
+            JobStatus::WaitingForQuota,
+        ] {
+            let mut job = job_ready_for_review();
+            job.start_canary().expect("canary starts");
+            match initial_status {
+                JobStatus::Paused => job.pause_transfer().expect("canary pauses"),
+                JobStatus::Queued => {
+                    job.pause_transfer().expect("canary pauses");
+                    job.enqueue(1).expect("paused job queues");
+                }
+                JobStatus::SourceRateLimited => job
+                    .pause_sharing_rate_limit("sharing limit".into())
+                    .expect("canary pauses for sharing rate limit"),
+                JobStatus::WaitingForQuota => job
+                    .wait_for_quota("quota limit".into())
+                    .expect("canary pauses for quota"),
+                _ => unreachable!("only resumable pause states are exercised"),
+            }
+            assert_eq!(job.status(), initial_status);
+
+            job.require_auth("Drive access token was rejected".into())
+                .expect("resumable job halts for authentication");
+
+            assert_eq!(job.status(), JobStatus::AuthRequired);
+            assert_eq!(job.queue_position(), None);
+            assert_eq!(
+                job.last_error(),
+                Some("Drive access token was rejected")
+            );
+        }
+    }
+
 
     #[test]
     fn start_bulk_from_paused_canary_is_illegal() {

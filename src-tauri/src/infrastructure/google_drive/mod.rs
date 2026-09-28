@@ -25,11 +25,38 @@ const BROWSE_LIST_FIELDS: &str = "nextPageToken,files(id,name,mimeType,parents,o
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const USER_AGENT: &str = concat!("gdom/", env!("CARGO_PKG_VERSION"));
 const LIST_PAGE_SIZE: &str = "1000";
+const MAX_ERROR_LOG_CHARS: usize = 2_048;
+
+fn redacted_log_detail(value: &str) -> String {
+    gdom_logs::redact_secrets(value)
+        .chars()
+        .take(MAX_ERROR_LOG_CHARS)
+        .collect()
+}
 
 #[derive(Clone)]
 pub struct GoogleDriveClient {
     client: reqwest::Client,
     base_url: String,
+}
+pub(super) struct GoogleDriveResponseError {
+    error: GoogleDriveError,
+    http_status: Option<u16>,
+    google_status: Option<String>,
+    reasons: Vec<String>,
+    message: Option<String>,
+}
+
+impl GoogleDriveResponseError {
+    pub(super) fn from_error(error: GoogleDriveError) -> Self {
+        Self {
+            error,
+            http_status: None,
+            google_status: None,
+            reasons: Vec::new(),
+            message: None,
+        }
+    }
 }
 
 impl GoogleDriveClient {
@@ -336,17 +363,33 @@ impl GoogleDriveClient {
     }
 
     async fn error_from_response(response: reqwest::Response) -> GoogleDriveError {
+        Self::response_error(response).await.error
+    }
+
+    pub(super) async fn response_error(response: reqwest::Response) -> GoogleDriveResponseError {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        let error = GoogleDriveError::from_status_and_body(status, &body);
         let context = parse_google_error(&body);
+        let error = GoogleDriveError::from_status_and_context(status, &context);
+        let google_status = context
+            .status
+            .as_deref()
+            .map(redacted_log_detail)
+            .unwrap_or_default();
+        let reasons = redacted_log_detail(&context.reasons.join(","));
         tracing::warn!(
             status = status.as_u16(),
-            google_status = context.status.as_deref().unwrap_or(""),
-            reasons = %context.reasons.join(","),
+            google_status = %google_status,
+            reasons = %reasons,
             "Google Drive request was rejected"
         );
-        error
+        GoogleDriveResponseError {
+            error,
+            http_status: Some(status.as_u16()),
+            google_status: context.status,
+            reasons: context.reasons,
+            message: context.message,
+        }
     }
 }
 
@@ -639,8 +682,11 @@ impl GoogleDriveError {
         }
     }
 
-    fn from_status_and_body(status: StatusCode, body: &str) -> Self {
-        let context = parse_google_error(body);
+    fn from_status_and_context(status: StatusCode, context: &GoogleErrorContext) -> Self {
+        if status.as_u16() == 401 {
+            return Self::Unauthorized;
+        }
+
         for reason in &context.reasons {
             match reason.as_str() {
                 "sharingRateLimitExceeded" => return Self::SharingRateLimitExceeded,
@@ -833,5 +879,22 @@ impl From<GoogleDriveError> for IdentityLookupError {
             GoogleDriveError::InvalidResponse => Self::InvalidResponse,
             GoogleDriveError::UnexpectedStatus(status) => Self::UnexpectedStatus(status),
         }
+    }
+}
+#[cfg(test)]
+mod log_detail_tests {
+    use super::{MAX_ERROR_LOG_CHARS, redacted_log_detail};
+
+    #[test]
+    fn response_log_details_are_redacted_and_bounded() {
+        let input = format!(
+            "Authorization: Bearer secret-token {}",
+            "x".repeat(MAX_ERROR_LOG_CHARS * 2)
+        );
+
+        let logged = redacted_log_detail(&input);
+
+        assert_eq!(logged.chars().count(), MAX_ERROR_LOG_CHARS);
+        assert!(!logged.contains("secret-token"));
     }
 }

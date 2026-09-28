@@ -7,10 +7,11 @@
 use tauri::{AppHandle, Emitter};
 
 use crate::application::job_events::{
-    EVENT_CANARY_COMPLETED, EVENT_ITEM_STATE_CHANGED, EVENT_JOB_LIST_CHANGED,
-    EVENT_JOB_STATUS_CHANGED, EVENT_MIGRATION_COMPLETED, EVENT_MIGRATION_PROGRESS,
-    EVENT_SCAN_PROGRESS, ItemStateChangedPayload, JobEventSink, JobIdPayload, JobRuntimeEvent,
-    JobStatusChangedPayload, MigrationProgressPayload, ScanProgressPayload, job_id_key,
+    EVENT_ACCOUNT_REGISTRY_CHANGED, EVENT_CANARY_COMPLETED, EVENT_ITEM_STATE_CHANGED,
+    EVENT_JOB_LIST_CHANGED, EVENT_JOB_STATUS_CHANGED, EVENT_MIGRATION_COMPLETED,
+    EVENT_MIGRATION_PROGRESS, EVENT_SCAN_PROGRESS, ItemStateChangedPayload, JobEventSink,
+    JobIdPayload, JobRuntimeEvent, JobStatusChangedPayload, MigrationProgressPayload,
+    ScanProgressPayload, job_id_key,
 };
 
 pub struct TauriJobEventSink {
@@ -26,6 +27,9 @@ impl TauriJobEventSink {
 impl JobEventSink for TauriJobEventSink {
     fn emit(&self, event: JobRuntimeEvent) {
         let result = match event {
+            JobRuntimeEvent::AccountRegistryChanged => {
+                self.app.emit(EVENT_ACCOUNT_REGISTRY_CHANGED, ())
+            }
             JobRuntimeEvent::JobStatusChanged { job_id, status } => self.app.emit(
                 EVENT_JOB_STATUS_CHANGED,
                 JobStatusChangedPayload {
@@ -99,13 +103,14 @@ impl JobEventSink for TauriJobEventSink {
 #[cfg(test)]
 mod tests {
     use super::{
-        EVENT_CANARY_COMPLETED, EVENT_ITEM_STATE_CHANGED, EVENT_JOB_LIST_CHANGED,
-        EVENT_JOB_STATUS_CHANGED, EVENT_MIGRATION_COMPLETED, EVENT_MIGRATION_PROGRESS,
-        EVENT_SCAN_PROGRESS,
+        EVENT_ACCOUNT_REGISTRY_CHANGED, EVENT_CANARY_COMPLETED, EVENT_ITEM_STATE_CHANGED,
+        EVENT_JOB_LIST_CHANGED, EVENT_JOB_STATUS_CHANGED, EVENT_MIGRATION_COMPLETED,
+        EVENT_MIGRATION_PROGRESS, EVENT_SCAN_PROGRESS,
     };
 
     #[test]
     fn event_names_match_plan_and_frontend_contract() {
+        assert_eq!(EVENT_ACCOUNT_REGISTRY_CHANGED, "account-registry-changed");
         assert_eq!(EVENT_JOB_STATUS_CHANGED, "job-status-changed");
         assert_eq!(EVENT_JOB_LIST_CHANGED, "job-list-changed");
         assert_eq!(EVENT_SCAN_PROGRESS, "scan-progress");

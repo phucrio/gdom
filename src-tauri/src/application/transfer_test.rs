@@ -10,9 +10,10 @@ use crate::application::backoff::{Sleeper, ZeroJitter};
 use crate::application::item_store::ItemStorePort;
 use crate::application::job_store::JobStorePort;
 use crate::application::transfer::{
-    TransferHalt, TransferRun, execute_auto_transfer, execute_bulk, execute_canary,
+    TransferAccountRole, TransferHalt, TransferRun, execute_auto_transfer, execute_bulk,
+    execute_canary,
 };
-use crate::domain::item::{ItemId, ItemState, MigrationItem};
+use crate::domain::item::{ItemErrorDetails, ItemId, ItemState, MigrationItem};
 use crate::domain::job::{
     AccountSnapshot, JobId, JobStatus, MigrationJob, MigrationRoot, RootId, RootValidationStatus,
 };
@@ -59,12 +60,14 @@ struct DriveScript {
     already_owned: Mutex<HashSet<String>>,
     writer_without_pending: Mutex<HashSet<String>>,
     trash_on_source_get: Mutex<HashSet<String>>,
+    shared_drive_on_source_get: Mutex<HashSet<String>>,
     not_found_on_source_get: Mutex<HashSet<String>>,
     trash_on_target_get: Mutex<HashSet<String>>,
     remaining_failures: AtomicUsize,
     fail_status: Mutex<String>,
     fail_body: Mutex<String>,
     fail_on_verify_only: Mutex<bool>,
+    fail_on_accept: Mutex<bool>,
 }
 
 impl DriveScript {
@@ -75,11 +78,13 @@ impl DriveScript {
             writer_without_pending: Mutex::new(HashSet::new()),
             trash_on_source_get: Mutex::new(HashSet::new()),
             not_found_on_source_get: Mutex::new(HashSet::new()),
+            shared_drive_on_source_get: Mutex::new(HashSet::new()),
             trash_on_target_get: Mutex::new(HashSet::new()),
             remaining_failures: AtomicUsize::new(0),
             fail_status: Mutex::new("429 Too Many Requests".into()),
             fail_body: Mutex::new("{}".into()),
             fail_on_verify_only: Mutex::new(false),
+            fail_on_accept: Mutex::new(false),
         }
     }
 }
@@ -141,7 +146,20 @@ fn handle_drive(script: &DriveScript, request: &str) -> (String, String) {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let is_verify_get =
         method == "GET" && !is_permissions_request(path) && bearer.contains(TARGET_TOKEN);
-    let should_fail = if verify_only { is_verify_get } else { true };
+    let is_accept = method == "PATCH"
+        && is_permissions_request(path)
+        && query_param(request, "transferOwnership").as_deref() == Some("true");
+    let fail_on_accept = *script
+        .fail_on_accept
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let should_fail = if fail_on_accept {
+        is_accept
+    } else if verify_only {
+        is_verify_get
+    } else {
+        true
+    };
     if should_fail && script.remaining_failures.load(Ordering::SeqCst) > 0 {
         script.remaining_failures.fetch_sub(1, Ordering::SeqCst);
         let status = script
@@ -201,16 +219,26 @@ fn handle_drive(script: &DriveScript, request: &str) -> (String, String) {
         } else {
             SOURCE_PERM
         };
-        return (
-            "200 OK".into(),
-            file_json(
-                &file_id,
-                owner,
-                transferred,
-                writer_without_pending && !transferred,
-                trash_on_source || trash_on_target,
-            ),
+        let mut body = file_json(
+            &file_id,
+            owner,
+            transferred,
+            writer_without_pending && !transferred,
+            trash_on_source || trash_on_target,
         );
+        if is_source_get
+            && script
+                .shared_drive_on_source_get
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&file_id)
+        {
+            body = body.replace(
+                "\"trashed\":",
+                "\"driveId\":\"shared-drive-id\",\"trashed\":",
+            );
+        }
+        return ("200 OK".into(), body);
     }
 
     if method == "POST" && is_permissions_request(path) {
@@ -309,6 +337,7 @@ fn eligible_item(job_id: JobId, id: u128, file_id: &str, depth: i64) -> Migratio
         target_permission_id: None,
         state: ItemState::Eligible,
         canary_selected: false,
+        last_error: None,
         created_at: "t".into(),
         updated_at: "t".into(),
     }
@@ -752,6 +781,69 @@ async fn retryable_errors_use_backoff_without_wall_clock_sleep() {
 }
 
 #[tokio::test]
+async fn permanent_drive_error_is_saved_per_item_with_sanitized_audit_detail() {
+    let fixture = setup(1, vec![("failure-file", 0)]).await;
+    *fixture
+        .script
+        .fail_on_accept
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+    fixture.script.remaining_failures.store(1, Ordering::SeqCst);
+    *fixture
+        .script
+        .fail_status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = "403 Forbidden".into();
+    *fixture
+        .script
+        .fail_body
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        r#"{"error":{"code":403,"message":"Access denied; access_token=hidden-token","errors":[{"reason":"insufficientFilePermissions"}],"status":"PERMISSION_DENIED"}}"#.into();
+
+    let mut job = fixture.job.clone();
+    execute_auto_transfer(&run_of(&fixture), &mut job)
+        .await
+        .expect("synthetic Drive failure is finalized");
+
+    assert_eq!(job.status(), JobStatus::CompletedWithErrors);
+    let page = fixture
+        .store
+        .list_items_page(job.id(), None, 1, 10)
+        .await
+        .expect("item details reload");
+    let failed = &page.items[0];
+    assert_eq!(failed.state, ItemState::PermanentFailed);
+    let details = failed.last_error.as_ref().expect("saved item error");
+    assert_eq!(details.code.as_deref(), Some("403"));
+    assert_eq!(
+        details.reason.as_deref(),
+        Some("PERMISSION_DENIED: insufficientFilePermissions")
+    );
+    assert!(
+        details
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("Access denied")
+    );
+    assert!(!details.message.as_deref().unwrap().contains("hidden-token"));
+
+    let event = sqlx::query(
+        "SELECT sanitized_detail_json FROM migration_events
+         WHERE job_id = ?1 AND file_id = ?2 AND new_state = 'PERMANENT_FAILED'",
+    )
+    .bind(job.id().value().to_string())
+    .bind("failure-file")
+    .fetch_one(fixture.store.pool())
+    .await
+    .expect("per-item failure event");
+    let detail: String = sqlx::Row::get(&event, "sanitized_detail_json");
+    assert!(detail.contains("insufficientFilePermissions"));
+    assert!(!detail.contains("hidden-token"));
+}
+
+#[tokio::test]
 async fn sharing_rate_limit_pauses_without_fast_retry() {
     let fixture = setup(2, vec![("deep-file", 2), ("root-folder", 0)]).await;
     fixture
@@ -1022,6 +1114,11 @@ async fn retryable_failed_trashed_on_reconcile_skips_and_continues() {
         .find(|item| item.file_id == "retry-file")
         .expect("retry-file");
     retry.state = ItemState::RetryableFailed;
+    retry.last_error = Some(ItemErrorDetails {
+        code: Some("503".into()),
+        reason: Some("serverUnavailable".into()),
+        message: Some("Previous attempt failed.".into()),
+    });
     fixture.store.save_item(&retry).await.expect("seed retry");
     fixture
         .script
@@ -1042,10 +1139,275 @@ async fn retryable_failed_trashed_on_reconcile_skips_and_continues() {
         .await
         .expect("items")
         .items;
+    let historical_detail: String = sqlx::query_scalar(
+        "SELECT sanitized_detail_json FROM migration_events
+         WHERE job_id = ?1 AND file_id = ?2 AND new_state = 'RETRYABLE_FAILED'",
+    )
+    .bind(job.id().value().to_string())
+    .bind("retry-file")
+    .fetch_one(fixture.store.pool())
+    .await
+    .expect("historical failure remains in audit");
+    assert!(historical_detail.contains("Previous attempt failed."));
     let by_id: std::collections::HashMap<_, _> = items
         .into_iter()
-        .map(|item| (item.file_id.clone(), item.state))
+        .map(|item| (item.file_id.clone(), item))
         .collect();
-    assert_eq!(by_id["retry-file"], ItemState::SkippedTrashed);
-    assert_eq!(by_id["keep-file"], ItemState::Verified);
+    let skipped = &by_id["retry-file"];
+    assert_eq!(skipped.state, ItemState::SkippedTrashed);
+    assert!(skipped.last_error.is_none());
+    assert_eq!(by_id["keep-file"].state, ItemState::Verified);
+
+    let skip_detail: String = sqlx::query_scalar(
+        "SELECT sanitized_detail_json FROM migration_events
+         WHERE job_id = ?1 AND file_id = ?2 AND new_state = 'SKIPPED_TRASHED'",
+    )
+    .bind(job.id().value().to_string())
+    .bind("retry-file")
+    .fetch_one(fixture.store.pool())
+    .await
+    .expect("skip transition is audited");
+    assert_eq!(skip_detail, r#"{"error":null}"#);
+}
+
+#[tokio::test]
+async fn retryable_failed_shared_drive_on_reconcile_clears_current_error() {
+    let fixture = setup(1, vec![("shared-file", 1)]).await;
+    let mut retry = fixture
+        .store
+        .list_items_for_transfer(fixture.job.id())
+        .await
+        .expect("items")
+        .remove(0);
+    retry.state = ItemState::RetryableFailed;
+    retry.last_error = Some(ItemErrorDetails {
+        code: Some("503".into()),
+        reason: Some("serverUnavailable".into()),
+        message: Some("Previous attempt failed.".into()),
+    });
+    fixture.store.save_item(&retry).await.expect("seed retry");
+    fixture
+        .script
+        .shared_drive_on_source_get
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert("shared-file".into());
+
+    let mut job = job_with_status(&fixture.job, JobStatus::CanaryReview);
+    let halt = execute_bulk(&run_of(&fixture), &mut job)
+        .await
+        .expect("shared-drive item is skipped");
+    assert!(matches!(halt, TransferHalt::Exhausted { verified: 0, .. }));
+
+    let skipped = fixture
+        .store
+        .list_items_page(job.id(), None, 1, 10)
+        .await
+        .expect("skipped item")
+        .items
+        .remove(0);
+    assert_eq!(skipped.state, ItemState::SkippedSharedDrive);
+    assert!(skipped.last_error.is_none());
+}
+
+#[tokio::test]
+async fn verify_trash_skip_clears_prior_error() {
+    let fixture = setup(1, vec![("verify-trash-file", 1)]).await;
+    let mut retry = fixture
+        .store
+        .list_items_for_transfer(fixture.job.id())
+        .await
+        .expect("items")
+        .remove(0);
+    retry.state = ItemState::RetryableFailed;
+    retry.last_error = Some(ItemErrorDetails {
+        code: Some("503".into()),
+        reason: Some("serverUnavailable".into()),
+        message: Some("Previous attempt failed.".into()),
+    });
+    fixture.store.save_item(&retry).await.expect("seed retry");
+    fixture
+        .script
+        .already_owned
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert("verify-trash-file".into());
+    fixture
+        .script
+        .trash_on_target_get
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert("verify-trash-file".into());
+
+    let mut job = job_with_status(&fixture.job, JobStatus::CanaryReview);
+    let halt = execute_bulk(&run_of(&fixture), &mut job)
+        .await
+        .expect("verification finds item in trash");
+    assert!(matches!(halt, TransferHalt::Exhausted { verified: 0, .. }));
+
+    let skipped = fixture
+        .store
+        .list_items_page(job.id(), None, 1, 10)
+        .await
+        .expect("skipped item")
+        .items
+        .remove(0);
+    assert_eq!(skipped.state, ItemState::SkippedTrashed);
+    assert!(skipped.last_error.is_none());
+}
+
+#[tokio::test]
+async fn diagnostic_only_halt_stamps_the_current_attempt_time() {
+    let fixture = setup(1, vec![("auth-file", 1)]).await;
+    let mut retry = fixture
+        .store
+        .list_items_for_transfer(fixture.job.id())
+        .await
+        .expect("items")
+        .remove(0);
+    retry.state = ItemState::RetryableFailed;
+    retry.updated_at = "stale-attempt".into();
+    fixture
+        .store
+        .save_item(&retry)
+        .await
+        .expect("seed stale retry");
+    *fixture
+        .script
+        .fail_status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = "401 Unauthorized".into();
+    *fixture
+        .script
+        .fail_body
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = "{}".into();
+    fixture.script.remaining_failures.store(1, Ordering::SeqCst);
+
+    let mut job = job_with_status(&fixture.job, JobStatus::CanaryReview);
+    let halt = execute_bulk(&run_of(&fixture), &mut job)
+        .await
+        .expect("authorization halt is persisted");
+    assert!(matches!(halt, TransferHalt::AuthRequired { .. }));
+
+    let item = fixture
+        .store
+        .list_items_page(job.id(), None, 1, 10)
+        .await
+        .expect("item detail")
+        .items
+        .remove(0);
+    let audit_time: String = sqlx::query_scalar(
+        "SELECT created_at FROM migration_events
+         WHERE job_id = ?1 AND file_id = ?2 AND event_type = 'ITEM_ERROR'",
+    )
+    .bind(job.id().value().to_string())
+    .bind("auth-file")
+    .fetch_one(fixture.store.pool())
+    .await
+    .expect("diagnostic-only audit event");
+    assert_ne!(audit_time, "stale-attempt");
+    assert_eq!(audit_time, item.updated_at);
+}
+
+#[tokio::test]
+async fn auth_halt_roles_follow_accept_and_verify_phases() {
+    let accept_fixture = setup(1, vec![("accept-file", 1)]).await;
+    *accept_fixture
+        .script
+        .fail_on_accept
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+    *accept_fixture
+        .script
+        .fail_status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = "401 Unauthorized".into();
+    accept_fixture
+        .script
+        .remaining_failures
+        .store(1, Ordering::SeqCst);
+    let mut accept_job = accept_fixture.job.clone();
+    let accept_halt = execute_canary(&run_of(&accept_fixture), &mut accept_job)
+        .await
+        .expect("accept auth halt");
+    assert!(matches!(
+        accept_halt,
+        TransferHalt::AuthRequired {
+            account_role: TransferAccountRole::Target,
+            ..
+        }
+    ));
+
+    let verify_fixture = setup(1, vec![("verify-file", 1)]).await;
+    *verify_fixture
+        .script
+        .fail_on_verify_only
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+    *verify_fixture
+        .script
+        .fail_status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = "401 Unauthorized".into();
+    verify_fixture
+        .script
+        .remaining_failures
+        .store(1, Ordering::SeqCst);
+    let mut verify_job = verify_fixture.job.clone();
+    let verify_halt = execute_canary(&run_of(&verify_fixture), &mut verify_job)
+        .await
+        .expect("verify auth halt");
+    assert!(matches!(
+        verify_halt,
+        TransferHalt::AuthRequired {
+            account_role: TransferAccountRole::Target,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn checkpoint_reconcile_clears_errors_when_item_is_trashed() {
+    let fixture = setup(1, vec![("checkpoint-file", 1)]).await;
+    let mut checkpoint = fixture
+        .store
+        .list_items_for_transfer(fixture.job.id())
+        .await
+        .expect("items")
+        .remove(0);
+    checkpoint.state = ItemState::Transferred;
+    checkpoint.last_error = Some(ItemErrorDetails {
+        code: Some("401".into()),
+        reason: Some("unauthorized".into()),
+        message: Some("Earlier authorization failure.".into()),
+    });
+    fixture
+        .store
+        .save_item(&checkpoint)
+        .await
+        .expect("seed checkpoint");
+    fixture
+        .script
+        .trash_on_target_get
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert("checkpoint-file".into());
+
+    crate::application::transfer::reconcile_checkpoint(
+        &run_of(&fixture),
+        std::slice::from_ref(&checkpoint),
+    )
+    .await
+    .expect("checkpoint reconciliation");
+
+    let skipped = fixture
+        .store
+        .list_items_page(fixture.job.id(), None, 1, 10)
+        .await
+        .expect("reconciled item")
+        .items
+        .remove(0);
+    assert_eq!(skipped.state, ItemState::SkippedTrashed);
+    assert!(skipped.last_error.is_none());
 }

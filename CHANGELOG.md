@@ -9,11 +9,13 @@ User-visible changes are recorded here. Version selection and release operations
 - Check for signed stable updates at startup or from **Check for updates**, including before sign-in. Review version and release notes, confirm download, then confirm installation and restart.
 - Defer installation while migration work is active so persisted checkpoints and account data are preserved.
 - Build Windows, macOS and Linux desktop packages for x64 and ARM64. Store refresh tokens in each operating system's secure credential store.
+- Save sanitized per-item Drive error codes, reasons and messages locally; expose details in migration progress and exported reports.
 
 ### Fixes
 
 - Retry loading the custom OAuth client secret after unlocking the credential store, so existing accounts can refresh tokens without reopening sign-in or restarting the app.
-- Mark rejected Drive access tokens as requiring reauthentication; after system-browser recovery from My Drive load errors, reload the current folder with its latest sort order.
+- Mark rejected Drive access tokens as requiring reauthentication and immediately refresh the account registry; after system-browser recovery from My Drive load errors, reload the current folder with its latest sort order.
+- Clear stale job-level authentication warnings when a migration resumes successfully, while retaining per-item failure details.
 
 ### Upgrade actions and known limitations
 

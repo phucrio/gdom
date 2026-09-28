@@ -79,6 +79,7 @@ fn eligible_item(job_id: JobId, id: u128, file_id: &str, depth: i64) -> Migratio
         target_permission_id: None,
         state: ItemState::Eligible,
         canary_selected: false,
+        last_error: None,
         created_at: "t".into(),
         updated_at: "t".into(),
     }
@@ -1135,6 +1136,286 @@ async fn sharing_rate_limit_persists_without_fast_retry_and_releases_lease() {
 }
 
 #[tokio::test]
+async fn manual_source_401_requires_reauth_and_prevents_cached_token_resume() {
+    let env = build_env(|request| {
+        if request_method(request) == Some("GET") {
+            ("401 Unauthorized".into(), "{}".into())
+        } else {
+            panic!("source 401 must stop before a permission mutation: {request}");
+        }
+    })
+    .await;
+    let job = seed_ready_job(
+        &env.job_store,
+        61,
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
+    )
+    .await;
+    env.job_store
+        .commit_scan_batch(
+            job.id(),
+            &ItemBatchCommit {
+                items: vec![eligible_item(job.id(), 611, "auth-file", 1)],
+                checkpoints_upsert: Vec::new(),
+                checkpoints_delete: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    env.job_service
+        .start_canary(job.id(), "target@gmail.com")
+        .await
+        .expect("source 401 is a persisted auth halt");
+    env.job_service.await_idle(job.id()).await;
+    assert_eq!(
+        env.job_service.get_job(job.id()).await.unwrap().status(),
+        JobStatus::AuthRequired
+    );
+    let auth_status: String = sqlx::query_scalar("SELECT auth_status FROM accounts WHERE id = '1'")
+        .fetch_one(env.account_store.pool())
+        .await
+        .unwrap();
+    assert_eq!(auth_status, "REAUTH_REQUIRED");
+    let target_auth_status: String =
+        sqlx::query_scalar("SELECT auth_status FROM accounts WHERE id = '2'")
+            .fetch_one(env.account_store.pool())
+            .await
+            .unwrap();
+    assert_eq!(target_auth_status, "CONNECTED");
+    assert!(
+        env.events
+            .snapshot()
+            .contains(&crate::application::JobRuntimeEvent::AccountRegistryChanged)
+    );
+    let requests_before_resume = env
+        .captured
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len();
+
+    let resumed = env.job_service.resume_migration(job.id()).await;
+    if resumed.is_ok() {
+        env.job_service.await_idle(job.id()).await;
+    }
+    assert!(matches!(
+        resumed,
+        Err(crate::application::job_service::JobServiceError::TokenError(message))
+            if message.contains("re-authentication")
+    ));
+    assert_eq!(
+        env.captured
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len(),
+        requests_before_resume,
+        "resume must not issue Drive requests with the rejected cached token"
+    );
+}
+
+#[tokio::test]
+async fn auto_transfer_target_accept_401_requires_only_target_reauth() {
+    let env = build_env(|request| match request_method(request) {
+        Some("GET") => ("200 OK".into(), file_json("auth-file", false, false)),
+        Some("POST") => (
+            "200 OK".into(),
+            format!(
+                r#"{{"id":"{TARGET_PERM}","type":"user","role":"writer","emailAddress":"target@gmail.com","pendingOwner":true}}"#
+            ),
+        ),
+        Some("PATCH") => ("401 Unauthorized".into(), "{}".into()),
+        _ => panic!("unexpected Drive request: {request}"),
+    })
+    .await;
+    let job = seed_ready_job(
+        &env.job_store,
+        62,
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
+    )
+    .await;
+    env.job_store
+        .commit_scan_batch(
+            job.id(),
+            &ItemBatchCommit {
+                items: vec![eligible_item(job.id(), 621, "auth-file", 1)],
+                checkpoints_upsert: Vec::new(),
+                checkpoints_delete: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    env.job_service
+        .run_auto_mutation_if_ready(job.id())
+        .await
+        .expect("target accept 401 starts auto worker");
+    env.job_service.await_idle(job.id()).await;
+    assert_eq!(
+        env.job_service.get_job(job.id()).await.unwrap().status(),
+        JobStatus::AuthRequired
+    );
+    let source_auth_status: String =
+        sqlx::query_scalar("SELECT auth_status FROM accounts WHERE id = '1'")
+            .fetch_one(env.account_store.pool())
+            .await
+            .unwrap();
+    let target_auth_status: String =
+        sqlx::query_scalar("SELECT auth_status FROM accounts WHERE id = '2'")
+            .fetch_one(env.account_store.pool())
+            .await
+            .unwrap();
+    assert_eq!(source_auth_status, "CONNECTED");
+    assert_eq!(target_auth_status, "REAUTH_REQUIRED");
+    assert!(
+        env.events
+            .snapshot()
+            .contains(&crate::application::JobRuntimeEvent::AccountRegistryChanged)
+    );
+    let requests_before_resume = env
+        .captured
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len();
+
+    assert!(matches!(
+        env.job_service.resume_migration(job.id()).await,
+        Err(crate::application::job_service::JobServiceError::TokenError(message))
+            if message.contains("re-authentication")
+    ));
+    assert_eq!(
+        env.captured
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len(),
+        requests_before_resume,
+        "resume must not issue Drive requests with the rejected target token"
+    );
+}
+
+#[tokio::test]
+async fn automatic_bulk_401_marks_the_rejected_source_reauth_required() {
+    let transferred = Arc::new(Mutex::new(std::collections::HashSet::new()));
+    let received = Arc::clone(&transferred);
+    let env = build_env(move |request| {
+        let path = request_path(request).unwrap_or("");
+        let file_id = path
+            .strip_prefix("/drive/v3/files/")
+            .and_then(|rest| rest.split(['/', '?']).next())
+            .unwrap_or("");
+        match request_method(request) {
+            Some("GET") if file_id == "bulk-file" => {
+                ("401 Unauthorized".into(), "{}".into())
+            }
+            Some("GET") => {
+                let is_transferred = received
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .contains(file_id);
+                (
+                    "200 OK".into(),
+                    file_json(file_id, false, is_transferred),
+                )
+            }
+            Some("POST") => (
+                "200 OK".into(),
+                format!(
+                    r#"{{"id":"{TARGET_PERM}","type":"user","role":"writer","emailAddress":"target@gmail.com","pendingOwner":true}}"#
+                ),
+            ),
+            Some("PATCH") if request.contains("transferOwnership=true") => {
+                received
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(file_id.to_string());
+                (
+                    "200 OK".into(),
+                    format!(
+                        r#"{{"id":"{TARGET_PERM}","type":"user","role":"owner","emailAddress":"target@gmail.com","pendingOwner":false}}"#
+                    ),
+                )
+            }
+            _ => panic!("unexpected Drive request: {request}"),
+        }
+    })
+    .await;
+    let job = seed_ready_job(
+        &env.job_store,
+        63,
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
+    )
+    .await;
+    env.job_store
+        .commit_scan_batch(
+            job.id(),
+            &ItemBatchCommit {
+                items: (0..6)
+                    .map(|index| {
+                        let file_id = if index == 5 {
+                            "bulk-file".to_string()
+                        } else {
+                            format!("canary-{index}")
+                        };
+                        eligible_item(job.id(), 630 + index, &file_id, 6 - index as i64)
+                    })
+                    .collect(),
+                checkpoints_upsert: Vec::new(),
+                checkpoints_delete: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    env.job_service
+        .run_auto_mutation_if_ready(job.id())
+        .await
+        .expect("auto worker starts");
+    env.job_service.await_idle(job.id()).await;
+    assert_eq!(
+        env.job_service.get_job(job.id()).await.unwrap().status(),
+        JobStatus::AuthRequired
+    );
+    let source_auth_status: String =
+        sqlx::query_scalar("SELECT auth_status FROM accounts WHERE id = '1'")
+            .fetch_one(env.account_store.pool())
+            .await
+            .unwrap();
+    let target_auth_status: String =
+        sqlx::query_scalar("SELECT auth_status FROM accounts WHERE id = '2'")
+            .fetch_one(env.account_store.pool())
+            .await
+            .unwrap();
+    assert_eq!(source_auth_status, "REAUTH_REQUIRED");
+    assert_eq!(target_auth_status, "CONNECTED");
+    assert_eq!(
+        env.job_store
+            .latest_job_event(job.id())
+            .await
+            .unwrap()
+            .unwrap()
+            .previous_state
+            .as_deref(),
+        Some(JobStatus::Running.as_str()),
+        "the authorization halt occurred after the worker entered automatic bulk"
+    );
+    assert_eq!(transferred.lock().unwrap().len(), 5);
+}
+
+#[tokio::test]
 async fn pause_and_retry_drive_real_job_service_entry_points() {
     let env = build_env(|request| {
         if request_method(request) == Some("GET") {
@@ -1459,6 +1740,277 @@ async fn paused_scan_queue_removal_resumes_saved_page_without_losing_items() {
         crate::test_support::query_param(request, "pageToken").as_deref() == Some("saved-page")
     }));
     assert!(mutation_methods(&env.captured).is_empty());
+}
+
+#[tokio::test]
+async fn startup_checkpoint_401_marks_only_the_token_role_and_evicts_its_cache() {
+    for (job_id, item_state, reauth_account_id, expected_token) in [
+        (74, ItemState::PendingOwnerCreated, 1_i64, SOURCE_TOKEN),
+        (75, ItemState::Accepting, 2_i64, TARGET_TOKEN),
+    ] {
+        let env = build_env(|request| {
+            assert_eq!(request_method(request), Some("GET"));
+            ("401 Unauthorized".into(), "{}".into())
+        })
+        .await;
+        let mut job = seed_ready_job(
+            &env.job_store,
+            job_id,
+            1,
+            2,
+            "source@gmail.com",
+            "target@gmail.com",
+            SOURCE_PERM,
+            TARGET_PERM,
+        )
+        .await;
+        job.start_canary().unwrap();
+        env.job_store.update_job(&job).await.unwrap();
+        env.job_store
+            .commit_scan_batch(
+                job.id(),
+                &ItemBatchCommit {
+                    items: vec![eligible_item(job.id(), job_id * 10, "checkpoint-file", 1)],
+                    checkpoints_upsert: Vec::new(),
+                    checkpoints_delete: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE migration_items
+             SET state = ?1, target_permission_id = ?2, updated_at = 'stale-attempt'
+             WHERE job_id = ?3 AND file_id = 'checkpoint-file'",
+        )
+        .bind(item_state.as_str())
+        .bind(TARGET_PERM)
+        .bind(job.id().value().to_string())
+        .execute(env.account_store.pool())
+        .await
+        .unwrap();
+
+        env.job_service.reconcile_on_startup().await.unwrap();
+
+        let halted = env.job_service.get_job(job.id()).await.unwrap();
+        assert_eq!(halted.status(), JobStatus::AuthRequired);
+        let source_auth: String =
+            sqlx::query_scalar("SELECT auth_status FROM accounts WHERE id = '1'")
+                .fetch_one(env.account_store.pool())
+                .await
+                .unwrap();
+        let target_auth: String =
+            sqlx::query_scalar("SELECT auth_status FROM accounts WHERE id = '2'")
+                .fetch_one(env.account_store.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            source_auth,
+            if reauth_account_id == 1 {
+                "REAUTH_REQUIRED"
+            } else {
+                "CONNECTED"
+            }
+        );
+        assert_eq!(
+            target_auth,
+            if reauth_account_id == 2 {
+                "REAUTH_REQUIRED"
+            } else {
+                "CONNECTED"
+            }
+        );
+        let item = env
+            .job_store
+            .list_items_page(job.id(), None, 1, 10)
+            .await
+            .unwrap()
+            .items
+            .remove(0);
+        assert_eq!(
+            item.last_error
+                .as_ref()
+                .and_then(|details| details.code.as_deref()),
+            Some("401")
+        );
+        assert_ne!(item.updated_at, "stale-attempt");
+        assert!(
+            env.events
+                .snapshot()
+                .contains(&crate::application::JobRuntimeEvent::AccountRegistryChanged)
+        );
+        let requests = env
+            .captured
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("authorization")
+                    && value.trim() == format!("Bearer {expected_token}")
+            })
+        }));
+
+        let resumed = env.job_service.resume_migration(job.id()).await;
+        assert!(matches!(
+            resumed,
+            Err(crate::application::JobServiceError::TokenError(_))
+        ));
+        assert_eq!(
+            env.captured
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            requests.len(),
+            "startup must evict the rejected cached token before resuming"
+        );
+    }
+}
+
+#[tokio::test]
+async fn paused_resume_checkpoint_401_persists_auth_halt_and_releases_lease() {
+    let env = build_env(|request| {
+        assert_eq!(request_method(request), Some("GET"));
+        ("401 Unauthorized".into(), "{}".into())
+    })
+    .await;
+    let mut job = seed_ready_job(
+        &env.job_store,
+        76,
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
+    )
+    .await;
+    job.start_canary().unwrap();
+    job.pause_transfer().unwrap();
+    env.job_store.update_job(&job).await.unwrap();
+    env.job_store
+        .commit_scan_batch(
+            job.id(),
+            &ItemBatchCommit {
+                items: vec![eligible_item(job.id(), 760, "checkpoint-file", 1)],
+                checkpoints_upsert: Vec::new(),
+                checkpoints_delete: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE migration_items
+         SET state = 'ACCEPTING', target_permission_id = ?1
+         WHERE job_id = ?2 AND file_id = 'checkpoint-file'",
+    )
+    .bind(TARGET_PERM)
+    .bind(job.id().value().to_string())
+    .execute(env.account_store.pool())
+    .await
+    .unwrap();
+
+    let resumed = env
+        .job_service
+        .resume_migration(job.id())
+        .await
+        .expect("checkpoint 401 becomes an auth halt");
+
+    assert_eq!(resumed.status(), JobStatus::AuthRequired);
+    let target_auth: String = sqlx::query_scalar("SELECT auth_status FROM accounts WHERE id = '2'")
+        .fetch_one(env.account_store.pool())
+        .await
+        .unwrap();
+    assert_eq!(target_auth, "REAUTH_REQUIRED");
+    let requests = env
+        .captured
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].lines().any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("authorization")
+                && value.trim() == format!("Bearer {TARGET_TOKEN}")
+        })
+    }));
+    assert!(
+        env.job_store
+            .current_mutation_lease()
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn auth_required_resume_checkpoint_401_still_marks_rejected_account() {
+    let env = build_env(|request| {
+        assert_eq!(request_method(request), Some("GET"));
+        ("401 Unauthorized".into(), "{}".into())
+    })
+    .await;
+    let mut job = seed_ready_job(
+        &env.job_store,
+        77,
+        1,
+        2,
+        "source@gmail.com",
+        "target@gmail.com",
+        SOURCE_PERM,
+        TARGET_PERM,
+    )
+    .await;
+    job.start_canary().unwrap();
+    job.require_auth("previous authentication halt".into())
+        .unwrap();
+    env.job_store.update_job(&job).await.unwrap();
+    env.job_store
+        .commit_scan_batch(
+            job.id(),
+            &ItemBatchCommit {
+                items: vec![eligible_item(job.id(), 770, "checkpoint-file", 1)],
+                checkpoints_upsert: Vec::new(),
+                checkpoints_delete: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE migration_items
+         SET state = 'ACCEPTING', target_permission_id = ?1
+         WHERE job_id = ?2 AND file_id = 'checkpoint-file'",
+    )
+    .bind(TARGET_PERM)
+    .bind(job.id().value().to_string())
+    .execute(env.account_store.pool())
+    .await
+    .unwrap();
+
+    let resumed = env
+        .job_service
+        .resume_migration(job.id())
+        .await
+        .expect("repeated checkpoint 401 remains a handled auth halt");
+
+    assert_eq!(resumed.status(), JobStatus::AuthRequired);
+    let target_auth: String = sqlx::query_scalar("SELECT auth_status FROM accounts WHERE id = '2'")
+        .fetch_one(env.account_store.pool())
+        .await
+        .unwrap();
+    assert_eq!(target_auth, "REAUTH_REQUIRED");
+    let requests = env
+        .captured
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].lines().any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("authorization")
+                && value.trim() == format!("Bearer {TARGET_TOKEN}")
+        })
+    }));
 }
 
 #[path = "update_installation_test.rs"]

@@ -260,6 +260,23 @@ impl fmt::Display for ItemError {
 
 impl Error for ItemError {}
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct ItemErrorDetails {
+    pub code: Option<String>,
+    pub reason: Option<String>,
+    pub message: Option<String>,
+}
+
+impl fmt::Debug for ItemErrorDetails {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ItemErrorDetails")
+            .field("code", &self.code.as_ref().map(|_| "[redacted]"))
+            .field("reason", &self.reason.as_ref().map(|_| "[redacted]"))
+            .field("message", &self.message.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationItem {
     pub id: ItemId,
@@ -274,6 +291,7 @@ pub struct MigrationItem {
     pub target_permission_id: Option<GooglePermissionId>,
     pub state: ItemState,
     pub canary_selected: bool,
+    pub last_error: Option<ItemErrorDetails>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -359,5 +377,19 @@ mod tests {
             ItemState::RetryableFailed.transition_to(ItemState::Eligible),
             Err(ItemError::IllegalTransition)
         );
+    }
+
+    #[test]
+    fn item_error_details_debug_redacts_diagnostic_text() {
+        let details = ItemErrorDetails {
+            code: Some("hidden-code-token".into()),
+            reason: Some("access_token=hidden-token".into()),
+            message: Some("Bearer hidden-token".into()),
+        };
+
+        let formatted = format!("{details:?}");
+        assert!(!formatted.contains("hidden-token"));
+        assert!(!formatted.contains("hidden-code-token"));
+        assert!(formatted.contains("[redacted]"));
     }
 }
