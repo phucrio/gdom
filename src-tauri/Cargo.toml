@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "gdom"
-version = "0.1.0"
+version = "0.1.1"
 description = "Google Drive Owner Migrator"
 authors = ["phucrio"]
 license = "GPL-3.0-or-later"
