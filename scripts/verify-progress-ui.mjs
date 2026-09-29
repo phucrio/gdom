@@ -59,14 +59,24 @@ await page.getByRole("button", { name: "Expand migration details" }).click();
   // When completion arrives before that refresh rejects, drain its queued refresh.
   await page.evaluate(() => { window.progressQa.complete(); window.progressQa.failJob(false); window.progressQa.releaseJob(); });
   // Then the completed snapshot appears without another event or a manual retry.
-  await page.getByText("3 / 3 processed · 1 succeeded · 2 failed · 0 skipped", { exact: true }).waitFor({ timeout: 3000 });
-  await assertText("3 / 3 processed · 1 succeeded · 2 failed · 0 skipped");
+  await page.getByText("4 / 4 processed · 1 succeeded · 3 failed · 0 skipped", { exact: true }).waitFor({ timeout: 3000 });
+  await assertText("4 / 4 processed · 1 succeeded · 3 failed · 0 skipped");
   await assertText("verified");
   await assertText("permanent failed");
-  const failureSummary = page.getByText("Error message", { exact: true });
+  await page.getByRole("feed").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  const diagnosticRow = page.getByRole("article").filter({ hasText: "Diagnostic.pdf" });
+  const failureSummary = diagnosticRow.getByText("403 · PERMISSION_DENIED: insufficientFilePermissions", { exact: true });
   await failureSummary.waitFor();
   await failureSummary.click();
-  await assertText("Google Drive denied access to the item.");
+  await diagnosticRow.getByText("Google Drive denied access to the item.", { exact: true }).waitFor();
+  const messageOnlyRow = page.getByRole("article").filter({ hasText: "Folder" });
+  const messageOnlySummary = messageOnlyRow.getByText("Error message", { exact: true });
+  await messageOnlySummary.waitFor();
+  await messageOnlySummary.click();
+  await messageOnlyRow.getByText("Google Drive denied access to the item.", { exact: true }).waitFor();
   await page.getByRole("feed").evaluate((element) => {
     element.scrollTop = element.scrollHeight;
     element.dispatchEvent(new Event("scroll", { bubbles: true }));

@@ -1149,6 +1149,12 @@ async fn retryable_failed_trashed_on_reconcile_skips_and_continues() {
     .await
     .expect("historical failure remains in audit");
     assert!(historical_detail.contains("Previous attempt failed."));
+    let skipped = items
+        .iter()
+        .find(|item| item.file_id == "retry-file")
+        .expect("skipped retry-file");
+    assert_eq!(skipped.state, ItemState::SkippedTrashed);
+    assert!(skipped.last_error.is_none());
     let by_id: std::collections::HashMap<_, _> = items
         .into_iter()
         .map(|item| (item.file_id.clone(), item))

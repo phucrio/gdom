@@ -171,11 +171,17 @@ function Fixture() {
           errorReason: null,
           errorMessage: index === 1 ? "Google Drive denied access to the item." : null,
         })),
+        {
+          id: "diagnostic-item", jobId: current.id, fileId: "file-diagnostic", name: "Diagnostic.pdf",
+          mimeType: "application/pdf", depth: 0, originalParentIds: [], state: "PERMANENT_FAILED",
+          quotaBytesUsed: null, errorCode: "403", errorReason: "PERMISSION_DENIED: insufficientFilePermissions",
+          errorMessage: "Google Drive denied access to the item.",
+        },
         { id: "item-2", jobId: current.id, fileId: "file-2", name: "NoDetails.txt", mimeType: "text/plain",
           depth: 0, originalParentIds: [], state: "PERMANENT_FAILED", quotaBytesUsed: null,
           errorCode: null, errorReason: null, errorMessage: null },
       ];
-      current = { ...current, status: "COMPLETED_WITH_ERRORS", progress: { completed: 1, failed: 2, skipped: 0, total: 3, currentPath: null } };
+      current = { ...current, status: "COMPLETED_WITH_ERRORS", progress: { completed: 1, failed: 3, skipped: 0, total: 4, currentPath: null } };
       emit();
     },
     registryFailure(failure: boolean) { failAccounts = failure; setGeneration((value) => value + 1); },
