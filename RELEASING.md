@@ -15,7 +15,7 @@ The compatibility-first process follows [quiche's release guide](https://github.
 ## 2. Prepare a release PR
 
 1. Create a release-preparation branch from `main`. Update the application version in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json` and the `gdom` entry in `src-tauri/Cargo.lock`. Update other lockfiles if their format records the app version; pnpm currently does not. Internal crates need no synchronized bump unless changed for an independent reason.
-2. Move applicable `CHANGELOG.md` entries from `Unreleased` to `## [X.Y.Z] - YYYY-MM-DD`, leaving `Unreleased` available. Describe user-visible outcomes, not raw commits. Clearly identify breaking changes and security fixes, required upgrade actions and known limitations. Use Features/Fixes sections only when relevant.
+2. Move applicable `CHANGELOG.md` entries from `Unreleased` to `## [X.Y.Z] - YYYY-MM-DD`, leaving `Unreleased` available. Draft with `git-cliff --tag vX.Y.Z [BASE..HEAD]` and the tracked `cliff.toml`; review the actual release range, then curate user-visible outcomes instead of copying raw commit titles. Clearly identify breaking changes and security fixes, required upgrade actions and known limitations. Use Features/Fixes sections only when relevant.
 3. Run `node scripts/release.mjs check`, `node --test scripts/release.test.mjs` and the frontend/Rust gates documented in `AGENTS.md`. Open a PR into `main` with the compatibility decision and evidence.
 4. Require the `validate` aggregate check and all underlying jobs to succeed on the exact PR head; resolve actionable review findings. Merge when covered by the current session's authorization. Do not tag the pre-merge commit.
 
