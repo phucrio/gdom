@@ -96,9 +96,8 @@ async fn callback_preserves_grant_when_response_write_crosses_session_deadline()
     )
     .await
     .expect("OAuth session starts");
-    let (session, mut handler_started) = session.notify_handler_started_for_test();
     let (session, mut response_write_started) =
-        session.delay_response_write_for_test(Duration::from_secs(2));
+        session.delay_response_write_for_test(Duration::from_secs(11));
     let parameters = query(session.authorization_url());
     let state = parameters
         .get("state")
@@ -111,14 +110,12 @@ async fn callback_preserves_grant_when_response_write_crosses_session_deadline()
     );
     let request =
         format!("GET /?code=near-deadline&state={state} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
-    let (send_request, receive_request) = oneshot::channel();
 
     // When
     let browser = async {
         let mut stream = TcpStream::connect(address)
             .await
             .expect("callback client connects");
-        receive_request.await.expect("callback request is released");
         stream
             .write_all(request.as_bytes())
             .await
@@ -131,17 +128,13 @@ async fn callback_preserves_grant_when_response_write_crosses_session_deadline()
         response
     };
     let clock = async {
-        handler_started
-            .recv()
+        // Observe callback parsing before pausing; virtual time cannot drive loopback I/O.
+        tokio::time::timeout(Duration::from_secs(8), response_write_started.recv())
             .await
-            .expect("callback handler starts");
+            .expect("callback reaches response write before its deadline")
+            .expect("response write notification channel stays open");
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(9)).await;
-        send_request.send(()).expect("callback request releases");
-        tokio::time::timeout(Duration::from_secs(1), response_write_started.recv())
-            .await
-            .expect("response write notification arrives before deadline")
-            .expect("response write notification channel stays open");
         tokio::time::advance(Duration::from_secs(2)).await;
     };
     let (grant, response, ()) = tokio::join!(session.receive_callback(), browser, clock);
