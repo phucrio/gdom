@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::oneshot;
 
 use super::google_oauth::{DesktopOAuthError, DesktopOAuthSession, MAX_IN_FLIGHT_CALLBACKS};
 
