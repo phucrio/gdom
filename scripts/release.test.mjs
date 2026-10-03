@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -29,7 +29,14 @@ function fixtures(context) {
       return { filename, sha256: createHash("sha256").update("fixture artifact").digest("hex") };
     });
     writeFileSync(join(directory, `${artifacts[0].filename}.sig`), "fixture signature");
-    writeFileSync(join(directory, "receipt.json"), JSON.stringify({ platform, version: "0.1.1", commit: "fixture-commit", signed: true, artifacts }));
+    writeFileSync(join(directory, "receipt.json"), JSON.stringify({
+      platform,
+      version: "0.1.1",
+      commit: "fixture-commit",
+      updaterSigned: true,
+      appleSigned: platform.startsWith("darwin-") ? false : null,
+      artifacts,
+    }));
   }
   return { input, output: join(root, "output") };
 }
@@ -60,6 +67,22 @@ test("refuses missing updater signatures", (context) => {
   const paths = fixtures(context);
   writeFileSync(join(paths.input, "windows-x86_64", "GDOM_0.1.1_windows-x86_64.exe.sig"), "");
   assert.throws(() => aggregate(paths), /Missing updater signature/);
+});
+test("rejects receipts not marked as updater-signed", (context) => {
+  const paths = fixtures(context);
+  const receiptPath = join(paths.input, "windows-x86_64", "receipt.json");
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+  receipt.updaterSigned = false;
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  assert.throws(() => aggregate(paths), /unsigned updater receipt/);
+});
+test("rejects inconsistent Apple signing across macOS architectures", (context) => {
+  const paths = fixtures(context);
+  const receiptPath = join(paths.input, "darwin-x86_64", "receipt.json");
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+  receipt.appleSigned = true;
+  writeFileSync(receiptPath, JSON.stringify(receipt));
+  assert.throws(() => aggregate(paths), /same Apple signing mode/);
 });
 test("refuses mixed commit releases", (context) => {
   const paths = fixtures(context);
@@ -100,10 +123,16 @@ version = "0.1.0"
   assert.throws(() => checkVersions(root, "v0.1.1"), /versions must match/);
 });
 
-test("stages unsigned macOS DMG without requiring updater archive or signing secrets", (context) => {
+test("stages Apple-unsigned macOS test packages without updater bundles", (context) => {
   const root = versionFixture(context);
   const bundle = join(root, "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg");
+  const staged = join(root, "staged");
   mkdirSync(bundle, { recursive: true });
   writeFileSync(join(bundle, "GDOM.dmg"), "unsigned package");
-  assert.doesNotThrow(() => stageArtifacts(root, "darwin-aarch64", join(root, "staged"), false));
+  stageArtifacts(root, "darwin-aarch64", staged, false);
+  assert.deepEqual(readdirSync(staged).sort(), ["GDOM_0.1.1_darwin-aarch64.dmg", "receipt.json"]);
+  const receipt = JSON.parse(readFileSync(join(staged, "receipt.json"), "utf8"));
+  assert.equal(receipt.updaterSigned, false);
+  assert.equal(receipt.appleSigned, false);
+  assert.throws(() => stageArtifacts(root, "darwin-aarch64", staged, false, true), /Tauri updater-signed macOS build/);
 });

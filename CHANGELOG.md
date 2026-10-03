@@ -4,7 +4,7 @@ User-visible changes are recorded here. Version selection and release operations
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-09-29
+## [0.1.1] - 2026-10-03
 
 ### Features
 
@@ -29,3 +29,4 @@ User-visible changes are recorded here. Version selection and release operations
 
 - Existing `0.1.0` installations need a manual bootstrap install to gain the updater.
 - Linux requires a compatible graphical desktop and an unlocked Secret Service login collection; automatic updates apply to AppImage installations.
+- The macOS app is not Apple Developer ID signed or notarized in v0.1.1. Gatekeeper may warn or block first launch; users may need to approve it manually. Tauri updater artifacts remain signed.

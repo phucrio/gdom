@@ -1,4 +1,4 @@
-name: Prepare signed release
+name: Prepare updater-signed release
 
 on:
   push:
@@ -36,7 +36,9 @@ jobs:
     needs: preflight
     uses: ./.github/workflows/ci.yml
     with:
-      signed: true
+      updater_signed: true
+      # v0.1.1 keeps Tauri updater signatures but ships macOS packages without Apple signing.
+      apple_signed: false
 
   draft:
     needs: gates-and-builds
@@ -56,7 +58,7 @@ jobs:
           path: release-input
       - run: node scripts/release.mjs preflight "$GITHUB_REF_NAME"
       - run: node scripts/release.mjs aggregate release-input release-output
-      - name: Create draft once with all six signed bundles
+      - name: Create draft with six updater-signed platform bundles
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

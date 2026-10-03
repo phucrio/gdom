@@ -7,7 +7,10 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
-      signed:
+      updater_signed:
+        type: boolean
+        default: false
+      apple_signed:
         type: boolean
         default: false
 
@@ -42,7 +45,8 @@ jobs:
   desktop:
     uses: ./.github/workflows/desktop.yml
     with:
-      signed: ${{ inputs.signed || false }}
+      updater_signed: ${{ inputs.updater_signed || false }}
+      apple_signed: ${{ inputs.apple_signed || false }}
 
   validate:
     if: always()

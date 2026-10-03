@@ -49,12 +49,16 @@ function filesUnder(directory) {
   });
 }
 
-export function stageArtifacts(root, platform, output, signed) {
+export function stageArtifacts(root, platform, output, updaterSigned, appleSigned = false) {
   const definition = platforms[platform];
   if (!definition) throw new Error("Unknown release platform.");
+  const isMac = platform.startsWith("darwin-");
+  if (appleSigned && (!isMac || !updaterSigned)) {
+    throw new Error("Apple-signed artifacts require a Tauri updater-signed macOS build.");
+  }
   const version = checkVersions(root);
   const candidates = filesUnder(join(root, "src-tauri/target", definition.target, "release/bundle"));
-  const suffixes = platform.startsWith("darwin-") ? [...(signed ? [definition.suffix] : []), ".dmg"] : [definition.suffix];
+  const suffixes = isMac ? [...(updaterSigned ? [definition.suffix] : []), ".dmg"] : [definition.suffix];
   mkdirSync(output, { recursive: true });
   const artifacts = [];
   for (const suffix of suffixes) {
@@ -63,14 +67,14 @@ export function stageArtifacts(root, platform, output, signed) {
     const filename = `GDOM_${version}_${platform}${suffix}`;
     copyFileSync(matches[0], join(output, filename));
     artifacts.push({ filename, sha256: digest(matches[0]) });
-    if (signed && suffix === definition.suffix) {
+    if (updaterSigned && suffix === definition.suffix) {
       execFileSync("cargo", ["run", "--locked", "--manifest-path", join(root, "src-tauri/Cargo.toml"), "--example", "verify-update-artifact", "--target", definition.target, "--", matches[0], `${matches[0]}.sig`], { stdio: "inherit" });
       const signature = read(`${matches[0]}.sig`).trim();
       if (!signature) throw new Error("Missing updater signature.");
       writeFileSync(join(output, `${filename}.sig`), signature);
     }
   }
-  const receipt = { platform, version, commit: git("rev-parse", "HEAD"), signed, artifacts };
+  const receipt = { platform, version, commit: git("rev-parse", "HEAD"), updaterSigned, appleSigned: isMac ? appleSigned : null, artifacts };
   writeFileSync(join(output, "receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`);
 }
 
@@ -80,12 +84,18 @@ export function aggregateArtifacts(input, output, version, commit, repository, n
   if (directories.length !== Object.keys(platforms).length) throw new Error("Release requires exactly six platform bundles.");
   const manifest = { version, notes, pub_date: new Date().toISOString(), platforms: {} };
   mkdirSync(output, { recursive: true });
+  let appleSignedMode;
   for (const directory of directories) {
     const source = join(input, directory.name);
     const receipt = JSON.parse(read(join(source, "receipt.json")));
     const definition = platforms[receipt.platform];
-    if (!definition || manifest.platforms[receipt.platform] || receipt.version !== version || receipt.commit !== commit || receipt.signed !== true) {
-      throw new Error("Mismatched, duplicate or unsigned release receipt.");
+    const isMac = typeof receipt.platform === "string" && receipt.platform.startsWith("darwin-");
+    if (!definition || manifest.platforms[receipt.platform] || receipt.version !== version || receipt.commit !== commit || receipt.updaterSigned !== true || (isMac ? typeof receipt.appleSigned !== "boolean" : receipt.appleSigned !== null)) {
+      throw new Error("Mismatched, duplicate or unsigned updater receipt.");
+    }
+    if (isMac) {
+      if (appleSignedMode !== undefined && receipt.appleSigned !== appleSignedMode) throw new Error("macOS bundles must use the same Apple signing mode.");
+      appleSignedMode = receipt.appleSigned;
     }
     const expectedSuffixes = [definition.suffix, ...(receipt.platform.startsWith("darwin-") ? [".dmg"] : [])];
     const expectedNames = expectedSuffixes.map((suffix) => `GDOM_${version}_${receipt.platform}${suffix}`);
@@ -118,12 +128,17 @@ if (argv[1] && import.meta.url === pathToFileURL(resolve(argv[1])).href) {
       releaseNotes(read("CHANGELOG.md"), version);
       break;
     }
-    case "stage": stageArtifacts(".", args[0], args[1], args[2] === "signed"); break;
+    case "stage": {
+      if (args[2] && !["updater-signed", "unsigned"].includes(args[2])) throw new Error("Invalid updater signing mode.");
+      if (args[3] && !["apple-signed", "apple-unsigned"].includes(args[3])) throw new Error("Invalid Apple signing mode.");
+      stageArtifacts(".", args[0], args[1], args[2] === "updater-signed", args[3] === "apple-signed");
+      break;
+    }
     case "aggregate": {
       const version = checkVersions(".", env.GITHUB_REF_NAME);
       aggregateArtifacts(args[0], args[1], version, git("rev-parse", "HEAD"), env.GITHUB_REPOSITORY, releaseNotes(read("CHANGELOG.md"), version));
       break;
     }
-    default: throw new Error("Usage: release.mjs check | preflight TAG | stage PLATFORM OUTPUT [signed] | aggregate INPUT OUTPUT");
+    default: throw new Error("Usage: release.mjs check | preflight TAG | stage PLATFORM OUTPUT [updater-signed|unsigned] [apple-signed|apple-unsigned] | aggregate INPUT OUTPUT");
   }
 }
