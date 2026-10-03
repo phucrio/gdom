@@ -3,7 +3,10 @@ name: Desktop builds
 on:
   workflow_call:
     inputs:
-      signed:
+      updater_signed:
+        type: boolean
+        default: false
+      apple_signed:
         type: boolean
         default: false
 
@@ -42,7 +45,7 @@ jobs:
             runner: ubuntu-22.04-arm
             bundles: appimage
     runs-on: ${{ matrix.runner }}
-    environment: ${{ inputs.signed && 'release' || 'ci' }}
+    environment: ${{ inputs.updater_signed && 'release' || 'ci' }}
     env:
       CARGO_BUILD_JOBS: 1
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -53,6 +56,11 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      - name: Require updater signing for Apple-signed builds
+        if: ${{ inputs.apple_signed && !inputs.updater_signed }}
+        run: |
+          echo 'Apple-signed builds require signed Tauri updater artifacts.' >&2
+          exit 1
       - name: Install Linux desktop build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -84,13 +92,20 @@ jobs:
           GDOM_NATIVE_KEYCHAIN_TESTS: 1
         run: |
           dbus-run-session -- sh -c 'printf "%s" "temporary-ci-keyring-password" | gnome-keyring-daemon --unlock --components=secrets; cargo test --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} native_keychain_round_trip -- --ignored'
-      - name: Require production signing configuration
-        if: inputs.signed
+      - name: Require production updater signing configuration
+        if: inputs.updater_signed
         env:
           GDOM_DEFAULT_CLIENT_SECRET: ${{ secrets.GDOM_DEFAULT_CLIENT_SECRET }}
           GDOM_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          for name in GDOM_DEFAULT_CLIENT_SECRET GDOM_UPDATER_PUBLIC_KEY TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            test -n "${!name}" || { echo "Missing required release setting: $name"; exit 1; }
+          done
+      - name: Require Apple signing and notarization configuration
+        if: ${{ inputs.apple_signed && runner.os == 'macOS' }}
+        env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -98,31 +113,42 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          for name in GDOM_DEFAULT_CLIENT_SECRET GDOM_UPDATER_PUBLIC_KEY TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
-            test -n "${!name}" || { echo "Missing required release setting: $name"; exit 1; }
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            test -n "${!name}" || { echo "Missing required Apple release setting: $name"; exit 1; }
           done
-          if [ "$RUNNER_OS" = macOS ]; then
-            for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-              test -n "${!name}" || { echo "Missing required Apple release setting: $name"; exit 1; }
-            done
-          fi
       - name: Configure updater artifacts
         env:
-          SIGNED_BUILD: ${{ inputs.signed }}
-          GDOM_UPDATER_PUBLIC_KEY: ${{ inputs.signed && vars.TAURI_UPDATER_PUBLIC_KEY || '' }}
+          UPDATER_SIGNED_BUILD: ${{ inputs.updater_signed }}
+          GDOM_UPDATER_PUBLIC_KEY: ${{ inputs.updater_signed && vars.TAURI_UPDATER_PUBLIC_KEY || '' }}
         run: |
           node --input-type=module - <<'JAVASCRIPT'
           import { writeFileSync } from 'node:fs';
           writeFileSync('updater-build.json', JSON.stringify({
-            bundle: { createUpdaterArtifacts: process.env.SIGNED_BUILD === 'true' },
+            bundle: { createUpdaterArtifacts: process.env.UPDATER_SIGNED_BUILD === 'true' },
             plugins: { updater: { pubkey: process.env.GDOM_UPDATER_PUBLIC_KEY } },
           }));
           JAVASCRIPT
-      - name: Build unsigned desktop package
-        if: ${{ !inputs.signed }}
+      - name: Build unsigned test package
+        if: ${{ !inputs.updater_signed }}
         run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config updater-build.json
-      - name: Build signed desktop package
-        if: inputs.signed
+      - name: Build updater-signed Windows and Linux packages
+        if: ${{ inputs.updater_signed && runner.os != 'macOS' }}
+        env:
+          GDOM_DEFAULT_CLIENT_SECRET: ${{ secrets.GDOM_DEFAULT_CLIENT_SECRET }}
+          GDOM_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config updater-build.json
+      - name: Build updater-signed Apple-unsigned macOS packages
+        if: ${{ inputs.updater_signed && runner.os == 'macOS' && !inputs.apple_signed }}
+        env:
+          GDOM_DEFAULT_CLIENT_SECRET: ${{ secrets.GDOM_DEFAULT_CLIENT_SECRET }}
+          GDOM_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config updater-build.json
+      - name: Build updater- and Apple-signed macOS packages
+        if: ${{ inputs.updater_signed && runner.os == 'macOS' && inputs.apple_signed }}
         env:
           GDOM_DEFAULT_CLIENT_SECRET: ${{ secrets.GDOM_DEFAULT_CLIENT_SECRET }}
           GDOM_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
@@ -137,10 +163,10 @@ jobs:
         run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config updater-build.json
       - name: Stage artifacts with version and architecture
         env:
-          GDOM_UPDATER_PUBLIC_KEY: ${{ inputs.signed && vars.TAURI_UPDATER_PUBLIC_KEY || '' }}
-        run: node scripts/release.mjs stage '${{ matrix.platform }}' staged '${{ inputs.signed && 'signed' || 'unsigned' }}'
+          GDOM_UPDATER_PUBLIC_KEY: ${{ inputs.updater_signed && vars.TAURI_UPDATER_PUBLIC_KEY || '' }}
+        run: node scripts/release.mjs stage '${{ matrix.platform }}' staged '${{ inputs.updater_signed && 'updater-signed' || 'unsigned' }}' '${{ runner.os == 'macOS' && inputs.apple_signed && 'apple-signed' || 'apple-unsigned' }}'
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.signed && 'release' || 'test' }}-${{ matrix.platform }}
+          name: ${{ inputs.updater_signed && 'release' || 'test' }}-${{ matrix.platform }}
           path: staged/*
           if-no-files-found: error
